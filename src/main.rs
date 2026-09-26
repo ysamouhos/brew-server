@@ -36,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
     // new configuration takes effect from a clean state.
     tokio::spawn(config_watcher(path.clone()));
 
-    if state.config.max_call_duration_seconds > 0 {
+    if state.config.max_call_duration_seconds > 0 || state.config.call_inactivity_timeout_seconds > 0 {
         tokio::spawn(router::run_call_duration_sweep(state.clone()));
     }
 

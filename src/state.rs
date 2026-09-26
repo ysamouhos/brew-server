@@ -1,5 +1,5 @@
 use crate::{config::Config, control::ControlState, monitor::Monitor, protocol::ConnVersion, telemetry::TelemetryState};
-use std::{collections::{HashMap, HashSet}, time::{Duration, Instant}};
+use std::{collections::{HashMap, HashSet}, sync::{atomic::{AtomicU64, Ordering}, Arc}, time::{Duration, Instant}};
 use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 
@@ -100,6 +100,16 @@ pub struct ActiveCall {
     /// When this call was set up, for max-call-duration enforcement and for
     /// showing call age on the dashboard.
     pub started_at: Instant,
+    /// Last time (ms, `telemetry::now_ms`) a voice/DTMF frame or GROUP_TX was
+    /// seen for this call. Shared so the frame path can bump it under the
+    /// read lock; used to end group calls whose GROUP_IDLE never arrived.
+    pub last_activity_ms: Arc<AtomicU64>,
+}
+
+impl ActiveCall {
+    pub fn new_activity() -> Arc<AtomicU64> { Arc::new(AtomicU64::new(crate::telemetry::now_ms())) }
+    pub fn touch(&self) { self.last_activity_ms.store(crate::telemetry::now_ms(), Ordering::Relaxed); }
+    pub fn idle_ms(&self) -> u64 { crate::telemetry::now_ms().saturating_sub(self.last_activity_ms.load(Ordering::Relaxed)) }
 }
 
 #[derive(Debug, Clone)]
