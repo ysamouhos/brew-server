@@ -1,6 +1,6 @@
 [package]
 name = "brew-server"
-version = "1.9.0"
+version = "1.9.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "Multi-Basestation TETRA Brew protocol hub"
