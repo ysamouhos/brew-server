@@ -2,6 +2,17 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.9.1 adds:
+
+- **Call inactivity timeout.** New top-level `call_inactivity_timeout_seconds`
+  (default `60`, `0` disables), shared by Brew and SIP calls. A Brew call with
+  no voice/DTMF frames or call control for that long is ended like a normal
+  hangup (`CALL_GROUP_IDLE`/`CALL_RELEASE`); an answered SIP call that
+  receives no RTP for that long is torn down like a BYE. Fixes group calls
+  whose `GROUP_IDLE` was lost lingering on the dashboard (duration counting
+  up) until the 4h `max_call_duration_seconds` sweep. SIP-bridged Brew calls
+  are judged on the RTP side only. Both call sweeps now run every 5s.
+
 Version 1.9 adds:
 
 - **Logged-in username and a logout control on every dashboard page.**
