@@ -19,6 +19,12 @@ pub struct Config {
     /// CALL_RELEASE/CALL_GROUP_IDLE, the same as if a participant had hung
     /// up. 0 disables the limit.
     pub max_call_duration_seconds: u64,
+    /// Seconds a call may go without any media before the server ends it as
+    /// dead, shared by Brew calls (no voice/DTMF frames or call control) and
+    /// SIP calls (no RTP received once answered). Catches calls whose
+    /// GROUP_IDLE/RELEASE/BYE was lost so they don't linger on the
+    /// dashboards. 0 disables it.
+    pub call_inactivity_timeout_seconds: u64,
     pub auth: AuthConfig,
     pub tls: TlsConfig,
     pub telemetry: TelemetryConfig,
@@ -458,6 +464,7 @@ impl Default for Config {
             higher_priority_number_wins: true,
             preempt_cause: 1,
             max_call_duration_seconds: 14400,
+            call_inactivity_timeout_seconds: 60,
             auth: AuthConfig::default(),
             tls: TlsConfig::default(),
             telemetry: TelemetryConfig::default(),

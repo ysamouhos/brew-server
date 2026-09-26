@@ -10,6 +10,10 @@ preempt_cause = 1
 # of a SIP-bridged call) once it has run this long, the same as a normal
 # hangup (CALL_RELEASE/CALL_GROUP_IDLE). 0 disables the limit.
 max_call_duration_seconds = 14400
+# Ends a call that has carried no media for this long (Brew: no voice frames
+# or call control; SIP: no RTP once answered), e.g. when a GROUP_IDLE or BYE
+# was lost. Shared by Brew and SIP calls. 0 disables it.
+call_inactivity_timeout_seconds = 60
 
 [tls]
 enabled = true

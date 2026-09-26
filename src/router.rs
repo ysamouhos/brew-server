@@ -184,6 +184,7 @@ async fn handle_group_tx(state: &Arc<AppState>, source: ClientId, id: uuid::Uuid
         priority: gt.priority,
         peers: targets.clone(),
         started_at: std::time::Instant::now(),
+        last_activity_ms: ActiveCall::new_activity(),
     });
     let txs = targets.iter().filter_map(|cid| inner.clients.get(cid).map(|c| c.tx.clone())).collect::<Vec<_>>();
     drop(inner);
@@ -384,7 +385,7 @@ async fn handle_private_setup(state: &Arc<AppState>, source: ClientId, id: uuid:
     };
     if target_client == source { return; }
     let peers = HashSet::from([target_client]);
-    inner.calls.insert(id, ActiveCall { kind: CallKind::Private, owner: source, source_issi, destination, priority: 0, peers: peers.clone(), started_at: std::time::Instant::now() });
+    inner.calls.insert(id, ActiveCall { kind: CallKind::Private, owner: source, source_issi, destination, priority: 0, peers: peers.clone(), started_at: std::time::Instant::now(), last_activity_ms: ActiveCall::new_activity() });
     let tx = inner.clients.get(&target_client).map(|c| c.tx.clone());
     drop(inner);
     if let Some(tx) = tx { let _ = tx.send(raw); }
@@ -402,6 +403,7 @@ async fn route_private_control(state: &Arc<AppState>, source: ClientId, id: uuid
     let inner = state.inner.read().await;
     let Some(call) = inner.calls.get(&id) else { debug!(uuid=%id, "private control for unknown call"); return; };
     if call.kind != CallKind::Private { return; }
+    call.touch();
     let mut recipients = call.peers.clone();
     recipients.insert(call.owner);
     recipients.remove(&source);
@@ -431,6 +433,7 @@ async fn call_frame_recipients(state: &Arc<AppState>, source: ClientId, id: uuid
     let mut allowed = call.peers.contains(&source) || call.owner == source;
     if call.kind == CallKind::Group { allowed = call.owner == source; }
     if !allowed { warn!(%source, uuid=%id, "{kind} frame from non-participant"); return None; }
+    call.touch();
     let mut recipients = call.peers.clone();
     if call.kind == CallKind::Private { recipients.insert(call.owner); }
     recipients.remove(&source);
@@ -444,29 +447,53 @@ async fn call_frame_recipients(state: &Arc<AppState>, source: ClientId, id: uuid
 /// CALL_GROUP_IDLE to participants, dashboard event, SIP-bridge teardown),
 /// not a silent kill. A no-op (never spawned as a busy loop) when the limit
 /// is 0 (disabled) -- see `main.rs`, which only spawns this when non-zero.
-/// Pure filter: which calls in `calls` have been running at least `limit`.
-/// Split out from `run_call_duration_sweep` so it's testable without an
-/// actual timer/interval.
+/// Also ends calls that have carried no voice/DTMF frame or call control for
+/// `Config::call_inactivity_timeout_seconds` (e.g. a GROUP_IDLE that never
+/// arrived), except SIP-bridged ones, whose inactivity is judged on the RTP
+/// side by the SIP sweep with the same timeout.
+/// Pure filter: which calls in `calls` have been running at least `limit`
+/// (zero = no limit). Split out from `run_call_duration_sweep` so it's
+/// testable without an actual timer/interval.
 fn expired_calls(calls: &HashMap<uuid::Uuid, ActiveCall>, limit: std::time::Duration) -> Vec<(uuid::Uuid, ClientId, CallKind)> {
+    if limit.is_zero() { return Vec::new(); }
     calls.iter()
         .filter(|(_, call)| call.started_at.elapsed() >= limit)
         .map(|(id, call)| (*id, call.owner, call.kind))
         .collect()
 }
 
+/// Pure filter: calls idle for at least `idle_ms` (zero = disabled) that
+/// don't involve a SIP bridge virtual client (per `is_bridged`).
+fn idle_calls(calls: &HashMap<uuid::Uuid, ActiveCall>, idle_ms: u64, is_bridged: impl Fn(&ClientId) -> bool) -> Vec<(uuid::Uuid, ClientId, CallKind)> {
+    if idle_ms == 0 { return Vec::new(); }
+    calls.iter()
+        .filter(|(_, call)| call.idle_ms() >= idle_ms)
+        .filter(|(_, call)| !is_bridged(&call.owner) && !call.peers.iter().any(&is_bridged))
+        .map(|(id, call)| (*id, call.owner, call.kind))
+        .collect()
+}
+
 pub async fn run_call_duration_sweep(state: Arc<AppState>) {
     let limit = std::time::Duration::from_secs(state.config.max_call_duration_seconds);
-    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+    let idle_ms = state.config.call_inactivity_timeout_seconds * 1000;
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(5));
     loop {
         ticker.tick().await;
         let expired = {
             let inner = state.inner.read().await;
-            expired_calls(&inner.calls, limit)
+            // SIP bridge virtual clients are the only local, address-less terminals.
+            let is_bridged = |cid: &ClientId| inner.clients.get(cid)
+                .is_some_and(|c| c.mode == crate::state::ClientMode::Terminal && c.remote_addr.is_none());
+            let mut v: Vec<_> = expired_calls(&inner.calls, limit).into_iter().map(|c| (c, "exceeded max duration")).collect();
+            for c in idle_calls(&inner.calls, idle_ms, is_bridged) {
+                if !v.iter().any(|((id, ..), _)| *id == c.0) { v.push((c, "inactive (no media)")); }
+            }
+            v
         };
-        for (id, owner, kind) in expired {
+        for ((id, owner, kind), why) in expired {
             let release_state = if kind == CallKind::Group { protocol::CALL_GROUP_IDLE } else { protocol::CALL_RELEASE };
             let raw = protocol::build_call_cause(release_state, &id, 0);
-            warn!(uuid=%id, ?kind, limit_secs = state.config.max_call_duration_seconds, "call exceeded max duration; force-ending");
+            warn!(uuid=%id, ?kind, reason = why, "call timed out; force-ending");
             end_call(&state, owner, id, raw).await;
         }
     }
@@ -664,6 +691,7 @@ mod call_duration_tests {
             priority: 0,
             peers: HashSet::new(),
             started_at,
+            last_activity_ms: ActiveCall::new_activity(),
         }
     }
 
@@ -679,6 +707,26 @@ mod call_duration_tests {
         let expired = expired_calls(&calls, Duration::from_secs(60));
         assert_eq!(expired.len(), 1);
         assert_eq!(expired[0].0, old_id);
+    }
+
+    #[test]
+    fn idle_filter_skips_active_and_bridged_calls() {
+        let now = std::time::Instant::now();
+        let mut calls = HashMap::new();
+        let stale = call(now, CallKind::Group);
+        stale.last_activity_ms.store(crate::telemetry::now_ms() - 120_000, std::sync::atomic::Ordering::Relaxed);
+        let stale_id = uuid::Uuid::new_v4();
+        let bridged = call(now, CallKind::Private);
+        bridged.last_activity_ms.store(0, std::sync::atomic::Ordering::Relaxed);
+        let bridged_owner = bridged.owner;
+        calls.insert(stale_id, stale);
+        calls.insert(uuid::Uuid::new_v4(), bridged);
+        calls.insert(uuid::Uuid::new_v4(), call(now, CallKind::Group));
+
+        let idle = idle_calls(&calls, 60_000, |c| *c == bridged_owner);
+        assert_eq!(idle.len(), 1);
+        assert_eq!(idle[0].0, stale_id);
+        assert!(idle_calls(&calls, 0, |_| false).is_empty());
     }
 
     #[test]

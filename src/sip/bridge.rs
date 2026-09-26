@@ -349,6 +349,7 @@ impl BrewBridge {
             leg.set_remote(addr).await;
         }
         self.transport.state.set_call_rtp(call_id, Some(leg.local_port), None).await;
+        self.transport.state.track_media(call_id, leg.activity()).await;
 
         // Media bridge point: register a virtual Brew client standing in for
         // the SIP caller, wire it into an ActiveCall with the real ISSI's
@@ -370,6 +371,7 @@ impl BrewBridge {
                 priority: 0,
                 peers: HashSet::from([target_client]),
                 started_at: std::time::Instant::now(),
+                last_activity_ms: ActiveCall::new_activity(),
             });
             inner.clients.get(&target_client).map(|c| c.tx.clone())
         };
@@ -478,6 +480,7 @@ impl BrewBridge {
             leg.set_remote(addr).await;
         }
         self.transport.state.set_call_rtp(call_id, Some(leg.local_port), None).await;
+        self.transport.state.track_media(call_id, leg.activity()).await;
 
         // Media bridge point: register a virtual Brew client as an affiliated
         // member of the group (so it keeps receiving that group's traffic for
@@ -502,6 +505,7 @@ impl BrewBridge {
                 priority: 0,
                 peers: targets.clone(),
                 started_at: std::time::Instant::now(),
+                last_activity_ms: ActiveCall::new_activity(),
             });
             inner.group_floor.insert(gssi, brew_call_id);
             targets.iter().filter_map(|c| inner.clients.get(c).map(|cl| cl.tx.clone())).collect::<Vec<_>>()
@@ -615,6 +619,7 @@ impl BrewBridge {
             rtp_a_port: Some(leg.local_port),
             rtp_b_port: None,
         }).await;
+        self.transport.state.track_media(call_id, leg.activity()).await;
 
         let virtual_client = uuid::Uuid::new_v4();
         let (virtual_tx, virtual_rx) = mpsc::unbounded_channel();
@@ -629,6 +634,7 @@ impl BrewBridge {
                 priority: 0,
                 peers: HashSet::from([virtual_client]),
                 started_at: std::time::Instant::now(),
+                last_activity_ms: ActiveCall::new_activity(),
             });
             inner.clients.get(&link.client).map(|c| c.tx.clone())
         };

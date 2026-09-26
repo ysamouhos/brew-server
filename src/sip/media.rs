@@ -14,6 +14,7 @@
 //! gateway on the Brew side already speaks a SIP-compatible codec.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
@@ -103,9 +104,15 @@ pub struct RtpLeg {
     pub local_port: u16,
     socket: Arc<UdpSocket>,
     remote: Arc<RwLock<Option<SocketAddr>>>,
+    /// When RTP was last received on this leg (ms since epoch, 0 = never).
+    last_rx_ms: Arc<AtomicU64>,
 }
 
 impl RtpLeg {
+    /// Shared handle to this leg's last-RTP-received time, for the call
+    /// inactivity sweep.
+    pub fn activity(&self) -> Arc<AtomicU64> { self.last_rx_ms.clone() }
+
     /// Sets/overrides the remote address (e.g. from SDP before latching).
     pub async fn set_remote(&self, addr: SocketAddr) {
         *self.remote.write().await = Some(addr);
@@ -116,6 +123,7 @@ impl RtpLeg {
     /// this leg directly instead of relaying it verbatim to another leg.
     pub async fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize> {
         let (n, from) = self.socket.recv_from(buf).await?;
+        self.last_rx_ms.store(crate::telemetry::now_ms(), Ordering::Relaxed);
         *self.remote.write().await = Some(from);
         Ok(n)
     }
@@ -169,6 +177,7 @@ impl RtpRelay {
                         local_port: port,
                         socket: Arc::new(sock),
                         remote: Arc::new(RwLock::new(None)),
+                        last_rx_ms: Arc::new(AtomicU64::new(0)),
                     });
                 }
                 Err(e) => {
@@ -190,6 +199,8 @@ impl RtpRelay {
         let b_sock = b.socket.clone();
         let a_remote = a.remote.clone();
         let b_remote = b.remote.clone();
+        let a_rx = a.last_rx_ms.clone();
+        let b_rx = b.last_rx_ms.clone();
 
         tokio::spawn(async move {
             let mut buf_a = [0u8; 2048];
@@ -198,6 +209,7 @@ impl RtpRelay {
                 tokio::select! {
                     r = a_sock.recv_from(&mut buf_a) => {
                         let Ok((n, from)) = r else { break };
+                        a_rx.store(crate::telemetry::now_ms(), Ordering::Relaxed);
                         // Latch A's real source address.
                         { *a_remote.write().await = Some(from); }
                         if let Some(dst) = *b_remote.read().await {
@@ -206,6 +218,7 @@ impl RtpRelay {
                     }
                     r = b_sock.recv_from(&mut buf_b) => {
                         let Ok((n, from)) = r else { break };
+                        b_rx.store(crate::telemetry::now_ms(), Ordering::Relaxed);
                         { *b_remote.write().await = Some(from); }
                         if let Some(dst) = *a_remote.read().await {
                             let _ = a_sock.send_to(&buf_b[..n], dst).await;

@@ -234,12 +234,13 @@ pub async fn run(app: Arc<crate::state::AppState>) -> anyhow::Result<()> {
         });
     }
 
-    // Periodic max-call-duration sweep, disabled (never spawned) when the
-    // limit is 0.
-    if cfg.max_call_duration_seconds > 0 {
+    // Periodic max-call-duration / media-inactivity sweep, disabled (never
+    // spawned) when both limits are 0.
+    let limit = Duration::from_secs(cfg.max_call_duration_seconds);
+    let idle = Duration::from_secs(app.config.call_inactivity_timeout_seconds);
+    if !limit.is_zero() || !idle.is_zero() {
         let transport = transport.clone();
-        let limit = Duration::from_secs(cfg.max_call_duration_seconds);
-        tokio::spawn(async move { call_duration_sweep_loop(transport, limit).await; });
+        tokio::spawn(async move { call_duration_sweep_loop(transport, limit, idle).await; });
     }
 
     // Receive loop.
@@ -502,6 +503,8 @@ async fn terminate_to_extension(
         leg_a.set_remote(addr).await;
     }
     t.state.set_call_rtp(&call_id, Some(leg_a.local_port), Some(leg_b.local_port)).await;
+    t.state.track_media(&call_id, leg_a.activity()).await;
+    t.state.track_media(&call_id, leg_b.activity()).await;
 
     // Build the outgoing INVITE to the callee with our relay's SDP (leg B).
     let mut invite = SipMessage::new_request(Method::Invite, reg.contact.clone());
@@ -572,6 +575,8 @@ async fn terminate_to_trunk(
         leg_a.set_remote(addr).await;
     }
     t.state.set_call_rtp(&call_id, Some(leg_a.local_port), Some(leg_b.local_port)).await;
+    t.state.track_media(&call_id, leg_a.activity()).await;
+    t.state.track_media(&call_id, leg_b.activity()).await;
 
     let host = tc.remote_host.split(':').next().unwrap_or(&tc.remote_host);
     let mut invite = SipMessage::new_request(Method::Invite, format!("sip:{number}@{host}"));
@@ -601,22 +606,30 @@ async fn terminate_to_trunk(
 }
 
 /// Ends SIP calls (plain SIP-SIP relays and Brew-bridged legs alike) that
-/// have run longer than `limit`. Mirrors `handle_bye`'s cleanup (abort the
+/// have run longer than `limit`, or have received no RTP for `idle` once
+/// answered (either is skipped when zero). Mirrors `handle_bye`'s cleanup (abort the
 /// relay task if any, tear down a bridged leg via `BrewBridge::force_end`,
 /// remove from `SipState`) so a timed-out call is torn down the same way a
 /// real BYE would, not silently killed.
-async fn call_duration_sweep_loop(t: Arc<SipTransport>, limit: Duration) {
-    let mut ticker = tokio::time::interval(Duration::from_secs(30));
+async fn call_duration_sweep_loop(t: Arc<SipTransport>, limit: Duration, idle: Duration) {
+    let mut ticker = tokio::time::interval(Duration::from_secs(5));
     loop {
         ticker.tick().await;
         let now = now_ms();
         let limit_ms = limit.as_millis() as u64;
-        let expired: Vec<String> = t.state.snapshot().await.active_calls.iter()
-            .filter(|c| now.saturating_sub(c.started_at_ms) >= limit_ms)
-            .map(|c| c.call_id.clone())
-            .collect();
-        for call_id in expired {
-            warn!(%call_id, limit_secs = limit.as_secs(), "SIP call exceeded max duration; force-ending");
+        let mut expired: Vec<(String, &str)> = if limit.is_zero() { Vec::new() } else {
+            t.state.snapshot().await.active_calls.iter()
+                .filter(|c| now.saturating_sub(c.started_at_ms) >= limit_ms)
+                .map(|c| (c.call_id.clone(), "exceeded max duration"))
+                .collect()
+        };
+        if !idle.is_zero() {
+            for call_id in t.state.idle_calls(idle.as_millis() as u64).await {
+                if !expired.iter().any(|(id, _)| *id == call_id) { expired.push((call_id, "no RTP (inactive)")); }
+            }
+        }
+        for (call_id, why) in expired {
+            warn!(%call_id, reason = why, "SIP call timed out; force-ending");
             if let Some(handle) = t.relay_tasks.lock().await.remove(&call_id) {
                 handle.abort();
             }

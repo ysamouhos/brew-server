@@ -6,6 +6,8 @@
 
 use serde::Serialize;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::net::SocketAddr;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
@@ -120,6 +122,9 @@ struct Inner {
     registrations: HashMap<String, Registration>,
     trunks: HashMap<String, TrunkState>,
     calls: HashMap<String, SipCall>,
+    /// Per-call last-RTP-received clocks of the call's relay legs (see
+    /// `RtpLeg::activity`), for the call inactivity sweep.
+    media: HashMap<String, Vec<Arc<AtomicU64>>>,
     total_calls: u64,
     total_registrations: u64,
 }
@@ -233,9 +238,29 @@ impl SipState {
         }
     }
 
+    /// Registers an RTP leg's activity clock against a call.
+    pub async fn track_media(&self, call_id: &str, activity: Arc<AtomicU64>) {
+        self.inner.write().await.media.entry(call_id.to_string()).or_default().push(activity);
+    }
+
+    /// Answered calls that have received no RTP on any leg for `timeout_ms`
+    /// (counted from the answer when no RTP ever arrived). Unanswered calls
+    /// are left alone: ringing carries no media.
+    pub async fn idle_calls(&self, timeout_ms: u64) -> Vec<String> {
+        let now = now_ms();
+        let i = self.inner.read().await;
+        i.calls.values().filter_map(|c| {
+            let answered = c.answered_at_ms?;
+            let last_rx = i.media.get(&c.call_id).into_iter().flatten()
+                .map(|a| a.load(Ordering::Relaxed)).max().unwrap_or(0);
+            (now.saturating_sub(answered.max(last_rx)) >= timeout_ms).then(|| c.call_id.clone())
+        }).collect()
+    }
+
     /// Ends a call, decrementing trunk active counts.
     pub async fn end_call(&self, call_id: &str) {
         let mut i = self.inner.write().await;
+        i.media.remove(call_id);
         if let Some(c) = i.calls.remove(call_id) {
             for ep in [&c.from, &c.to] {
                 if let LegEndpoint::SipTrunk { trunk, .. } = ep {
