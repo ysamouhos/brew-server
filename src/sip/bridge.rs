@@ -323,7 +323,7 @@ impl BrewBridge {
         call_id: &str,
     ) {
         if self.app.is_blocked(issi) {
-            warn!(issi, %call_id, "SIP->Brew private: ISSI is blacklisted");
+            warn!(issi, %call_id, reason = self.app.bar_reason(issi).unwrap_or(""), "SIP->Brew private: ISSI is barred");
             let resp = self.transport.base_response_pub(req, 403, "Forbidden");
             self.transport.send_to(&resp, caller).await;
             self.transport.state.end_call(call_id).await;

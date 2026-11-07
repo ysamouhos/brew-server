@@ -1,3 +1,4 @@
+mod allowlist;
 mod aprs;
 mod blacklist;
 mod config;
@@ -37,6 +38,7 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::load(&path)?;
     let (state, aprs_rx) = AppState::new(config, std::path::PathBuf::from(&path));
     let state = Arc::new(state);
+    allowlist::log_startup(&state);
 
     // Watch the config file; when it changes, restart the whole process so the
     // new configuration takes effect from a clean state. Not with HA enabled:
@@ -88,7 +90,7 @@ async fn services(
 }
 
 /// Set by a settings write whose change is already applied live (the ISSI
-/// blacklist), so `config_watcher` leaves that one file change alone instead of
+/// blacklist or allowlist), so `config_watcher` leaves that one file change alone instead of
 /// restarting the process and dropping every call.
 pub static CONFIG_WRITE_APPLIED_LIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 

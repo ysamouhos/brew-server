@@ -303,6 +303,21 @@ issis = []
 # unblock ISSIs from their own UI. Empty = consoles can see the list but not edit it.
 console_users = []
 
+# The closed-network counterpart of the blacklist: with enabled = true only the ISSIs
+# listed may communicate through this server; any other radio is barred the same way a
+# blacklisted one is (SS-AL, LIP positions and emergency calls still pass, and it can
+# still register). Checked here for the whole network, whichever Basestation the radio
+# registers on. enabled = false (default): the list is kept but not enforced, so it can
+# be built up before the network is closed. Editable live under Settings (no restart).
+# kick_unknown = true also kicks an unlisted radio off the Basestation it registers on
+# (KickMs over the control channel, after kick_delay_ms; needs [telemetry] and
+# [control]). See docs/ISSI-Allowlist.md.
+[allowlist]
+enabled = false
+issis = []
+kick_unknown = false
+kick_delay_ms = 2000
+
 # Static FALLBACK Basestation locations for the /map dashboard page. A Basestation that
 # reports its own latitude/longitude over telemetry (and positions relayed by peer
 # servers) take precedence; this only covers Basestations that report none.

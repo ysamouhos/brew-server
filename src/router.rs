@@ -190,7 +190,7 @@ async fn handle_group_tx(state: &Arc<AppState>, source: ClientId, id: uuid::Uuid
     let CallPayload::GroupTransmission(gt) = payload else { return };
     let emergency = is_emergency_call(state, gt.source, gt.priority).await;
     if state.is_blocked(gt.source) && !emergency {
-        info!(%source, uuid=%id, src_issi=gt.source, gssi=gt.destination, "GROUP_TX from a blacklisted ISSI dropped");
+        info!(%source, uuid=%id, src_issi=gt.source, gssi=gt.destination, reason=state.bar_reason(gt.source).unwrap_or(""), "GROUP_TX from a barred ISSI dropped");
         return;
     }
     let mut inner = state.inner.write().await;
@@ -392,7 +392,7 @@ async fn handle_sds_header(state: &Arc<AppState>, source: ClientId, id: uuid::Uu
     }
     drop(inner);
     if lip_only {
-        debug!(%source, uuid=%id, source_issi, destination, "SDS involving a blacklisted ISSI held until its payload shows whether it is LIP");
+        debug!(%source, uuid=%id, source_issi, destination, "SDS involving a barred ISSI held until its payload shows whether it is LIP");
         return;
     }
     let inner = state.inner.read().await;
@@ -415,7 +415,7 @@ async fn handle_sds_transfer(state: &Arc<AppState>, source: ClientId, id: uuid::
             Some(r) if r.source_client == source && r.lip_only && !matches!(raw.get(20), Some(0x0A) | Some(0x83)));
         if blocked_payload {
             if let Some(r) = inner.sds_routes.remove(&id) {
-                info!(%source, uuid=%id, source_issi = r.source_issi, destination = r.destination, "SDS involving a blacklisted ISSI dropped (not LIP)");
+                info!(%source, uuid=%id, source_issi = r.source_issi, destination = r.destination, "SDS involving a barred ISSI dropped (not LIP)");
             }
             return;
         }
@@ -600,7 +600,8 @@ async fn handle_private_setup(state: &Arc<AppState>, source: ClientId, id: uuid:
     let barred = state.is_blocked(source_issi) || (state.is_blocked(destination) && !ambience);
     if barred && !is_emergency_call(state, source_issi, priority).await {
         drop(inner);
-        info!(%source, uuid=%id, source_issi, destination, "private SETUP_REQUEST involving a blacklisted ISSI rejected");
+        let reason = state.bar_reason(source_issi).or_else(|| state.bar_reason(destination)).unwrap_or("");
+        info!(%source, uuid=%id, source_issi, destination, reason, "private SETUP_REQUEST involving a barred ISSI rejected");
         reject_setup(state, source, id).await;
         return;
     }
@@ -1185,6 +1186,53 @@ mod forwarding_tests {
         let id3 = uuid::Uuid::new_v4();
         handle_packet(state.clone(), talker, protocol::build_group_tx(&id3, 1001, 92, 0)).await;
         assert_eq!(drain(&mut listener_rx).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_enforced_allowlist_bars_unlisted_issis_except_in_an_emergency() {
+        let state = AppState::for_test();
+        let (talker, _talker_rx) = connect(&state, ConnVersion::V0).await;
+        let (listener, mut listener_rx) = connect(&state, ConnVersion::V0).await;
+        handle_packet(state.clone(), listener, protocol::build_subscriber_message(SUB_REGISTER, 6001, &[])).await;
+        handle_packet(state.clone(), listener, protocol::build_subscriber_message(SUB_AFFILIATE, 6001, &[91])).await;
+        state.set_allowed(1001, true);
+
+        // One over on group 91 from `issi`, ended at once; what the listener received.
+        let over = |issi: u32, priority: u8| {
+            let (state, talker) = (state.clone(), talker);
+            async move {
+                let id = uuid::Uuid::new_v4();
+                handle_packet(state.clone(), talker, protocol::build_group_tx(&id, issi, 91, priority)).await;
+                handle_packet(state, talker, protocol::build_call_cause(CALL_GROUP_IDLE, &id, 0)).await;
+            }
+        };
+
+        // Not enforced yet: everyone talks.
+        over(2002, 0).await;
+        assert_eq!(drain(&mut listener_rx).len(), 2, "GROUP_TX and GROUP_IDLE");
+
+        // Enforced: the listed ISSI talks, the unlisted one is dropped, the
+        // unlisted one's emergency call still goes through.
+        state.set_allowlist_enabled(true);
+        over(1001, 0).await;
+        assert_eq!(drain(&mut listener_rx).len(), 2);
+        over(2002, 0).await;
+        assert!(drain(&mut listener_rx).is_empty());
+        over(2002, EMERGENCY_PRIORITY).await;
+        assert_eq!(drain(&mut listener_rx).len(), 2);
+
+        // A private call to a listed ISSI from an unlisted one is rejected at the caller.
+        let (caller, mut caller_rx) = connect(&state, ConnVersion::V0).await;
+        handle_packet(state.clone(), listener, protocol::build_subscriber_message(SUB_REGISTER, 1001, &[])).await;
+        let id = uuid::Uuid::new_v4();
+        handle_packet(state.clone(), caller, protocol::build_circular_call_setup(&id, 2002, 1001, 0)).await;
+        assert_eq!(drain(&mut caller_rx), vec![setup_reject(&id)]);
+        assert!(drain(&mut listener_rx).is_empty());
+
+        // The blacklist still bars a listed ISSI.
+        state.set_blocked(1001, true);
+        over(1001, 0).await;
+        assert!(drain(&mut listener_rx).is_empty());
     }
 
     #[tokio::test]

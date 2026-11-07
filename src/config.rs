@@ -46,6 +46,9 @@ pub struct Config {
     pub bts_locations: HashMap<String, BtsLocationConfig>,
     /// ISSIs barred from communicating through this server. See `BlacklistConfig`.
     pub blacklist: BlacklistConfig,
+    /// The ISSIs admitted to this network; everything else is barred. See
+    /// `AllowlistConfig`.
+    pub allowlist: AllowlistConfig,
     /// Active/standby pair: two brew-servers on one LAN sharing a virtual IP.
     /// See `ha`.
     pub ha: HaConfig,
@@ -209,6 +212,36 @@ pub struct BlacklistConfig {
     /// over their Brew link. Empty (the default): consoles can see the list
     /// but not change it.
     pub console_users: Vec<String>,
+}
+
+/// `[allowlist]`: the closed-network counterpart of the blacklist. With
+/// `enabled = true` only the ISSIs listed may communicate through this server;
+/// any other ISSI is barred exactly as a blacklisted one is (no group
+/// transmissions, no private calls, no SDS; SS-AL, LIP positions and emergency
+/// calls still pass, and it may still register so dispatch can see and reach
+/// it). The blacklist still applies on top: a listed ISSI that is also
+/// blacklisted stays barred. With `enabled = false` (the default) the list is
+/// kept but not enforced, so a network can be populated before it is closed.
+///
+/// An empty list with `enabled = true` bars every radio; the server says so at
+/// startup rather than guessing that an open network was meant.
+///
+/// Enforced here, at the server, whichever Basestation presents the radio:
+/// a Basestation's own registration checks stay local to that cell, this is the
+/// one list for the whole network. Edited live from the dashboard like the
+/// blacklist.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AllowlistConfig {
+    pub enabled: bool,
+    pub issis: Vec<u32>,
+    /// With `enabled`, also kick a radio that is not on the list off the
+    /// Basestation it registers on (`KickMs` over the control channel, as the
+    /// roaming kick does), after `kick_delay_ms`. Needs `[telemetry]` and
+    /// `[control]`. Off by default: a barred radio then stays registered but
+    /// silent, where dispatch can still see it.
+    pub kick_unknown: bool,
+    pub kick_delay_ms: u64,
 }
 
 /// One Basestation's fixed location, for the dashboard MS map. Keyed by Brew
@@ -780,6 +813,7 @@ impl Default for Config {
             sms_center: SmsCenterConfig::default(),
             bts_locations: HashMap::new(),
             blacklist: BlacklistConfig::default(),
+            allowlist: AllowlistConfig::default(),
             ha: HaConfig::default(),
             roaming: RoamingConfig::default(),
         }
