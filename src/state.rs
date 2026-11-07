@@ -21,6 +21,9 @@ pub enum ClientMode {
     #[default]
     Basestation,
     Peer,
+    /// This server's own outbound link to another Brew network (see
+    /// `netlink`): set up by this server, never by a header.
+    Network,
 }
 
 impl ClientMode {
@@ -37,6 +40,7 @@ impl ClientMode {
             ClientMode::Terminal => "Terminal",
             ClientMode::Basestation => "Basestation",
             ClientMode::Peer => "Peer",
+            ClientMode::Network => "Network",
         }
     }
 
@@ -175,6 +179,9 @@ pub struct Inner {
     /// carry them over. One per address; only an upgrade with the same
     /// `User-Agent` takes it, so another client behind the same NAT does not.
     pub discovery_hints: HashMap<std::net::IpAddr, (Instant, String, ClientMode, Option<ConnVersion>)>,
+    /// The `User-Agent` each Brew connection upgraded with (software and
+    /// version, e.g. "Bost FlowStation/v0.5.6-55a08812"), for the dashboard.
+    pub client_agents: HashMap<ClientId, String>,
     /// (call/SDS uuid, source ISSI) -> (link it was accepted from, when): drops
     /// a copy of a call or SDS that reaches this server again over another
     /// peer link (see `fedroute::is_duplicate`).
@@ -185,6 +192,24 @@ pub struct Inner {
     /// `User-Agent`): they are pushed every emergency group call, affiliated
     /// to its group or not (see `router::handle_group_tx`).
     pub consoles: HashSet<ClientId>,
+    /// Which Basestation serves which cell, from `SERVICE_BTS_INFO` (see
+    /// `carriers`).
+    pub carriers: crate::carriers::CarrierRegistry,
+    /// Handovers between Basestations waiting for the target's answer (see
+    /// `handover`).
+    pub handovers: crate::handover::Handovers,
+    /// The last cell changes of the radios (see `roaming_log`).
+    pub roaming_log: crate::roaming_log::RoamingLog,
+    /// Individual calls that can move to another Basestation with their
+    /// radio (see `call_restore`).
+    pub call_restores: crate::call_restore::CallRestores,
+    /// Running talkgroup pool calls and their legs (see `pools`).
+    pub pools: crate::pools::PoolCalls,
+    /// Links to other networks that are up: bridge slot -> connection (see
+    /// `netlink`).
+    pub netlinks: HashMap<u8, ClientId>,
+    /// Radios of other networks on this server's stations (see `visitors`).
+    pub visitors: crate::visitors::Visitors,
 }
 
 impl Inner {
@@ -328,9 +353,46 @@ pub struct AppState {
     /// edited live from the dashboard, which also writes the config file
     /// without restarting (`config` itself is a startup snapshot).
     pub blocked: std::sync::RwLock<HashSet<u32>>,
+    /// The talkgroup pools as switched right now: starts as
+    /// `[[talkgroup_pools]]`, edited live from the dashboard (see `pools`).
+    pub pools: std::sync::RwLock<Vec<crate::config::TalkgroupPoolConfig>>,
+    /// `[multi_network]` as it is right now, edited live (see `netlink`).
+    pub networks: std::sync::RwLock<crate::config::MultiNetworkConfig>,
+    /// The running links to other networks (see `netlink`).
+    pub netlinks: crate::netlink::NetLinks,
+    /// Logins as accepted right now: start as `[auth.users]`,
+    /// `[telemetry.users]` and `[control.users]`, edited live from the
+    /// dashboard (see `logins`).
+    pub logins: Logins,
+    /// `[bts_locations]` as it is right now (name = the login's info, and its
+    /// position), edited live from the Accounts page.
+    pub locations: std::sync::RwLock<HashMap<String, crate::config::BtsLocationConfig>>,
+    /// `[issi_names]` as it is right now (see `issi_names`).
+    pub issi_names: std::sync::RwLock<std::collections::BTreeMap<String, String>>,
+    /// `[gssi_names]` as it is right now (see `issi_names`).
+    pub gssi_names: std::sync::RwLock<std::collections::BTreeMap<String, String>>,
+    /// `[group_access]` as it is right now (see `group_access`).
+    pub group_access: std::sync::RwLock<std::collections::BTreeMap<String, crate::config::GroupAccessConfig>>,
     /// The ISSI allowlist as enforced right now (`[allowlist]`), edited live
     /// like `blocked`. `enabled` false: kept, not enforced.
     pub allowlist: std::sync::RwLock<Allowlist>,
+}
+
+/// Username -> password of one listener, shared with the dashboard.
+pub type Users = std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, String>>>;
+
+/// The live login lists of the Brew, telemetry and control listeners.
+pub struct Logins {
+    pub brew: Users,
+    pub telemetry: Users,
+    pub control: Users,
+}
+
+impl Logins {
+    fn from_config(cfg: &Config) -> Self {
+        let users = |u: &std::collections::HashMap<String, String>| std::sync::Arc::new(std::sync::RwLock::new(u.clone()));
+        Self { brew: users(&cfg.auth.users), telemetry: users(&cfg.telemetry.users), control: users(&cfg.control.users) }
+    }
 }
 
 /// The live `[allowlist]`: which ISSIs are admitted, and whether that is
@@ -349,6 +411,16 @@ impl Allowlist {
 }
 
 impl AppState {
+    /// May `issi` affiliate to `gssi` (`[group_access]`)?
+    pub fn group_permits(&self, gssi: u32, issi: u32) -> bool {
+        self.group_access.read().map_or(true, |g| g.get(&gssi.to_string()).is_none_or(|a| a.permits(issi)))
+    }
+
+    /// May `issi` talk on `gssi` (`[group_access]`: admitted and not RX only)?
+    pub fn group_may_talk(&self, gssi: u32, issi: u32) -> bool {
+        self.group_access.read().map_or(true, |g| g.get(&gssi.to_string()).is_none_or(|a| a.may_talk(issi)))
+    }
+
     /// Whether `issi` is barred from communicating through this server, by the
     /// blacklist or by an enforced allowlist it is not on. Every routing check
     /// asks this one question; `bar_reason` says which list it was.
@@ -418,6 +490,16 @@ impl AppState {
     pub fn config_snapshot(&self) -> Config {
         let mut cfg = self.config.clone();
         cfg.blacklist.issis = self.blocked_list();
+        if let Ok(p) = self.pools.read() { cfg.talkgroup_pools = p.clone(); }
+        if let Ok(n) = self.networks.read() { cfg.multi_network = n.clone(); }
+        if let Ok(u) = self.logins.brew.read() { cfg.auth.users = u.clone(); }
+        if let Ok(u) = self.logins.telemetry.read() { cfg.telemetry.users = u.clone(); }
+        if let Ok(u) = self.logins.control.read() { cfg.control.users = u.clone(); }
+        if let Ok(l) = self.locations.read() { cfg.bts_locations = l.clone(); }
+        if let Ok(n) = self.issi_names.read() { cfg.issi_names = n.clone(); }
+        if let Ok(n) = self.gssi_names.read() { cfg.gssi_names = n.clone(); }
+        if let Ok(g) = self.group_access.read() { cfg.group_access = g.clone(); }
+        
         let (enabled, issis) = self.allowlist_snapshot();
         cfg.allowlist.enabled = enabled;
         cfg.allowlist.issis = issis;
@@ -469,6 +551,13 @@ impl AppState {
         let (aprs_tx, aprs_rx) = mpsc::unbounded_channel();
         let sms_center = crate::sms_center::SmsCenter::open(config.sms_center.clone());
         let blocked: HashSet<u32> = config.blacklist.issis.iter().copied().collect();
+        let pools = config.talkgroup_pools.clone();
+        let networks = config.multi_network.clone();
+        let logins = Logins::from_config(&config);
+        let locations = config.bts_locations.clone();
+        let issi_names = config.issi_names.clone();
+        let gssi_names = config.gssi_names.clone();
+        let group_access = config.group_access.clone();
         let allowlist = Allowlist { enabled: config.allowlist.enabled, issis: config.allowlist.issis.iter().copied().collect() };
         let config_hash = crate::ha::config_hash(&config);
         let ha = crate::ha::HaHandle::new(&config.ha, config_hash, crate::ha::config_sections(&config, false));
@@ -486,6 +575,14 @@ impl AppState {
                 ha,
                 store,
                 blocked: std::sync::RwLock::new(blocked),
+                pools: std::sync::RwLock::new(pools),
+                networks: std::sync::RwLock::new(networks),
+                netlinks: crate::netlink::NetLinks::default(),
+                logins,
+                locations: std::sync::RwLock::new(locations),
+                issi_names: std::sync::RwLock::new(issi_names),
+                gssi_names: std::sync::RwLock::new(gssi_names),
+                group_access: std::sync::RwLock::new(group_access),
                 allowlist: std::sync::RwLock::new(allowlist),
             },
             aprs_rx,
@@ -578,11 +675,23 @@ impl AppState {
     pub async fn cleanup_client(&self, id: ClientId) {
         let mut inner = self.inner.write().await;
         inner.clients.remove(&id);
+        inner.client_agents.remove(&id);
         let negotiated = inner.fed.links.remove(&id).is_some();
         inner.fed.bts_links.remove(&id);
         inner.consoles.remove(&id);
         inner.fed.ms_links.remove(&id);
         inner.fed.em_links.remove(&id);
+        let announced_cells = inner.carriers.info(id).is_some();
+        for (key, next) in inner.carriers.remove(id) {
+            tracing::info!(gone = %id, serving = %next, carrier = key.carrier, carrier_ext = key.carrier_ext, "carrier handed back to the other Basestation announcing it");
+        }
+        if announced_cells {
+            // Its cells are offline now (or gone, without a login).
+            for (to, packet) in crate::carriers::directory_updates(&inner, None) {
+                if let Some(client) = inner.clients.get(&to) { let _ = client.tx.send(packet); }
+            }
+        }
+        crate::handover::client_gone(&mut inner, id);
 
         // Registrations: every ISSI routed over this connection, and for a
         // loop-safe link every one it offered, gets a new effective route --
@@ -664,5 +773,9 @@ impl AppState {
             self.monitor.call_ended(uuid).await;
             if let Some(bridge) = &bridge { bridge.teardown_by_brew_call(uuid).await; }
         }
+        // Its radios leave the bridged groups of other networks too, and its
+        // visitors leave their home networks.
+        crate::visitors::station_gone(self, &mut *self.inner.write().await, id);
+        crate::netlink::sync_members(self).await;
     }
 }

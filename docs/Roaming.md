@@ -43,6 +43,13 @@ is not connected on the control channel.
 
 With `kick_old_issi = 0` the behaviour is exactly as before.
 
+## Cell changes between Basestations
+
+Announced cell changes, an unannounced change during a call, the cell change
+log and individual calls that follow their radio are described in
+[Handover.md](Handover.md). The kick skips a radio whose cell change was
+prepared through the server (see there).
+
 ## Known limit
 
 The roam-back check runs just before the kick is sent. If a radio returns to
@@ -68,3 +75,10 @@ radios. Each fake Basestation answers a kick the way FlowStation does
 - *Misplaced radios*: radios missing from the Basestation they are on.
 - In the ping-pong run, exactly the kicks for B are sent (the radio is back on
   A, so the kick for A is skipped).
+
+The same simulation covers handovers (`roaming_sim_handover*`): mixed rounds
+where every other move is a handover (one kick per unannounced move, none per
+handover), a target that does not answer (timeout, then the usual kick), a
+target that is offline (no target at once, then the usual kick), and a
+handover followed straight by an unannounced move back (the fresh
+registration is never kicked).

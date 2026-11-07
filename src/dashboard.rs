@@ -20,6 +20,23 @@ use std::{collections::HashMap, sync::Arc};
 /// Server version shown under the "Live" indicator in every page header.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Server name from `[dashboard] servername`, HTML-escaped. Set once at startup,
+/// before the first page is built; pages built without it use the default.
+static SERVER_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Sets the name shown as page heading and in the browser tab titles.
+pub fn set_server_name(name: &str) {
+    let _ = SERVER_NAME.set(html_escape(name));
+}
+
+pub(crate) fn server_name() -> &'static str {
+    SERVER_NAME.get_or_init(|| html_escape(&config::DashboardConfig::default().servername))
+}
+
+pub(crate) fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
 /// Runs the monitoring dashboard on its own listener (separate from the Brew
 /// API). Gated behind optional HTTP Basic auth and optional TLS via the
 /// `[dashboard]` config section. Returns immediately if disabled.
@@ -30,72 +47,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Privileged routes -- viewing/editing server config *and* issuing
-    // Basestation control commands -- are split into their own sub-router
-    // with an extra require_admin layer, merged into the rest of the
-    // dashboard. require_basic below applies to the merged whole and runs
-    // first (authenticate, or wave through when the dashboard is open), then
-    // require_admin runs for just these routes (authorize) -- see both
-    // functions' docs. `/login` lives here too so the header Login button,
-    // which just navigates to it, triggers require_admin's auth challenge
-    // and then bounces back to wherever Login was pressed.
-    let settings_routes = Router::new()
-        .route("/login", get(login))
-        .route("/api/control/{id}", axum::routing::post(control_command))
-        .route("/settings", get(settings_page))
-        .route("/api/config/raw", get(config_raw_get).put(config_raw_put))
-        .route("/api/config/sip/full", get(sip_config_full))
-        .route("/api/config/sip/extensions/{user}", axum::routing::post(upsert_sip_extension).delete(delete_sip_extension))
-        .route("/api/config/sip/trunks/{name}", axum::routing::post(upsert_sip_trunk).delete(delete_sip_trunk))
-        .route("/api/config/sip/routes", axum::routing::post(upsert_sip_route))
-        .route("/api/config/sip/routes/{name}", axum::routing::delete(delete_sip_route))
-        .route("/api/config/bts-locations/{username}", axum::routing::post(upsert_bts_location).delete(delete_bts_location))
-        .route("/api/config/blacklist", get(blacklist_get))
-        .route("/api/config/blacklist/{issi}", axum::routing::post(blacklist_add).delete(blacklist_remove))
-        .route("/api/config/allowlist", get(allowlist_get))
-        .route("/api/config/allowlist/enabled", axum::routing::put(allowlist_set_enabled))
-        .route("/api/config/allowlist/{issi}", axum::routing::post(allowlist_add).delete(allowlist_remove))
-        .route("/api/sms-center/{id}", axum::routing::delete(sms_center_delete))
-        .route("/api/ha/active", axum::routing::post(ha_make_active))
-        .route("/api/ha/standby", axum::routing::post(ha_make_standby))
-        .route("/api/ha/persist", axum::routing::post(ha_set_persist))
-        .route("/api/ha/apply", axum::routing::post(ha_apply))
-        .route("/api/config/ha", get(ha_config_get).put(ha_config_put))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
-
-    let app = Router::new()
-        .route("/", get(index))
-        .route("/calls", get(calls_page))
-        .route("/sds", get(sds_page))
-        .route("/telemetry-sds", get(telemetry_sds_page))
-        .route("/registrations", get(registrations_page))
-        .route("/connections", get(connections_page))
-        .route("/map", get(map_page))
-        .route("/api/status", get(snapshot))
-        .route("/api/live", get(live))
-        .route("/api/telemetry", get(telemetry_snapshot))
-        .route("/api/emergencies", get(emergencies_snapshot))
-        .route("/api/rssi", get(brew_rssi_snapshot))
-        .route("/api/registrations", get(registration_log))
-        .route("/api/connections", get(connections_snapshot))
-        .route("/api/positions", get(positions_snapshot))
-        .route("/api/bts-locations", get(bts_locations_snapshot))
-        .route("/api/control", get(control_list))
-        .route("/sip", get(sip_page))
-        .route("/sip-config", get(sip_config_page))
-        .route("/api/sip", get(sip_snapshot))
-        .route("/api/sip/config", get(sip_config))
-        .route("/api/whoami", get(whoami))
-        .route("/sms-center", get(sms_center_page))
-        .route("/ha", get(ha_page))
-        .route("/api/ha", get(ha_status))
-        .route("/api/sms-center", get(sms_center_snapshot))
-        .merge(settings_routes)
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_basic))
-        // Unauthenticated liveness probe that works on both HA nodes (the
-        // Brew listener's /healthz only exists on the Active one).
-        .route("/healthz", get(dashboard_healthz))
-        .with_state(state.clone());
+    let app = app(state.clone());
 
     if cfg.tls.enabled {
         let rustls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
@@ -122,6 +74,98 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Every dashboard route with its auth layers.
+fn app(state: Arc<AppState>) -> Router {
+    // Privileged routes -- viewing/editing server config *and* issuing
+    // Basestation control commands -- are split into their own sub-router
+    // with an extra require_admin layer, merged into the rest of the
+    // dashboard. require_basic below applies to the merged whole and runs
+    // first (authenticate, or wave through when the dashboard is open), then
+    // require_admin runs for just these routes (authorize) -- see both
+    // functions' docs. `/login` lives here too so the header Login button,
+    // which just navigates to it, triggers require_admin's auth challenge
+    // and then bounces back to wherever Login was pressed.
+    let settings_routes = Router::new()
+        .route("/login", get(login))
+        .route("/api/control/{id}", axum::routing::post(control_command))
+        .route("/settings", get(settings_page))
+        .route("/api/config/raw", get(config_raw_get).put(config_raw_put))
+        .route("/api/config/sip/full", get(sip_config_full))
+        .route("/api/config/sip/extensions/{user}", axum::routing::post(upsert_sip_extension).delete(delete_sip_extension))
+        .route("/api/config/sip/trunks/{name}", axum::routing::post(upsert_sip_trunk).delete(delete_sip_trunk))
+        .route("/api/config/sip/routes", axum::routing::post(upsert_sip_route))
+        .route("/api/config/sip/routes/{name}", axum::routing::delete(delete_sip_route))
+        .route("/api/config/bts-locations/{username}", axum::routing::post(upsert_bts_location).delete(delete_bts_location))
+        .route("/api/config/blacklist", get(blacklist_get))
+        .route("/api/config/blacklist/{issi}", axum::routing::post(blacklist_add).delete(blacklist_remove))
+        .route("/api/config/allowlist", get(allowlist_get))
+        .route("/api/config/allowlist/enabled", axum::routing::put(allowlist_set_enabled))
+        .route("/api/config/allowlist/{issi}", axum::routing::post(allowlist_add).delete(allowlist_remove))
+        .route("/api/sms-center/{id}", axum::routing::delete(sms_center_delete))
+        .route("/api/dgna", axum::routing::post(crate::routing_api::dgna))
+        .route("/api/pools/save", axum::routing::post(crate::routing_api::pools_put))
+        .route("/api/networks", get(crate::routing_api::networks_get))
+        .route("/api/networks/save", axum::routing::post(crate::routing_api::networks_put))
+        .route("/api/accounts", get(crate::accounts::list).post(crate::accounts::upsert))
+        .route("/api/issi-names/set", axum::routing::post(crate::issi_names::set))
+        .route("/api/issi-names/import", axum::routing::post(crate::issi_names::import))
+        .route("/api/gssi-names/set", axum::routing::post(crate::issi_names::set_gssi))
+        .route("/api/gssi-names/import", axum::routing::post(crate::issi_names::import_gssi))
+        .route("/api/group-access/set", axum::routing::post(crate::group_access::set))
+        .route("/api/accounts/{username}", axum::routing::delete(crate::accounts::remove))
+        .route("/api/ha/active", axum::routing::post(ha_make_active))
+        .route("/api/ha/standby", axum::routing::post(ha_make_standby))
+        .route("/api/ha/persist", axum::routing::post(ha_set_persist))
+        .route("/api/ha/apply", axum::routing::post(ha_apply))
+        .route("/api/config/ha", get(ha_config_get).put(ha_config_put))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
+
+    Router::new()
+        .route("/", get(index))
+        .route("/classic", get(classic_index))
+        .route("/ui", get(crate::dashboard_ui::page))
+        .route("/api/radios", get(crate::routing_api::radios))
+        .route("/api/names", get(crate::accounts::names))
+        .route("/api/issi-names", get(crate::issi_names::list))
+        .route("/api/gssi-names", get(crate::issi_names::list_gssi))
+        .route("/api/group-access", get(crate::group_access::list))
+        .route("/api/pools", get(crate::routing_api::pools_get))
+        .route("/calls", get(calls_page))
+        .route("/sds", get(sds_page))
+        .route("/telemetry-sds", get(telemetry_sds_page))
+        .route("/registrations", get(registrations_page))
+        .route("/connections", get(connections_page))
+        .route("/map", get(map_page))
+        .route("/api/status", get(snapshot))
+        .route("/api/live", get(live))
+        .route("/api/telemetry", get(telemetry_snapshot))
+        .route("/api/emergencies", get(emergencies_snapshot))
+        .route("/api/rssi", get(brew_rssi_snapshot))
+        .route("/api/ms-cells", get(ms_cells_snapshot))
+        .route("/api/registrations", get(registration_log))
+        .route("/api/connections", get(connections_snapshot))
+        .route("/api/positions", get(positions_snapshot))
+        .route("/api/bts-locations", get(bts_locations_snapshot))
+        .route("/api/control", get(control_list))
+        .route("/sip", get(sip_page))
+        .route("/sip-config", get(sip_config_page))
+        .route("/api/sip", get(sip_snapshot))
+        .route("/api/sip/config", get(sip_config))
+        .route("/api/whoami", get(whoami))
+        .route("/sms-center", get(sms_center_page))
+        .route("/ha", get(ha_page))
+        .route("/api/ha", get(ha_status))
+        .route("/api/sms-center", get(sms_center_snapshot))
+        .merge(settings_routes)
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_basic))
+        // Unauthenticated liveness probe that works on both HA nodes (the
+        // Brew listener's /healthz only exists on the Active one).
+        .route("/healthz", get(dashboard_healthz))
+        .route("/api/login", axum::routing::post(crate::dashboard_auth::login))
+        .route("/api/logout", axum::routing::post(crate::dashboard_auth::logout))
+        .with_state(state)
+}
+
 /// HTTP Basic auth guard for every dashboard route (including the `/api/live`
 /// WebSocket upgrade, which browsers authenticate with a normal Authorization
 /// header on the handshake). No configured users means auth is disabled.
@@ -138,8 +182,17 @@ async fn require_basic(State(state): State<Arc<AppState>>, request: Request, nex
         return next.run(request).await;
     }
     let users = &cfg.users;
-    if users.is_empty() || basic_username(users, request.headers()).is_some() {
+    if users.is_empty() || dashboard_user(users, request.headers()).is_some() {
         return next.run(request).await;
+    }
+    // The new dashboard's page and `whoami` load without a login: the page
+    // then opens its own login window.
+    let path = request.uri().path();
+    if path == "/ui" || path == "/api/whoami" || (path == "/" && !cfg.legacy_ui) {
+        return next.run(request).await;
+    }
+    if crate::dashboard_auth::from_ui(request.headers()) {
+        return (StatusCode::UNAUTHORIZED, "login required").into_response();
     }
     basic_challenge(&cfg.realm)
 }
@@ -162,9 +215,10 @@ async fn require_admin(State(state): State<Arc<AppState>>, request: Request, nex
     if cfg.users.is_empty() {
         return next.run(request).await; // auth disabled: everyone is an admin
     }
-    match basic_username(&cfg.users, request.headers()) {
+    match dashboard_user(&cfg.users, request.headers()) {
         Some(user) if cfg.admins.is_empty() || cfg.admins.iter().any(|a| a == &user) => next.run(request).await,
         Some(_) => (StatusCode::FORBIDDEN, "Forbidden: this dashboard user is not listed in [dashboard].admins\n").into_response(),
+        None if crate::dashboard_auth::from_ui(request.headers()) => (StatusCode::UNAUTHORIZED, "login required").into_response(),
         None => basic_challenge(&cfg.realm),
     }
 }
@@ -189,7 +243,7 @@ async fn login(Query(q): Query<HashMap<String, String>>) -> Redirect {
 /// this is purely a UI convenience.
 async fn whoami(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Json<serde_json::Value> {
     let cfg = &state.config.dashboard;
-    let username = basic_username(&cfg.users, &headers);
+    let username = dashboard_user(&cfg.users, &headers);
     let admin = match &username {
         _ if cfg.users.is_empty() => true, // auth disabled: everyone is effectively admin
         Some(user) => cfg.admins.is_empty() || cfg.admins.iter().any(|a| a == user),
@@ -198,7 +252,16 @@ async fn whoami(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Json<
     // A Login button is useful only in open mode, when nobody is signed in
     // yet and there's actually a credential to sign in with.
     let can_login = cfg.ui.open && username.is_none() && !cfg.users.is_empty();
-    Json(serde_json::json!({ "username": username, "admin": admin, "open": cfg.ui.open, "can_login": can_login }))
+    // Closed dashboard and nobody signed in: the new dashboard shows its
+    // login window and nothing else.
+    let need_login = !cfg.ui.open && username.is_none() && !cfg.users.is_empty();
+    Json(serde_json::json!({ "username": username, "admin": admin, "open": cfg.ui.open, "can_login": can_login, "need_login": need_login }))
+}
+
+/// The signed-in dashboard user: HTTP Basic credentials, or the session
+/// cookie of the new dashboard's login window.
+fn dashboard_user(users: &HashMap<String, String>, headers: &HeaderMap) -> Option<String> {
+    basic_username(users, headers).or_else(|| crate::dashboard_auth::session_user(users, headers))
 }
 
 /// Validates the request's HTTP Basic credentials against `users` and
@@ -228,9 +291,15 @@ fn basic_challenge(realm: &str) -> Response {
 /// The main dashboard HTML with the shared stylesheet substituted in, built
 /// once on first access.
 static INDEX_HTML: std::sync::LazyLock<String> =
-    std::sync::LazyLock::new(|| HTML.replace("__STYLE__", STYLE).replace("__VERSION__", VERSION));
+    std::sync::LazyLock::new(|| HTML.replace("__STYLE__", STYLE).replace("__VERSION__", VERSION).replace("__SERVERNAME__", server_name()));
 
-pub async fn index() -> Html<&'static str> { Html(INDEX_HTML.as_str()) }
+/// `/`: the redesigned dashboard, or the classic one with `[dashboard]
+/// legacy_ui = true` (the classic one stays at `/classic`, the new one at `/ui`).
+pub async fn index(State(state): State<Arc<AppState>>) -> Response {
+    if state.config.dashboard.legacy_ui { Html(INDEX_HTML.as_str()).into_response() } else { crate::dashboard_ui::page().await.into_response() }
+}
+
+pub async fn classic_index() -> Html<&'static str> { Html(INDEX_HTML.as_str()) }
 
 /// Builds a standalone, auto-refreshing log page for one table. `endpoint` is
 /// the JSON API the page polls; `extract_js` is a JS expression that, given the
@@ -239,7 +308,7 @@ pub async fn index() -> Html<&'static str> { Html(INDEX_HTML.as_str()) }
 fn log_page(title: &str, endpoint: &str, extract_js: &str, row_js: &str, columns: &[&str], per_page: usize, empty_msg: &str) -> String {
     let headers: String = columns.iter().map(|c| format!("<th>{c}</th>")).collect();
     let colspan = columns.len();
-    format!(r#"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>{title} - TETRA Network</title>{style}</head><body><header><h1>{title}</h1><div class=hdr-status><span class=live></span><span id=status>Live</span><div class=hdr-user><span id=whoami></span><button id=login-btn onclick="doLogin()">Login</button><button id=logout-btn onclick="doLogout()">Logout</button></div><div class=ver>v{ver}</div></div></header><main class=wrap>
+    format!(r#"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>{title} - {name}</title>{style}</head><body><header><h1>{title}</h1><div class=hdr-status><span class=live></span><span id=status>Live</span><div class=hdr-user><span id=whoami></span><button id=login-btn onclick="doLogin()">Login</button><button id=logout-btn onclick="doLogout()">Logout</button></div><div class=ver>v{ver}</div></div></header><main class=wrap>
 <p><a class=backlink href="/">&larr; Back to dashboard</a></p>
 <section class=panel><table><thead><tr>{headers}</tr></thead><tbody id=log></tbody></table><div class=pager id=log-pager></div></section>
 </main><script>
@@ -270,7 +339,7 @@ function draw(){{renderPaged('log',last,x=>{row_js},{per_page},{colspan},'{empty
 async function load(){{try{{const d=await(await fetch('{endpoint}')).json();last={extract_js};draw();$('status').textContent='Live';}}catch(e){{$('status').textContent='Disconnected';}}}}
 load();setInterval(load,2000);
 </script></body></html>"#,
-        title = title, style = STYLE, ver = VERSION, headers = headers, colspan = colspan,
+        title = title, style = STYLE, ver = VERSION, name = server_name(), headers = headers, colspan = colspan,
         row_js = row_js, per_page = per_page, empty_msg = empty_msg,
         endpoint = endpoint, extract_js = extract_js,
     )
@@ -298,8 +367,8 @@ static TELEMETRY_SDS_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::ne
 static REGISTRATIONS_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| log_page(
     "Mobile Station Registrations", "/api/registrations",
     "d",
-    "`<tr><td>${dt(x.at_ms)}</td><td>${esc(x.bts)}</td><td>${x.issi}</td><td>${x.kind==='register'?'<span class=\"badge badge-reg-in\">Registered</span>':x.kind==='deregister'?'<span class=\"badge badge-reg-out\">Deregistered</span>':x.kind==='roamed'?'<span class=\"badge badge-reg-out\">Deregistered</span> <span class=muted>(roamed to other BS'+(x.roamed_to?' '+esc(x.roamed_to):'')+')</span>':'<span class=\"badge badge-reg-timeout\">Timed out</span>'}</td></tr>`",
-    &["Time", "BTS", "ISSI", "Event"], 15, "No registration events yet",
+    "`<tr><td>${dt(x.at_ms)}</td><td>${esc(x.bts)}</td><td>${x.issi}</td><td>${x.cell?esc(x.cell)+' <span class=muted>('+x.carrier+')</span>':'<span class=muted>-</span>'}</td><td>${x.kind==='register'?'<span class=\"badge badge-reg-in\">Registered</span>':x.kind==='deregister'?'<span class=\"badge badge-reg-out\">Deregistered</span>':x.kind==='roamed'?'<span class=\"badge badge-reg-out\">Deregistered</span> <span class=muted>(roamed to other BS'+(x.roamed_to?' '+esc(x.roamed_to):'')+')</span>':'<span class=\"badge badge-reg-timeout\">Timed out</span>'}</td></tr>`",
+    &["Time", "BTS", "ISSI", "Cell", "Event"], 15, "No registration events yet",
 ));
 
 static SMS_CENTER_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| log_page(
@@ -313,7 +382,7 @@ static SMS_CENTER_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|
 /// OpenStreetMap base layer using Leaflet (loaded from unpkg CDN). Positions
 /// come only from *textual* beacons; the page explains that binary LIP is not
 /// yet decoded so an empty map is not mistaken for a bug.
-static MAP_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| format!(r#"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>MS Map - TETRA Network</title>
+static MAP_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| format!(r#"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>MS Map - {name}</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 {style}
 <style>#map{{height:70vh;border:1px solid #203047;border-radius:12px}}.map-note{{font-size:12px;color:#8fa2b8;margin-top:10px}}.leaflet-popup-content{{color:#0d1826}}.emg-pin{{animation:emgpulse 1.2s ease-in-out infinite}}@keyframes emgpulse{{0%,100%{{box-shadow:0 0 0 0 rgba(229,57,53,.8)}}50%{{box-shadow:0 0 0 14px rgba(229,57,53,0)}}}}.emg-pop{{color:#c62828;font-weight:700}}</style>
@@ -387,11 +456,11 @@ async function load(){{
   }}catch(e){{}}
 }}
 load();setInterval(load,3000);
-</script></body></html>"#, style = STYLE, ver = VERSION));
+</script></body></html>"#, style = STYLE, ver = VERSION, name = server_name()));
 
 /// SIP live panel: registrations, trunks and active calls, polled from
 /// /api/sip every 2s. Renders a clear "disabled" notice when SIP is off.
-static SIP_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| format!(r#"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>SIP / VoIP - TETRA Network</title>{style}</head><body><header><h1>SIP / VoIP</h1><div class=hdr-status><span class=live></span><span id=status>Live</span><div class=hdr-user><span id=whoami></span><button id=login-btn onclick="doLogin()">Login</button><button id=logout-btn onclick="doLogout()">Logout</button></div><div class=ver>v{ver}</div></div></header><main class=wrap>
+static SIP_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| format!(r#"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>SIP / VoIP - {name}</title>{style}</head><body><header><h1>SIP / VoIP</h1><div class=hdr-status><span class=live></span><span id=status>Live</span><div class=hdr-user><span id=whoami></span><button id=login-btn onclick="doLogin()">Login</button><button id=logout-btn onclick="doLogout()">Logout</button></div><div class=ver>v{ver}</div></div></header><main class=wrap>
 <p><a class=backlink href="/">&larr; Back to dashboard</a> &nbsp;·&nbsp; <a class=backlink href="/sip-config">SIP configuration &rarr;</a></p>
 <div class=banner id=disabled-banner>SIP subsystem is disabled. Enable it in the <code>[sip]</code> section of the config file.</div>
 <section class=cards>
@@ -429,12 +498,12 @@ async function load(){{
   }}catch(e){{$('status').textContent='Disconnected';}}
 }}
 load();setInterval(load,2000);
-</script></body></html>"#, style = STYLE, ver = VERSION));
+</script></body></html>"#, style = STYLE, ver = VERSION, name = server_name()));
 
 /// SIP configuration screen: a read-only view of the provisioned extensions,
 /// trunks and voice routes from the config file, plus an inline explanation
 /// that edits are made in the TOML (which the server hot-reloads).
-static SIP_CONFIG_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| format!(r#"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>SIP Config - TETRA Network</title>{style}</head><body><header><h1>SIP CONFIGURATION</h1><div class=hdr-status><span class=live></span><span id=status>Live</span><div class=hdr-user><span id=whoami></span><button id=login-btn onclick="doLogin()">Login</button><button id=logout-btn onclick="doLogout()">Logout</button></div><div class=ver>v{ver}</div></div></header><main class=wrap>
+static SIP_CONFIG_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| format!(r#"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>SIP Config - {name}</title>{style}</head><body><header><h1>SIP CONFIGURATION</h1><div class=hdr-status><span class=live></span><span id=status>Live</span><div class=hdr-user><span id=whoami></span><button id=login-btn onclick="doLogin()">Login</button><button id=logout-btn onclick="doLogout()">Logout</button></div><div class=ver>v{ver}</div></div></header><main class=wrap>
 <p><a class=backlink href="/">&larr; Back to dashboard</a> &nbsp;·&nbsp; <a class=backlink href="/sip">SIP live panel &rarr;</a></p>
 <div class=banner id=disabled-banner>SIP subsystem is disabled. Set <code>enabled = true</code> under <code>[sip]</code>.</div>
 <section class=panel><h2>General</h2><table><tbody id=general></tbody></table>
@@ -470,19 +539,23 @@ async function load(){{
   }}catch(e){{$('status').textContent='Disconnected';}}
 }}
 load();setInterval(load,5000);
-</script></body></html>"#, style = STYLE, ver = VERSION));
+</script></body></html>"#, style = STYLE, ver = VERSION, name = server_name()));
 
 /// Live "who's connected now" page: Brew connections, registered mobile
 /// stations, and SIP registrations/trunks. Distinct from `/registrations`,
 /// which is a historical event log (registers/deregisters over time), not a
 /// current-state snapshot.
-static CONNECTIONS_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| format!(r#"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Connections - TETRA Network</title>{style}</head><body><header><h1>LIVE CONNECTIONS</h1><div class=hdr-status><span class=live></span><span id=status>Live</span><div class=hdr-user><span id=whoami></span><button id=login-btn onclick="doLogin()">Login</button><button id=logout-btn onclick="doLogout()">Logout</button></div><div class=ver>v{ver}</div></div></header><main class=wrap>
+static CONNECTIONS_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| format!(r#"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Connections - {name}</title>{style}</head><body><header><h1>LIVE CONNECTIONS</h1><div class=hdr-status><span class=live></span><span id=status>Live</span><div class=hdr-user><span id=whoami></span><button id=login-btn onclick="doLogin()">Login</button><button id=logout-btn onclick="doLogout()">Logout</button></div><div class=ver>v{ver}</div></div></header><main class=wrap>
 <p><a class=backlink href="/">&larr; Back to dashboard</a> &nbsp;·&nbsp; <a class=backlink href="/registrations">Registration event log &rarr;</a></p>
 <p class=map-note style="color:#8fa2b8;font-size:12px">Who is connected and registered right now, not a history of events. Refreshes every 5s.</p>
 
-<section class=panel><h2>Brew Connections<span class=backlink id=bc-count></span></h2><table><thead><tr><th>ID</th><th>Mode</th><th>Version</th><th>Remote address</th><th>Connected</th><th>Registered ISSIs</th></tr></thead><tbody id=brew-clients></tbody></table></section>
+<section class=panel><h2>Brew Connections<span class=backlink id=bc-count></span></h2><table><thead><tr><th>ID</th><th>Station</th><th>Mode</th><th>Version</th><th>Remote address</th><th>Connected</th><th>Registered ISSIs</th><th>Cells</th></tr></thead><tbody id=brew-clients></tbody></table></section>
 
-<section class=panel><h2>Registered Subscribers<span class=backlink id=ms-count></span></h2><table><thead><tr><th>ISSI</th><th>Registered via</th><th>Basestation</th><th>Basestation address</th><th>Groups</th></tr></thead><tbody id=mobile-stations></tbody></table></section>
+<section class=panel><h2>Cells<span class=backlink id=cell-count></span></h2><table><thead><tr><th>Cell</th><th>Carrier</th><th>Downlink</th><th>LA</th><th>MCC / MNC</th><th>Neighbours</th><th>Capabilities</th><th>Basestation address</th><th>Connected</th><th>Registered ISSIs</th></tr></thead><tbody id=cells></tbody></table><p class=map-note style="color:#8fa2b8;font-size:12px">Cells the Basestations announce (FlowStation with the <code>bts-info</code> extension). Named <i>login/cell</i>: the Brew login of the Basestation and the cell's number within it (0 = primary). On the air a cell is identified by MCC, MNC, carrier and band plan; the name is only a label here. Registered ISSIs are counted per Basestation. Neighbours are the cells a cell broadcasts, named when the server knows them; a station that went away stays listed as <i>offline</i> until it connects again (stations with a login only).</p></section>
+
+<section class=panel><h2>Registered Subscribers<span class=backlink id=ms-count></span></h2><table><thead><tr><th>ISSI</th><th>Registered via</th><th>Basestation</th><th>Cell</th><th>Basestation address</th><th>Groups</th></tr></thead><tbody id=mobile-stations></tbody></table></section>
+
+<section class=panel><h2>Cell Change Log<span class=backlink id=roam-count></span></h2><table><thead><tr><th>Time</th><th>ISSI</th><th>From</th><th>To</th><th>How</th></tr></thead><tbody id=roaming-log></tbody></table><p class=map-note style="color:#8fa2b8;font-size:12px">The last cell changes of the radios (cell reselection, TS 100 392-2 clause 18.3.4.7). When the Basestation the radio left reports it (FlowStation with the <code>ms-reselection</code> extension), the category is shown: <i>undeclared</i> = no call running, <i>unannounced</i> = left a call without telling the cell, <i>announced type 1 / 2 / 3</i> = told the cell first (U-PREPARE) and got D-NEW-CELL; <i>prepared here</i> = the target was prepared through this server. Otherwise: <i>announced</i> = announced reselection prepared through this server, <i>not announced</i> = the radio registered on another Basestation without a preparation here (any other category), <i>within station</i> = another cell of a multi-cell station. A radio only registers when it enters another location area, so moves within one location area show up only once the Basestation reports the cell. Cells show once the Basestation reports them (FlowStation with the <code>ms-cell</code> extension); otherwise only the station. Kept in memory, newest first.</p></section>
 
 <section class=panel><h2>SIP Registrations<span class=backlink id=sip-count></span></h2><div class=banner id=sip-disabled-banner>SIP subsystem is disabled.</div><table><thead><tr><th>AOR</th><th>Contact</th><th>Source</th><th>User-Agent</th><th>Registered</th><th>Expires</th><th>Auth</th></tr></thead><tbody id=sip-regs></tbody></table></section>
 
@@ -493,14 +566,29 @@ const esc=s=>String(s??'').replace(/[&<>]/g,c=>({{'&':'&amp;','<':'&lt;','>':'&g
 const yn=b=>b?'<span class="pill health-ok">yes</span>':'<span class="pill health-unknown">no</span>';
 const dt=x=>x?new Date(x).toLocaleString():'-';
 const ago=x=>{{if(!x)return '-';const s=Math.max(0,Math.floor((Date.now()-x)/1000));if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+'m ago';return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m ago';}};
+// Cells a Basestation announced (SERVICE_BTS_INFO): main carrier and location area; a carrier
+// another connection announces too is flagged, and marked standby where the other one serves it.
+const dupTag=x=>x.duplicate?` <span style="color:#e55" title="carrier announced by more than one Basestation">duplicate${{x.serving?'':', standby'}}</span>`:'';
+const cellsCell=c=>(c.cells||[]).map(x=>`${{esc(x.name)}} <span class=muted>${{x.carrier}} · LA ${{x.location_area}}</span>`+dupTag(x)).join('<br>')||'<span class=muted>-</span>';
+const mhz=hz=>hz?(hz/1e6).toFixed(5).replace(/0+$/,'').replace(/\.$/,'')+' MHz':'-';
 async function load(){{
   try{{
     const d=await(await fetch('/api/connections')).json();
     $('status').textContent='Live';
-    $('bc-count').textContent=' ('+d.brew_clients.length+')';
+    const dups=(d.duplicate_carriers||[]).length;
+    $('bc-count').textContent=' ('+d.brew_clients.length+')'+(dups?' · '+dups+' duplicate carrier'+(dups>1?'s':''):'');
     $('ms-count').textContent=' ('+d.mobile_stations.length+')';
-    $('brew-clients').innerHTML=d.brew_clients.map(c=>`<tr><td class=muted>${{esc(c.id).slice(0,8)}}</td><td>${{esc(c.mode)}}</td><td>${{c.version}}</td><td>${{esc(c.remote_addr||'-')}}</td><td>${{ago(c.connected_at_ms)}}</td><td>${{c.registered_issis}}</td></tr>`).join('')||'<tr><td colspan=6 class=muted>No Brew connections</td></tr>';
-    $('mobile-stations').innerHTML=d.mobile_stations.map(m=>`<tr><td>${{m.issi}}</td><td>${{esc(m.mode)}}</td><td class=muted>${{esc(m.basestation_id).slice(0,8)}}</td><td>${{esc(m.basestation_addr||'-')}}</td><td>${{(m.groups||[]).join(', ')||'-'}}</td></tr>`).join('')||'<tr><td colspan=5 class=muted>No registered subscribers</td></tr>';
+    $('brew-clients').innerHTML=d.brew_clients.map(c=>`<tr><td class=muted>${{esc(c.id).slice(0,8)}}</td><td>${{esc(c.station)}}</td><td>${{esc(c.mode)}}</td><td>${{c.version}}</td><td>${{esc(c.remote_addr||'-')}}</td><td>${{ago(c.connected_at_ms)}}</td><td>${{c.registered_issis}}</td><td>${{cellsCell(c)}}</td></tr>`).join('')||'<tr><td colspan=8 class=muted>No Brew connections</td></tr>';
+    $('cell-count').textContent=' ('+(d.cells||[]).length+')';
+    $('cells').innerHTML=(d.cells||[]).map(x=>`<tr${{x.online===false?' class=muted':''}}><td><b>${{esc(x.name)}}</b>${{dupTag(x)}}${{x.online===false?' <span class=muted>offline</span>':''}}</td><td>${{x.carrier}}</td><td>${{mhz(x.downlink_hz)}}</td><td>${{x.location_area}}</td><td>${{x.mcc}} / ${{x.mnc}}</td><td>${{x.neighbours?(x.neighbours.map(esc).join(', ')||'none'):'<span class=muted>-</span>'}}</td><td>${{(x.capabilities||[]).map(esc).join(', ')||'<span class=muted>-</span>'}}</td><td>${{x.online===false?'-':esc(x.remote_addr||'-')}}</td><td>${{x.online===false?(x.last_seen_ms?'gone '+ago(x.last_seen_ms):'-'):ago(x.connected_at_ms)}}</td><td>${{x.online===false?'-':x.registered_issis}}</td></tr>`).join('')||'<tr><td colspan=10 class=muted>No cells announced</td></tr>';
+    const place=p=>p.cell?`${{esc(p.cell)}} <span class=muted>(${{p.carrier}})</span>`:esc(p.station);
+    const how={{handover:'<span class="badge badge-reg-in">announced</span>',reselection:'<span class="badge badge-reg-out">not announced</span>',within_station:'<span class=badge>within station</span>'}};
+    const resel={{undeclared:['badge-reg-out','undeclared'],unannounced:['badge-reg-out','unannounced'],announced_type_1:['badge-reg-in','announced type 1'],announced_type_2:['badge-reg-in','announced type 2'],announced_type_3:['badge-reg-in','announced type 3']}};
+    const where={{handover:'prepared here',within_station:'within station'}};
+    const howOf=r=>{{const t=resel[r.reselection];if(!t)return how[r.kind]||esc(r.kind);return `<span class="badge ${{t[0]}}">${{t[1]}}</span>`+(where[r.kind]?` <span class=muted>${{where[r.kind]}}</span>`:'');}};
+    $('roam-count').textContent=' ('+(d.roaming_log||[]).length+')';
+    $('roaming-log').innerHTML=(d.roaming_log||[]).map(r=>`<tr><td>${{new Date(r.at_ms).toLocaleTimeString()}}</td><td>${{r.issi}}</td><td>${{place(r.from)}}</td><td>${{place(r.to)}}</td><td>${{howOf(r)}}</td></tr>`).join('')||'<tr><td colspan=5 class=muted>No cell changes yet</td></tr>';
+    $('mobile-stations').innerHTML=d.mobile_stations.map(m=>`<tr><td>${{m.issi}}</td><td>${{esc(m.mode)}}</td><td>${{esc(m.basestation_name||String(m.basestation_id).slice(0,8))}}</td><td>${{m.cell?`${{esc(m.cell.name)}} <span class=muted>(${{m.cell.carrier}})</span>`:'<span class=muted>-</span>'}}</td><td>${{esc(m.basestation_addr||'-')}}</td><td>${{(m.groups||[]).join(', ')||'-'}}</td></tr>`).join('')||'<tr><td colspan=6 class=muted>No registered subscribers</td></tr>';
     $('sip-disabled-banner').style.display=d.sip.enabled?'none':'block';
     $('sip-count').textContent=' ('+d.sip.registrations.length+')';
     $('sip-regs').innerHTML=d.sip.registrations.map(r=>`<tr><td>${{esc(r.aor)}}</td><td class=muted>${{esc(r.contact)}}</td><td>${{esc(r.source)}}</td><td class=muted>${{esc(r.user_agent||'-')}}</td><td>${{dt(r.registered_at_ms)}}</td><td>${{dt(r.expires_at_ms)}}</td><td>${{yn(r.authenticated)}}</td></tr>`).join('')||'<tr><td colspan=7 class=muted>No SIP registrations</td></tr>';
@@ -508,9 +596,9 @@ async function load(){{
   }}catch(e){{$('status').textContent='Disconnected';}}
 }}
 load();setInterval(load,5000);
-</script></body></html>"#, style = STYLE, ver = VERSION));
+</script></body></html>"#, style = STYLE, ver = VERSION, name = server_name()));
 
-static SETTINGS_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| format!(r#"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Settings - TETRA Network</title>{style}</head><body><header><h1>SETTINGS</h1><div class=hdr-status><span class=live></span><span id=status>Live</span><div class=hdr-user><span id=whoami></span><button id=login-btn onclick="doLogin()">Login</button><button id=logout-btn onclick="doLogout()">Logout</button></div><div class=ver>v{ver}</div></div></header><main class=wrap>
+static SETTINGS_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| format!(r#"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Settings - {name}</title>{style}</head><body><header><h1>SETTINGS</h1><div class=hdr-status><span class=live></span><span id=status>Live</span><div class=hdr-user><span id=whoami></span><button id=login-btn onclick="doLogin()">Login</button><button id=logout-btn onclick="doLogout()">Logout</button></div><div class=ver>v{ver}</div></div></header><main class=wrap>
 <p><a class=backlink href="/">&larr; Back to dashboard</a> &nbsp;·&nbsp; <a class=backlink href="/sip-config">SIP Config (read-only view) &rarr;</a></p>
 <div class=banner id=save-banner></div>
 <p class=map-note style="color:#8fa2b8;font-size:12px">Every save here writes the server's TOML config file and the process restarts within a couple seconds to apply it (the same mechanism as hand-editing the file). A brief connection drop across the restart is expected.</p>
@@ -658,7 +746,7 @@ async function saveRaw(){{
   banner(true,'Saved. Restarting to apply…');
 }}
 loadSip();loadRaw();loadBtsLocs();loadBlk();loadAl();
-</script></body></html>"#, style = STYLE, ver = VERSION));
+</script></body></html>"#, style = STYLE, ver = VERSION, name = server_name()));
 
 pub async fn calls_page() -> Html<&'static str> { Html(CALLS_HTML.as_str()) }
 pub async fn sds_page() -> Html<&'static str> { Html(SDS_HTML.as_str()) }
@@ -688,6 +776,30 @@ pub async fn telemetry_snapshot(State(state): State<Arc<AppState>>) -> Json<Vec<
 pub async fn brew_rssi_snapshot(State(state): State<Arc<AppState>>) -> Json<Vec<(u32, f32)>> {
     let t = state.telemetry.read().await;
     Json(t.brew_ms_rssi.iter().map(|(issi, dbfs)| (*issi, *dbfs)).collect())
+}
+
+/// The cell a registered subscriber is on, as its station reported it
+/// (`SERVICE_MS_CELL`): `{"name":"<login>/<cell>","cell":N,"carrier":N}`.
+fn ms_cell_json(inner: &crate::state::Inner, issi: u32, client: crate::state::ClientId) -> Option<serde_json::Value> {
+    let cell = inner.carriers.ms_cell(issi, client)?;
+    let station = crate::carriers::station_name(client, inner.clients.get(&client).and_then(|c| c.username.as_deref()));
+    Some(serde_json::json!({
+        "name": crate::carriers::cell_name(&station, cell.cell),
+        "cell": cell.cell,
+        "carrier": cell.key.carrier,
+    }))
+}
+
+/// `/api/ms-cells`: every registered subscriber whose cell is known, as
+/// `[issi, cell]` pairs (see `ms_cell_json`), for the main dashboard's
+/// subscriber list.
+pub async fn ms_cells_snapshot(State(state): State<Arc<AppState>>) -> Json<Vec<(u32, serde_json::Value)>> {
+    let inner = state.inner.read().await;
+    let mut cells: Vec<_> = inner.subscribers.iter()
+        .filter_map(|(issi, s)| ms_cell_json(&inner, *issi, s.client_id).map(|c| (*issi, c)))
+        .collect();
+    cells.sort_unstable_by_key(|(issi, _)| *issi);
+    Json(cells)
 }
 
 pub async fn registration_log(State(state): State<Arc<AppState>>) -> Json<Vec<crate::telemetry::RegLogRow>> {
@@ -782,7 +894,8 @@ pub async fn bts_locations_snapshot(
         });
     }
 
-    for (username, loc) in &state.config.bts_locations {
+    let locations = state.locations.read().map(|l| l.clone()).unwrap_or_default();
+    for (username, loc) in &locations {
         if covered.contains(username) || !crate::fedroute::valid_position(loc.lat, loc.lon) { continue; }
         let live = inner.clients.values().find(|c| c.username.as_deref() == Some(username.as_str()));
         out.push(BtsLocation {
@@ -805,18 +918,52 @@ pub async fn bts_locations_snapshot(
 /// what the main dashboard's "Registered Subscribers" panel shows), and SIP
 /// registrations/trunks. Unlike `/api/registrations` (a historical event
 /// log), this reflects only what is connected/registered at this instant.
+/// The neighbours `cell` reported, named after the directory cell they match
+/// (network, carrier, band and offset, LA; an absent LA is the reporting cell's
+/// own, TS 100 392-2 table 18.64 note 2), else `carrier N`; `None` when the
+/// station did not report its neighbours.
+fn neighbour_names(directory: &[crate::carriers::DirectoryEntry], cell: &crate::carriers::Cell) -> Option<Vec<String>> {
+    let list = cell.extra.neighbours.as_ref()?;
+    Some(list.iter().map(|n| {
+        directory.iter()
+            .filter(|e| e.cell.key.same_downlink(&crate::carriers::CarrierKey { mcc: n.mcc, mnc: n.mnc, carrier: n.carrier, carrier_ext: n.carrier_ext }))
+            .find(|e| n.location_area.unwrap_or(cell.location_area) == e.cell.location_area)
+            .map(|e| crate::carriers::cell_name(&e.station, e.cell.cell))
+            .unwrap_or_else(|| format!("carrier {}", n.carrier))
+    }).collect())
+}
+
 pub async fn connections_snapshot(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let (brew_clients, mobile_stations) = {
+    let (brew_clients, mobile_stations, cells, duplicate_carriers, handovers_pending, roaming_log) = {
         let inner = state.inner.read().await;
+        let station = |id: crate::state::ClientId| {
+            crate::carriers::station_name(id, inner.clients.get(&id).and_then(|c| c.username.as_deref()))
+        };
+        let issi_count = |id: crate::state::ClientId| inner.subscribers.values().filter(|s| s.client_id == id).count();
         let brew_clients: Vec<_> = inner.clients.iter().map(|(id, c)| {
-            let issi_count = inner.subscribers.values().filter(|s| s.client_id == *id).count();
+            let issi_count = issi_count(*id);
+            let info = inner.carriers.info(*id);
+            let cells: Vec<_> = info.map(|i| i.cells.iter().map(|cell| serde_json::json!({
+                "name": crate::carriers::cell_name(&station(*id), cell.cell),
+                "mcc": cell.key.mcc,
+                "mnc": cell.key.mnc,
+                "carrier": cell.key.carrier,
+                "carrier_ext": cell.key.carrier_ext,
+                "location_area": cell.location_area,
+                "duplicate": inner.carriers.is_duplicate(&cell.key),
+                "serving": inner.carriers.owner(&cell.key) == Some(*id),
+            })).collect()).unwrap_or_default();
             serde_json::json!({
                 "id": id.to_string(),
+                "station": station(*id),
                 "mode": c.mode.as_str(),
                 "version": c.version.as_u8(),
+                "agent": inner.client_agents.get(id),
                 "remote_addr": c.remote_addr.map(|a| a.to_string()),
                 "connected_at_ms": c.connected_at_ms,
                 "registered_issis": issi_count,
+                "cells": cells,
+                "capabilities": info.map(|i| i.capabilities.clone()).unwrap_or_default(),
             })
         }).collect();
         let mobile_stations: Vec<_> = inner.subscribers.iter()
@@ -826,11 +973,65 @@ pub async fn connections_snapshot(State(state): State<Arc<AppState>>) -> Json<se
                     "issi": issi,
                     "mode": s.mode.as_str(),
                     "basestation_id": s.client_id.to_string(),
+                    "basestation_name": station(s.client_id),
                     "basestation_addr": basestation.and_then(|c| c.remote_addr).map(|a| a.to_string()),
+                    // The cell the station reported the radio on (`SERVICE_MS_CELL`).
+                    "cell": ms_cell_json(&inner, *issi, s.client_id),
                     "groups": s.groups.iter().copied().collect::<Vec<_>>(),
                 })
             }).collect();
-        (brew_clients, mobile_stations)
+        // Every announced cell, one row each: the overview of the radio network.
+        let directory = inner.carriers.directory(station);
+        let mut cells: Vec<_> = inner.carriers.announcements().flat_map(|(id, info)| {
+            let client = inner.clients.get(&id);
+            let station = station(id);
+            let issis = issi_count(id);
+            info.cells.iter().map(move |cell| (station.clone(), cell, id, client, issis, &info.capabilities))
+        }).map(|(station, cell, id, client, issis, capabilities)| serde_json::json!({
+            "name": crate::carriers::cell_name(&station, cell.cell),
+            "station": station,
+            "cell": cell.cell,
+            "mcc": cell.key.mcc,
+            "mnc": cell.key.mnc,
+            "carrier": cell.key.carrier,
+            "carrier_ext": cell.key.carrier_ext,
+            "downlink_hz": cell.key.downlink_hz(),
+            "location_area": cell.location_area,
+            "capabilities": capabilities,
+            "basestation_id": id.to_string(),
+            "remote_addr": client.and_then(|c| c.remote_addr).map(|a| a.to_string()),
+            "connected_at_ms": client.map(|c| c.connected_at_ms),
+            "registered_issis": issis,
+            "duplicate": inner.carriers.is_duplicate(&cell.key),
+            "serving": inner.carriers.owner(&cell.key) == Some(id),
+            "online": true,
+            "rxlev_access_min_dbm": cell.extra.rxlev_access_min_dbm,
+            "ms_txpwr_max_dbm": cell.extra.ms_txpwr_max_dbm,
+            "neighbours": neighbour_names(&directory, cell),
+        })).collect();
+        // Cells of stations with a login that went away (cell directory).
+        cells.extend(directory.iter().filter(|e| e.client.is_none()).map(|e| serde_json::json!({
+            "name": crate::carriers::cell_name(&e.station, e.cell.cell),
+            "station": e.station,
+            "cell": e.cell.cell,
+            "mcc": e.cell.key.mcc,
+            "mnc": e.cell.key.mnc,
+            "carrier": e.cell.key.carrier,
+            "carrier_ext": e.cell.key.carrier_ext,
+            "downlink_hz": e.cell.key.downlink_hz(),
+            "location_area": e.cell.location_area,
+            "capabilities": [],
+            "registered_issis": 0,
+            "duplicate": false,
+            "serving": false,
+            "online": false,
+            "last_seen_ms": e.last_seen_ms,
+            "rxlev_access_min_dbm": e.cell.extra.rxlev_access_min_dbm,
+            "ms_txpwr_max_dbm": e.cell.extra.ms_txpwr_max_dbm,
+            "neighbours": neighbour_names(&directory, &e.cell),
+        })));
+        cells.sort_by(|a, b| (a["station"].as_str(), a["cell"].as_u64()).cmp(&(b["station"].as_str(), b["cell"].as_u64())));
+        (brew_clients, mobile_stations, cells, inner.carriers.duplicates(), inner.handovers.pending_count(), inner.roaming_log.newest_first())
     };
 
     let sip = match state.sip_snapshot().await {
@@ -845,6 +1046,10 @@ pub async fn connections_snapshot(State(state): State<Arc<AppState>>) -> Json<se
     Json(serde_json::json!({
         "brew_clients": brew_clients,
         "mobile_stations": mobile_stations,
+        "cells": cells,
+        "duplicate_carriers": duplicate_carriers,
+        "handovers_pending": handovers_pending,
+        "roaming_log": roaming_log,
         "sip": sip,
     }))
 }
@@ -993,7 +1198,7 @@ pub async fn config_raw_get(State(state): State<Arc<AppState>>) -> Response {
 pub async fn config_raw_put(State(state): State<Arc<AppState>>, body: String) -> Response {
     let cfg = match config::Config::parse(&body) {
         Ok(cfg) => cfg,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("invalid config: {e}")).into_response(),
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("invalid config: {e:#}")).into_response(),
     };
     match save_config(&state, &cfg).await {
         Ok(()) => Json(saved_note(&state)).into_response(),
@@ -1135,7 +1340,7 @@ pub async fn control_command(
 /// Shared CSS for the dashboard and its sub-pages, so the standalone log pages
 /// match the main dashboard exactly.
 const STYLE: &str = r#"<style>
-:root{font-family:Inter,system-ui,sans-serif;color:#e7edf5;background:#09111c}*{box-sizing:border-box}body{margin:0}header{padding:22px 28px;border-bottom:1px solid #203047;display:flex;justify-content:space-between;align-items:center}h1{font-size:20px;margin:0}.muted{color:#8fa2b8}.wrap{padding:24px;max-width:1500px;margin:auto}.cards{display:grid;grid-template-columns:repeat(6,1fr);gap:12px}.card,.panel{background:#101b2a;border:1px solid #203047;border-radius:12px}.card{padding:16px}.n{font-size:28px;font-weight:700;margin-top:6px}.panel{margin-top:16px;padding:18px}h2{font-size:14px;text-transform:uppercase;letter-spacing:.08em;color:#8fa2b8;margin:0 0 14px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border-bottom:1px solid #1c2a3c;font-size:13px}th{color:#8fa2b8}.pill{padding:3px 8px;border-radius:99px;background:#203047}.live{display:inline-block;width:8px;height:8px;border-radius:50%;background:#52d273;margin-right:7px}.hdr-status{display:flex;flex-direction:column;align-items:flex-end;gap:2px}.ver{font-size:11px;color:#8fa2b8}.hdr-user{display:flex;align-items:center;gap:8px;font-size:12px;color:#cfe0f2}#logout-btn,#login-btn{display:none;background:#203047;color:#e7edf5;border:1px solid #2c405c;border-radius:6px;padding:3px 9px;font-size:11px;cursor:pointer}#logout-btn:hover,#login-btn:hover{background:#2c405c}body.not-admin .admin-only{display:none!important}@media(max-width:900px){.cards{grid-template-columns:repeat(2,1fr)}.wrap{padding:12px}}
+:root{font-family:Inter,system-ui,sans-serif;color:#e7edf5;background:#09111c}*{box-sizing:border-box}body{margin:0}header{padding:22px 28px;border-bottom:1px solid #203047;display:flex;justify-content:space-between;align-items:center}h1{font-size:20px;margin:0}h1.srvname{text-transform:uppercase}.muted{color:#8fa2b8}.wrap{padding:24px;max-width:1500px;margin:auto}.cards{display:grid;grid-template-columns:repeat(6,1fr);gap:12px}.card,.panel{background:#101b2a;border:1px solid #203047;border-radius:12px}.card{padding:16px}.n{font-size:28px;font-weight:700;margin-top:6px}.panel{margin-top:16px;padding:18px}h2{font-size:14px;text-transform:uppercase;letter-spacing:.08em;color:#8fa2b8;margin:0 0 14px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:10px;border-bottom:1px solid #1c2a3c;font-size:13px}th{color:#8fa2b8}.pill{padding:3px 8px;border-radius:99px;background:#203047}.live{display:inline-block;width:8px;height:8px;border-radius:50%;background:#52d273;margin-right:7px}.hdr-status{display:flex;flex-direction:column;align-items:flex-end;gap:2px}.ver{font-size:11px;color:#8fa2b8}.hdr-user{display:flex;align-items:center;gap:8px;font-size:12px;color:#cfe0f2}#logout-btn,#login-btn{display:none;background:#203047;color:#e7edf5;border:1px solid #2c405c;border-radius:6px;padding:3px 9px;font-size:11px;cursor:pointer}#logout-btn:hover,#login-btn:hover{background:#2c405c}body.not-admin .admin-only{display:none!important}@media(max-width:900px){.cards{grid-template-columns:repeat(2,1fr)}.wrap{padding:12px}}
 .health-ok{background:#173822;color:#52d273}.health-degraded{background:#3a2f12;color:#e8b93d}.health-critical{background:#3a1414;color:#f2545b}.health-unknown{background:#203047;color:#8fa2b8}
 .bts-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}.bts-grid.wide{grid-template-columns:repeat(auto-fill,minmax(min(480px,100%),1fr))}.bts-card{min-width:0}.bts-card{background:#0d1826;border:1px solid #203047;border-radius:10px;padding:14px}.bts-card h3{margin:0;font-size:15px}.bts-meta{font-size:12px;margin-top:4px}.bts-card table{margin-top:10px}.bts-card th,.bts-card td{padding:6px;font-size:12px}
 .emg-ribbon{display:none;position:sticky;top:0;z-index:50;align-items:center;gap:10px;flex-wrap:wrap;background:#c62828;color:#fff;padding:10px 24px;font-weight:700;border-bottom:2px solid #ff8a80}.emg-ribbon.on{display:flex}.emg-dot{width:10px;height:10px;border-radius:50%;background:#fff;animation:emgb 1.6s ease-in-out infinite}.emg-chip{background:rgba(255,255,255,.2);border-radius:4px;padding:2px 8px;font-weight:600;font-size:13px}@keyframes emgb{50%{opacity:.3}}
@@ -1151,7 +1356,26 @@ h2 .backlink{text-transform:none;letter-spacing:normal;margin-left:8px}
 .badge{display:inline-block;padding:2px 7px;border-radius:99px;font-size:11px;font-weight:600}.badge-pos{background:#123047;color:#5cc0f2;border:1px solid #1d4a66}.badge-sds{background:#203047;color:#8fa2b8}.pos-undec{color:#8fa2b8;font-style:italic}
 .badge-reg-in{background:#173822;color:#52d273;border:1px solid #245c37}.badge-reg-out{background:#203047;color:#8fa2b8;border:1px solid #2c405c}.badge-reg-timeout{background:#3a2f12;color:#e8b93d;border:1px solid #5c4a1d}
 .ha-active{background:#173822;color:#52d273;border:1px solid #245c37}.ha-standby{background:#123047;color:#5cc0f2;border:1px solid #1d4a66}.ha-init{background:#203047;color:#8fa2b8}.ha-fault,.ha-down{background:#3a1414;color:#f2545b;border:1px solid #5c1d1d}a.ha-hdr{text-decoration:none;font-size:11px}
+/* Embedded in the new dashboard (?embed=1): no header, its colours. */
+html.embed{--e-bg:#eceff4;--e-bg2:#ffffff;--e-bg3:#f3f5f9;--e-border:#dde3ec;--e-sep:rgba(20,30,50,.09);--e-text:#16202e;--e-text2:#3d4f66;--e-text3:#5f7188;--e-accent:#00876a;--e-link:#1565c0}
+@media (prefers-color-scheme:dark){html.embed:not([data-theme=light]){--e-bg:#090d14;--e-bg2:#111824;--e-bg3:#19212f;--e-border:#232e40;--e-sep:rgba(255,255,255,.07);--e-text:#eef3fb;--e-text2:#94abc9;--e-text3:#7f93b5;--e-accent:#00d4a8;--e-link:#4da6ff}}
+html.embed[data-theme=dark]{--e-bg:#090d14;--e-bg2:#111824;--e-bg3:#19212f;--e-border:#232e40;--e-sep:rgba(255,255,255,.07);--e-text:#eef3fb;--e-text2:#94abc9;--e-text3:#7f93b5;--e-accent:#00d4a8;--e-link:#4da6ff}
+html.embed #map{height:calc(100vh - 80px)!important}
+html.embed,html.embed body{background:var(--e-bg)!important;color:var(--e-text)!important;font-family:-apple-system,BlinkMacSystemFont,Inter,'Segoe UI',system-ui,sans-serif}
+html.embed header,html.embed .backlink,html.embed p:has(> .backlink),html.embed .emg-ribbon{display:none!important}
+html.embed .wrap{padding:0 2px 24px;max-width:none}
+html.embed .panel,html.embed .card,html.embed .bts-card,html.embed .navlink{background:var(--e-bg2)!important;border-color:var(--e-border)!important;color:var(--e-text)!important;box-shadow:0 1px 3px rgba(20,30,50,.08)}
+html.embed .panel{margin-top:14px}
+html.embed h2{color:var(--e-text)!important;font-size:15px;text-transform:none;letter-spacing:0;font-weight:650}
+html.embed th{color:var(--e-text3)!important;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+html.embed th,html.embed td{border-bottom-color:var(--e-sep)!important}
+html.embed .muted,html.embed .ver,html.embed .pager{color:var(--e-text2)!important}
+html.embed a{color:var(--e-link)}
+html.embed input,html.embed select,html.embed textarea{background:var(--e-bg3)!important;color:var(--e-text)!important;border:1px solid var(--e-border)!important;border-radius:8px;padding:6px 9px;font:inherit}
+html.embed button,html.embed .pager button,html.embed .ctl-row button{background:var(--e-bg2)!important;color:var(--e-text)!important;border:1px solid var(--e-border)!important;border-radius:8px;padding:6px 12px;font-weight:600;cursor:pointer}
+html.embed .pill,html.embed .reg-issi,html.embed .cell-carrier{background:var(--e-bg3)!important;color:var(--e-text2)!important;border-color:var(--e-border)!important}
 </style><script>
+if(new URLSearchParams(location.search).has('embed')){document.documentElement.classList.add('embed');const t=new URLSearchParams(location.search).get('theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;}
 // Admin login/logout, shared by every page header. The dashboard can be
 // read-only to anonymous visitors (open mode); logging in only unlocks
 // config editing and Basestation control. doLogin() navigates to the
@@ -1182,13 +1406,13 @@ a.className='badge ha-hdr ha-'+d.role;a.textContent='HA '+d.node+': '+d.role.toU
 tick();setInterval(tick,5000);});
 </script>"#;
 
-const HTML: &str = r#"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>TETRA Network</title>__STYLE__</head><body><div class=emg-ribbon id=emergency-banner role=alert><span class=emg-dot></span><span>EMERGENCY ACTIVE</span><span id=emergency-list style="display:flex;flex-wrap:wrap;gap:8px"></span></div><header><h1>TETRA NETWORK MONITOR</h1><div class=hdr-status><span class=live></span><span id=status>Live</span><div class=hdr-user><span id=whoami></span><button id=login-btn onclick="doLogin()">Login</button><button id=logout-btn onclick="doLogout()">Logout</button></div><div class=ver>v__VERSION__</div></div></header><main class=wrap>
+const HTML: &str = r#"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>__SERVERNAME__</title>__STYLE__</head><body><div class=emg-ribbon id=emergency-banner role=alert><span class=emg-dot></span><span>EMERGENCY ACTIVE</span><span id=emergency-list style="display:flex;flex-wrap:wrap;gap:8px"></span></div><header><h1 class=srvname>__SERVERNAME__</h1><div class=hdr-status><span class=live></span><span id=status>Live</span><div class=hdr-user><span id=whoami></span><button id=login-btn onclick="doLogin()">Login</button><button id=logout-btn onclick="doLogout()">Logout</button></div><div class=ver>v__VERSION__</div></div></header><main class=wrap>
 <section class=cards><div class=card><div class=muted>Basestations</div><div class=n id=bs>-</div></div><div class=card><div class=muted>Subscribers</div><div class=n id=subs>-</div></div><div class=card><div class=muted>Groups</div><div class=n id=groups>-</div></div><div class=card><div class=muted>Active calls</div><div class=n id=active>-</div></div><div class=card><div class=muted>Total calls</div><div class=n id=calls>-</div></div><div class=card><div class=muted>SDS</div><div class=n id=sds>-</div></div></section><section class=panel><h2>Live calls</h2><table><thead><tr><th>Type</th><th>From</th><th>To</th><th>Priority</th><th>Duration</th><th>Voice frames</th><th>MS RSSI</th><th>UUID</th></tr></thead><tbody id=livecalls></tbody></table></section><section class=panel><h2>Menu</h2><div class=navlinks><a class=navlink href="/calls">Recent calls<span class=sub>Completed call history</span></a><a class=navlink href="/sds">Recent SDS<span class=sub>Short data messages</span></a><a class=navlink href="/telemetry-sds">Telemetry SDS Log<span class=sub>Per-Basestation SDS stream</span></a><a class=navlink href="/map">MS Map<span class=sub>Plot positioned mobiles</span></a><a class=navlink href="/sms-center">SMS Center<span class=sub>Messages stored for offline radios</span></a><a class=navlink href="/connections">Live Connections<span class=sub>Who's connected now: Brew, MS &amp; SIP</span></a><a class=navlink href="/sip">SIP / VoIP<span class=sub>Registrations, trunks &amp; calls</span></a><a class=navlink href="/sip-config">SIP Config<span class=sub>Extensions, trunks &amp; routes</span></a><a class=navlink href="/ha">High Availability<span class=sub>Active/standby role, VIP &amp; failover</span></a><a class=navlink id=settings-link href="/settings">Settings<span class=sub>Edit &amp; save server configuration</span></a></div></section>
 <section class=panel><h2>Basestation Telemetry</h2><div class="bts-grid wide" id=telemetry-stations></div></section>
 <section class=panel><h2>Registered Subscribers <a class=backlink href="/registrations">(view registration log &rarr;)</a></h2><div class=bts-grid id=registrations></div></section>
 <section class="panel admin-only"><h2>Basestation Control</h2><div class=bts-grid id=control-stations></div></section>
 </main><script>
-let snap=null;let tsnap=null;let brssi={};const $=id=>document.getElementById(id);const dt=x=>new Date(x).toLocaleTimeString();const dur=(a,b)=>Math.max(0,Math.floor(((b||Date.now())-a)/1000))+'s';const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+let snap=null;let tsnap=null;let brssi={};let bcell={};const $=id=>document.getElementById(id);const dt=x=>new Date(x).toLocaleTimeString();const dur=(a,b)=>Math.max(0,Math.floor(((b||Date.now())-a)/1000))+'s';const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 function render(s){snap=s;$('bs').textContent=s.connected_basestations;$('subs').textContent=s.subscribers;$('groups').textContent=s.groups;$('active').textContent=s.active_calls.length;$('calls').textContent=s.total_calls;$('sds').textContent=s.total_sds;
 // Build an ISSI -> RSSI (dBFS) lookup from the latest telemetry snapshot so each
 // live call can show its mobile station's received signal strength. RSSI is not
@@ -1278,7 +1502,10 @@ function renderTelemetry(stations){
   $('registrations').innerHTML=stations.length?stations.map(s=>{
     const issis=s.registrations_list||[];
     const cellOf={};(s.ms_cell_out||[]).forEach(([i,c])=>{cellOf[i]=c;});
-    const chips=issis.length?`<div class=reg-list>${issis.map(i=>`<span class=reg-issi>${esc(String(i))}${cellOf[i]!=null?` <span class=muted>cell ${cellOf[i]}</span>`:''}</span>`).join('')}</div>`:'<div class="bts-meta muted" style="margin-top:8px">No subscribers registered</div>';
+    // The cell from the Brew connection (name and carrier) when the station
+    // reports it, else the cell number from telemetry (multi-cell stations).
+    const cellTag=i=>bcell[i]?` <span class=muted>${esc(bcell[i].name)} &middot; ${bcell[i].carrier}</span>`:cellOf[i]!=null?` <span class=muted>cell ${cellOf[i]}</span>`:'';
+    const chips=issis.length?`<div class=reg-list>${issis.map(i=>`<span class=reg-issi>${esc(String(i))}${cellTag(i)}</span>`).join('')}</div>`:'<div class="bts-meta muted" style="margin-top:8px">No subscribers registered</div>';
     return `<div class=bts-card><div style="display:flex;justify-content:space-between;align-items:center"><h3>${esc(s.id)}</h3><span class=reg-count>${issis.length} registered</span></div>${chips}</div>`;
   }).join(''):'<div class=muted>No Basestation telemetry connections</div>';
 }
@@ -1291,6 +1518,7 @@ async function refreshEmergencies(){
   }catch(e){}
 }
 async function refreshTelemetry(){try{renderTelemetry(await(await fetch('/api/telemetry')).json())}catch(e){}}
+async function refreshMsCells(){try{const pairs=await(await fetch('/api/ms-cells')).json();bcell={};pairs.forEach(([issi,c])=>{bcell[issi]=c;});if(tsnap)renderTelemetry(tsnap);}catch(e){}}
 async function refreshBrewRssi(){try{const pairs=await(await fetch('/api/rssi')).json();brssi={};pairs.forEach(([issi,dbfs])=>{brssi[issi]=dbfs;});if(snap)render(snap);}catch(e){}}
 function ctlSafeId(id){return 'ctl_'+id.replace(/[^a-zA-Z0-9_-]/g,'_');}
 function jsq(s){return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'");}
@@ -1349,7 +1577,7 @@ function ctlSendSds(id,s){const payload=hexToBytes($(s+'_raw_hex').value);ctlSen
 function ctlAmbience(id,s,enable){const issi=Number($(s+'_al_issi').value||0);if(!issi){$(s+'_result').textContent='Enter an ISSI';return;}ctlSend(id,{action:'AmbienceListen',issi,enable},s+'_result');}
 function ctlRestart(id){if(confirm('Restart Basestation service on '+id+'? This disconnects it.'))ctlSend(id,{action:'RestartService'},null);}
 function ctlShutdown(id){if(confirm('Shutdown Basestation service on '+id+'? This stops the BTS process.'))ctlSend(id,{action:'ShutdownService'},null);}
-refresh();refreshTelemetry();refreshEmergencies();refreshControl();refreshBrewRssi();setInterval(refreshEmergencies,2000);setInterval(refresh,2000);setInterval(refreshTelemetry,2000);setInterval(refreshControl,3000);setInterval(refreshBrewRssi,5000);
+refresh();refreshTelemetry();refreshEmergencies();refreshControl();refreshBrewRssi();refreshMsCells();setInterval(refreshEmergencies,2000);setInterval(refresh,2000);setInterval(refreshTelemetry,2000);setInterval(refreshControl,3000);setInterval(refreshBrewRssi,5000);setInterval(refreshMsCells,3000);
 // Keep a live WebSocket for push updates, but never reload the page on drop:
 // a reload would wipe anything the operator is typing in the control panel.
 // Instead we reconnect in the background and fall back to the polling above.
@@ -1377,8 +1605,10 @@ pub async fn ha_status(State(state): State<Arc<AppState>>) -> Json<serde_json::V
         Ok(saved) => {
             // Setting names only, never values (this endpoint is not
             // admin-only and settings include passwords). Includes [ha].
+            // Live edits (blacklist, talkgroup pools) are applied already,
+            // so the running config is compared with them in.
             let diff = crate::ha::config_diff(
-                &crate::ha::config_sections(&state.config, true),
+                &crate::ha::config_sections(&state.config_snapshot(), true),
                 &crate::ha::config_sections(saved, true),
             );
             v["pending_changes"] = (!diff.is_empty()).into();
@@ -1484,9 +1714,9 @@ async fn dashboard_healthz(State(state): State<Arc<AppState>>) -> String {
 pub async fn ha_page() -> Html<&'static str> { Html(HA_HTML.as_str()) }
 
 static HA_HTML: std::sync::LazyLock<String> =
-    std::sync::LazyLock::new(|| HA_PAGE.replace("__STYLE__", STYLE).replace("__VERSION__", VERSION));
+    std::sync::LazyLock::new(|| HA_PAGE.replace("__STYLE__", STYLE).replace("__VERSION__", VERSION).replace("__SERVERNAME__", server_name()));
 
-const HA_PAGE: &str = r#"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>High Availability - TETRA Network</title>__STYLE__</head><body><header><h1>HIGH AVAILABILITY</h1><div class=hdr-status><span class=live></span><span id=status>Live</span><div class=hdr-user><span id=whoami></span><button id=login-btn onclick="doLogin()">Login</button><button id=logout-btn onclick="doLogout()">Logout</button></div><div class=ver>v__VERSION__</div></div></header><main class=wrap>
+const HA_PAGE: &str = r#"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>High Availability - __SERVERNAME__</title>__STYLE__</head><body><header><h1>HIGH AVAILABILITY</h1><div class=hdr-status><span class=live></span><span id=status>Live</span><div class=hdr-user><span id=whoami></span><button id=login-btn onclick="doLogin()">Login</button><button id=logout-btn onclick="doLogout()">Logout</button></div><div class=ver>v__VERSION__</div></div></header><main class=wrap>
 <p><a class=backlink href="/">&larr; Back to dashboard</a></p>
 <div class=banner id=ha-banner></div>
 <div id=ha-off class=panel style="display:none"><p class=muted>HA is not enabled on this node. Fill in the form below and set <b>enabled</b> to turn it on (the node restarts to apply it).</p></div>
@@ -1601,6 +1831,74 @@ mod tests {
     use super::*;
 
     #[test]
+    fn connections_page_shows_the_connections_before_the_cells() {
+        let at = |h: &str| CONNECTIONS_HTML.find(h).unwrap_or_else(|| panic!("{h} missing"));
+        assert!(at("<h2>Brew Connections") < at("<h2>Cells"));
+    }
+
+    #[tokio::test]
+    async fn ms_cells_lists_registered_subscribers_on_their_cell() {
+        use crate::protocol::{self, ConnVersion, SUB_REGISTER};
+        let state = AppState::for_test();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (bs, other) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        for (id, user) in [(bs, "2320997"), (other, "2320998")] {
+            state.inner.write().await.clients.insert(id, crate::state::Client {
+                tx: tx.clone(), mode: crate::state::ClientMode::Basestation, version: ConnVersion::V0,
+                version_announced: false, remote_addr: None, connected_at_ms: 0, username: Some(user.into()),
+            });
+        }
+        let packet = |p: Vec<u8>, from| crate::router::handle_packet(state.clone(), from, p);
+        packet(protocol::build_service(protocol::SERVICE_BTS_INFO,
+            r#"{"mcc":232,"mnc":5,"cells":[{"cell":0,"carrier":1528,"carrier_ext":268,"location_area":1},{"cell":3,"carrier":1530,"carrier_ext":268,"location_area":2}]}"#), bs).await;
+        for issi in [7, 8, 9] {
+            packet(protocol::build_subscriber_message(SUB_REGISTER, issi, &[]), bs).await;
+        }
+        packet(protocol::build_service(protocol::SERVICE_MS_CELL, r#"{"issi":7,"carrier":1530,"carrier_ext":268}"#), bs).await;
+        packet(protocol::build_service(protocol::SERVICE_MS_CELL, r#"{"issi":9,"carrier":1528,"carrier_ext":268}"#), bs).await;
+        // 9 moves to another station that reports no cell: its old cell no longer counts.
+        packet(protocol::build_subscriber_message(SUB_REGISTER, 9, &[]), other).await;
+        let Json(cells) = ms_cells_snapshot(State(state.clone())).await;
+        assert_eq!(cells, vec![(7, serde_json::json!({ "name": "2320997/3", "cell": 3, "carrier": 1530 }))]);
+        let h = INDEX_HTML.as_str();
+        assert!(h.contains("/api/ms-cells") && h.contains("bcell[i]"), "main page shows the cell per subscriber");
+        // 9's move is in the roaming log on the Connections page.
+        let Json(conn) = connections_snapshot(State(state.clone())).await;
+        assert_eq!(conn["roaming_log"][0]["issi"], 9);
+        assert_eq!(conn["roaming_log"][0]["kind"], "reselection");
+        assert!(conn["roaming_log"][0]["reselection"].is_null(), "the station did not say how");
+        assert_eq!(conn["roaming_log"][0]["from"]["cell"], "2320997/0");
+        assert_eq!(conn["roaming_log"][0]["to"]["station"], "2320998");
+        assert!(CONNECTIONS_HTML.contains("id=roaming-log"));
+        assert!(REGISTRATIONS_HTML.contains("<th>Cell</th>") && REGISTRATIONS_HTML.contains("x.cell"));
+    }
+
+    #[test]
+    fn server_name_is_the_heading_and_every_tab_title() {
+        let name = server_name();
+        assert_eq!(name, "Tetra Network Monitor", "default without [dashboard] servername");
+        assert!(INDEX_HTML.contains("<title>Tetra Network Monitor</title>"));
+        assert!(INDEX_HTML.contains("<h1 class=srvname>Tetra Network Monitor</h1>"));
+        for (page, html) in [
+            ("calls", CALLS_HTML.as_str()),
+            ("map", MAP_HTML.as_str()),
+            ("sip", SIP_HTML.as_str()),
+            ("sip-config", SIP_CONFIG_HTML.as_str()),
+            ("connections", CONNECTIONS_HTML.as_str()),
+            ("settings", SETTINGS_HTML.as_str()),
+            ("ha", HA_HTML.as_str()),
+        ] {
+            assert!(html.contains(" - Tetra Network Monitor</title>"), "{page}: tab title");
+            assert!(!html.contains("__SERVERNAME__") && !html.contains("TETRA Network"), "{page}: no old name");
+        }
+    }
+
+    #[test]
+    fn server_name_is_escaped() {
+        assert_eq!(html_escape(r#"A&B <x> "y""#), "A&amp;B &lt;x&gt; &quot;y&quot;");
+    }
+
+    #[test]
     fn index_has_style_and_navlinks_no_removed_tables() {
         let h = INDEX_HTML.as_str();
         assert!(!h.contains("__STYLE__"), "style placeholder must be substituted");
@@ -1683,6 +1981,83 @@ mod tests {
         let calls_script = CALLS_HTML.as_str();
         assert!(calls_script.contains("id=whoami") || calls_script.contains("id=\"whoami\""));
         assert!(calls_script.contains("doLogout()"));
+    }
+
+    #[tokio::test]
+    async fn connections_show_each_basestations_cells_and_duplicates() {
+        use crate::carriers::{BtsInfo, CarrierKey, Cell};
+        use crate::state::{Client, ClientMode};
+        let state = crate::state::AppState::for_test();
+        let cell = |carrier| Cell { key: CarrierKey { mcc: 232, mnc: 5, carrier, carrier_ext: 268 }, location_area: 7, cell: 0, ..Default::default() };
+        let (bs1, bs2, bs3) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        {
+            let mut inner = state.inner.write().await;
+            for id in [bs1, bs2, bs3] {
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                let username = (id == bs1).then(|| "2320997".to_string());
+                inner.clients.insert(id, Client { tx, mode: ClientMode::Basestation, version: crate::protocol::ConnVersion::V0, version_announced: false, remote_addr: None, connected_at_ms: 0, username });
+            }
+            inner.carriers.announce(bs1, BtsInfo { cells: vec![cell(1528), Cell { cell: 3, ..cell(1532) }], capabilities: vec![] });
+            inner.carriers.announce(bs2, BtsInfo { cells: vec![cell(1530)], capabilities: vec!["handover-v1".into()] });
+            inner.carriers.announce(bs3, BtsInfo { cells: vec![cell(1530)], capabilities: vec![] });
+        }
+        let Json(out) = connections_snapshot(State(state)).await;
+        let client = |id: uuid::Uuid| out["brew_clients"].as_array().unwrap().iter().find(|c| c["id"] == id.to_string()).unwrap().clone();
+        let one = client(bs1);
+        assert_eq!(one["cells"][0]["carrier"], 1528);
+        assert_eq!(one["cells"][0]["location_area"], 7);
+        assert_eq!(one["cells"][0]["duplicate"], false);
+        assert_eq!(client(bs2)["capabilities"][0], "handover-v1");
+        assert_eq!((client(bs2)["cells"][0]["duplicate"].clone(), client(bs2)["cells"][0]["serving"].clone()), (true.into(), false.into()));
+        assert_eq!((client(bs3)["cells"][0]["duplicate"].clone(), client(bs3)["cells"][0]["serving"].clone()), (true.into(), true.into()));
+        assert_eq!(one["station"], "2320997");
+        assert_eq!(one["cells"][1]["name"], "2320997/3");
+        // The overview: one row per cell, sorted by station and cell number.
+        let rows = out["cells"].as_array().unwrap();
+        assert_eq!(rows.len(), 4);
+        let mine: Vec<_> = rows.iter().filter(|r| r["station"] == "2320997").collect();
+        assert_eq!((mine[0]["name"].as_str(), mine[1]["name"].as_str()), (Some("2320997/0"), Some("2320997/3")));
+        assert_eq!(mine[1]["carrier"], 1532);
+        // carrier_ext 268: band 4, no offset (duplex spacing 6).
+        assert_eq!(mine[0]["downlink_hz"], 438_200_000u64);
+        assert_eq!(mine[0]["location_area"], 7);
+        let unnamed = crate::carriers::station_name(bs2, None);
+        assert!(rows.iter().any(|r| r["name"] == format!("{unnamed}/0") && r["capabilities"][0] == "handover-v1"),
+            "without a login the station is named after its connection");
+        assert_eq!(out["duplicate_carriers"].as_array().unwrap().len(), 1);
+        assert_eq!(out["duplicate_carriers"][0]["carrier"], 1530);
+    }
+
+    #[tokio::test]
+    async fn cells_overview_names_neighbours_and_keeps_offline_stations() {
+        use crate::carriers::{BtsInfo, CarrierKey, Cell, CellExtra, NeighbourRef};
+        use crate::state::{Client, ClientMode};
+        let state = AppState::for_test();
+        let (bs1, bs2) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let key = |carrier| CarrierKey { mcc: 232, mnc: 5, carrier, carrier_ext: 268 };
+        let near = |carrier| NeighbourRef { mcc: 232, mnc: 5, carrier, carrier_ext: 268, location_area: None };
+        {
+            let mut inner = state.inner.write().await;
+            for (id, login) in [(bs1, "1000001"), (bs2, "1000002")] {
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                inner.clients.insert(id, Client { tx, mode: ClientMode::Basestation, version: crate::protocol::ConnVersion::V0, version_announced: false, remote_addr: None, connected_at_ms: 0, username: Some(login.into()) });
+                inner.carriers.set_login(id, login);
+            }
+            // Without an LA a neighbour is in the reporting cell's LA (2), so the second entry is
+            // not 1000002/0 (LA 1).
+            let extra = CellExtra { neighbours: Some(vec![NeighbourRef { location_area: Some(1), ..near(1530) }, near(1530), near(1600)]), rxlev_access_min_dbm: Some(-100), ..Default::default() };
+            inner.carriers.announce(bs1, BtsInfo { cells: vec![Cell { key: key(1528), location_area: 2, cell: 0, extra }], capabilities: vec![] });
+            inner.carriers.announce(bs2, BtsInfo { cells: vec![Cell { key: key(1530), location_area: 1, cell: 0, ..Default::default() }], capabilities: vec![] });
+        }
+        state.cleanup_client(bs2).await;
+        let Json(out) = connections_snapshot(State(state)).await;
+        let rows = out["cells"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["name"], "1000001/0");
+        assert_eq!(rows[0]["neighbours"], serde_json::json!(["1000002/0", "carrier 1530", "carrier 1600"]));
+        assert_eq!(rows[0]["rxlev_access_min_dbm"], -100);
+        assert_eq!((rows[1]["name"].as_str(), rows[1]["online"].as_bool()), (Some("1000002/0"), Some(false)));
+        assert!(rows[1]["neighbours"].is_null(), "not reported");
     }
 
     #[tokio::test]
@@ -1902,6 +2277,63 @@ mod tests {
 
         let missing = login(Query(HashMap::new())).await.into_response();
         assert_eq!(loc(missing.headers()), "/");
+    }
+
+    /// One raw HTTP/1.1 request to the test server; returns the response head and body.
+    async fn http(addr: std::net::SocketAddr, req: String) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        c.write_all(req.as_bytes()).await.unwrap();
+        let mut out = String::new();
+        c.read_to_string(&mut out).await.unwrap();
+        out
+    }
+
+    #[tokio::test]
+    async fn login_window_session_works_next_to_basic_auth() {
+        let mut c = config::Config::default();
+        c.storage.enabled = false;
+        c.sms_center.enabled = false;
+        c.dashboard.users = HashMap::from([("admin".into(), "pw".into()), ("viewer".into(), "v".into())]);
+        c.dashboard.admins = vec!["admin".into()];
+        let state = Arc::new(AppState::new(c, "test.toml".into()).0);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app(state)).await.unwrap() });
+        let get = |path: &str, extra: &str| format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n{extra}\r\n");
+
+        // The new page and whoami load without a login; whoami asks for one.
+        assert!(http(addr, get("/", "")).await.starts_with("HTTP/1.1 200"));
+        let who = http(addr, get("/api/whoami", "")).await;
+        assert!(who.contains("\"need_login\":true"), "{who}");
+        // Data needs a login: the browser's dialog for classic pages, a plain 401 for the new page.
+        let classic = http(addr, get("/api/status", "")).await;
+        assert!(classic.starts_with("HTTP/1.1 401") && classic.to_lowercase().contains("www-authenticate"), "{classic}");
+        let ui = http(addr, get("/api/status", "x-brew-ui: 1\r\n")).await;
+        assert!(ui.starts_with("HTTP/1.1 401") && !ui.to_lowercase().contains("www-authenticate"), "{ui}");
+        // Basic still works.
+        let b64 = base64::engine::general_purpose::STANDARD.encode("admin:pw");
+        assert!(http(addr, get("/api/status", &format!("Authorization: Basic {b64}\r\n"))).await.starts_with("HTTP/1.1 200"));
+
+        // Wrong password: no cookie.
+        let post = |body: &str| format!("POST /api/login HTTP/1.1\r\nHost: x\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+        let bad = http(addr, post(r#"{"username":"admin","password":"no"}"#)).await;
+        assert!(bad.starts_with("HTTP/1.1 401") && !bad.to_lowercase().contains("set-cookie"), "{bad}");
+        // Viewer: signed in, but not for admin routes.
+        let cookie_of = |r: &str| r.lines().find(|l| l.to_lowercase().starts_with("set-cookie:")).unwrap()
+            .split_once(':').unwrap().1.trim().split(';').next().unwrap().to_string();
+        let v = http(addr, post(r#"{"username":"viewer","password":"v"}"#)).await;
+        let vc = cookie_of(&v);
+        assert!(http(addr, get("/api/status", &format!("Cookie: {vc}\r\nx-brew-ui: 1\r\n"))).await.starts_with("HTTP/1.1 200"));
+        assert!(http(addr, get("/api/accounts", &format!("Cookie: {vc}\r\nx-brew-ui: 1\r\n"))).await.starts_with("HTTP/1.1 403"));
+        // Admin: admin routes, then logout ends the session.
+        let a = http(addr, post(r#"{"username":"admin","password":"pw"}"#)).await;
+        assert!(a.contains("\"admin\":true"), "{a}");
+        let ac = cookie_of(&a);
+        assert!(http(addr, get("/api/accounts", &format!("Cookie: {ac}\r\nx-brew-ui: 1\r\n"))).await.starts_with("HTTP/1.1 200"));
+        let out = format!("POST /api/logout HTTP/1.1\r\nHost: x\r\nConnection: close\r\nCookie: {ac}\r\nContent-Length: 0\r\n\r\n");
+        assert!(http(addr, out).await.starts_with("HTTP/1.1 204"));
+        assert!(http(addr, get("/api/accounts", &format!("Cookie: {ac}\r\nx-brew-ui: 1\r\n"))).await.starts_with("HTTP/1.1 401"));
     }
 }
 

@@ -79,6 +79,12 @@ key_path = "/etc/ssl/brew/server.key"
 enabled = true
 listen = "0.0.0.0:9003"
 realm = "brew-server-dashboard"
+# Name of this server: main dashboard heading and the browser tab title of
+# every dashboard page.
+servername = "Tetra Network Monitor"
+# true: serve the classic dashboard at / instead of the redesigned one.
+# Both stay reachable under /classic and /ui.
+legacy_ui = false
 admins = ["admin"]
 
 [dashboard.ui]
@@ -292,6 +298,12 @@ reconnect_interval_seconds = 15
 kick_old_issi = 0
 kick_delay_ms = 2000
 
+# Announced cell changes between Basestations that offer the handover-v1
+# capability: how long the target Basestation has to answer the serving one.
+# Keep it below the Basestation's own fallback (FlowStation: 3 s).
+[handover]
+timeout_ms = 2000
+
 # ISSIs barred from communicating through this server. A listed ISSI still registers
 # (so dispatch can reach it) but cannot transmit to groups, make or receive private
 # calls, or send or receive SDS. Dispatch ambience listening (SS-AL) to it and LIP
@@ -328,6 +340,33 @@ kick_delay_ms = 2000
 name = "Athens HQ"
 lat = 37.9917
 lon = 23.7640
+
+# Names for ISSIs and groups, shown next to the number on the dashboard.
+# Edited on the dashboard's Directory page without a restart.
+# [issi_names]
+# "2320972" = "OE4SXM Sebastian"
+# [gssi_names]
+# "2321" = "District North"
+
+# Who may use a group: "allow" = only the listed ISSIs, "block" = everyone
+# but them. No entry (or an empty list) = open. rx_only = true makes radios
+# listeners (all, or only those in rx_only_issis). Edited on the Directory
+# page; Basestations with the group-access extension enforce it on the air.
+# [group_access."2321"]
+# mode = "allow"
+# issis = [2320972, 2321100]
+# rx_only = false
+# rx_only_issis = []
+
+# Talkgroup pools: a call on one group is played 1:1 on the other groups of
+# the pool. both_ways = false copies only calls on the first group. A group
+# with its own running call is joined when that over ends. Managed on the
+# dashboard's Routing page without a restart. See docs/Routing.md.
+# [[talkgroup_pools]]
+# name = "Region East"
+# enabled = true
+# both_ways = true
+# groups = [2321, 2323, 2324, 2329, 264]
 
 # See https://github.com/ysamouhos/brew-server/wiki/High-Availability.
 # Active/standby high availability: two brew-servers on the same LAN / Layer 2

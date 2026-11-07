@@ -54,6 +54,261 @@ pub struct Config {
     pub ha: HaConfig,
     /// Behaviour when a subscriber moves between Basestations. See `RoamingConfig`.
     pub roaming: RoamingConfig,
+    /// Announced cell changes between Basestations. See `HandoverConfig`.
+    pub handover: HandoverConfig,
+    /// Talkgroup pools: groups whose calls are played on the other groups of
+    /// the pool as well. Edited live from the dashboard (no restart). See
+    /// `pools`.
+    pub talkgroup_pools: Vec<TalkgroupPoolConfig>,
+    /// `[issi_names]`: ISSI -> name ("2320972" = "OE4SXM Sebastian"), shown
+    /// next to the ISSI on the dashboard. Edited live on its Directory page.
+    pub issi_names: std::collections::BTreeMap<String, String>,
+    /// `[gssi_names]`: GSSI -> name ("2321" = "District North"), shown next to the
+    /// group on the dashboard. Edited live on the same directory page.
+    pub gssi_names: std::collections::BTreeMap<String, String>,
+    /// `[group_access."GSSI"]`: which radios may use a group. No entry (or an
+    /// empty list) = open to everyone. See `group_access`.
+    pub group_access: std::collections::BTreeMap<String, GroupAccessConfig>,
+    /// `[multi_network]`: other Brew networks this server connects to itself
+    /// and bridges talkgroups with (see `netlink`). Edited live from the
+    /// dashboard (no restart).
+    #[serde(skip_serializing_if = "MultiNetworkConfig::is_unset")]
+    pub multi_network: MultiNetworkConfig,
+}
+
+/// Who may use one group: `mode = "allow"` lets only the listed ISSIs
+/// affiliate to it and talk on it, `mode = "block"` keeps the listed ISSIs
+/// out. An empty list leaves the group open. `rx_only` makes radios listeners
+/// only: all of them when `rx_only_issis` is empty, else the listed ones.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct GroupAccessConfig {
+    pub mode: GroupAccessMode,
+    pub issis: Vec<u32>,
+    pub rx_only: bool,
+    pub rx_only_issis: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum GroupAccessMode {
+    #[default]
+    Allow,
+    Block,
+}
+
+impl GroupAccessConfig {
+    /// Nothing limited: no entry needed.
+    pub fn is_open(&self) -> bool {
+        self.issis.is_empty() && !self.rx_only
+    }
+
+    /// May `issi` talk on the group (admitted and not a listener only)?
+    pub fn may_talk(&self, issi: u32) -> bool {
+        self.permits(issi) && !(self.rx_only && (self.rx_only_issis.is_empty() || self.rx_only_issis.contains(&issi)))
+    }
+
+    /// May `issi` affiliate to (and listen on) the group?
+    pub fn permits(&self, issi: u32) -> bool {
+        if self.issis.is_empty() {
+            return true;
+        }
+        let listed = self.issis.contains(&issi);
+        match self.mode {
+            GroupAccessMode::Allow => listed,
+            GroupAccessMode::Block => !listed,
+        }
+    }
+}
+
+/// Checks `[group_access]`: keys are GSSIs and the lists hold ISSIs (both 1 to
+/// 16777215).
+pub fn validate_group_access(g: &std::collections::BTreeMap<String, GroupAccessConfig>) -> Result<()> {
+    for (k, a) in g {
+        let ok = k.trim().parse::<u32>().is_ok_and(|n| (1..=0xFF_FFFF).contains(&n));
+        anyhow::ensure!(ok, "group_access: '{k}' is not a GSSI (1 to 16777215)");
+        if let Some(i) = a.issis.iter().chain(&a.rx_only_issis).find(|i| !(1..=0xFF_FFFF).contains(*i)) {
+            anyhow::bail!("group_access.{k}: {i} is not an ISSI (1 to 16777215)");
+        }
+    }
+    Ok(())
+}
+
+/// `[[talkgroup_pools]]`: a named set of groups that are switched together
+/// inside this server. A call on one group of the pool is played 1:1 on the
+/// other groups, each as an ordinary group call on its own GSSI, so the radios
+/// see nothing unusual. Only this server's own connections get the copies
+/// (federation peers do not).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct TalkgroupPoolConfig {
+    /// Name shown on the dashboard; unique among the pools.
+    pub name: String,
+    /// Switched on. An off pool is kept but does nothing.
+    pub enabled: bool,
+    /// `true`: a call on any group of the pool reaches all the others.
+    /// `false` (one way): only calls on the first group are copied, to the
+    /// rest.
+    pub both_ways: bool,
+    /// The groups (GSSI). With `both_ways = false` the first one is the source.
+    pub groups: Vec<u32>,
+    /// Groups of other networks (`[[multi_network.networks]]`) in the pool: a
+    /// bridge across networks. They come after `groups`; with
+    /// `both_ways = false` and no `groups`, the first of them is the source.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub remote: Vec<RemotePoolGroup>,
+}
+
+impl Default for TalkgroupPoolConfig {
+    fn default() -> Self {
+        Self { name: String::new(), enabled: true, both_ways: true, groups: Vec::new(), remote: Vec::new() }
+    }
+}
+
+/// One group of another network in a talkgroup pool.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct RemotePoolGroup {
+    /// `name` of the `[[multi_network.networks]]` entry.
+    pub network: String,
+    /// The group's GSSI in that network.
+    pub gssi: u32,
+}
+
+/// `[multi_network]`: this server's own network and the other Brew networks it
+/// connects to. Each other network is reached over one outbound connection in
+/// Basestation mode, so the far server needs nothing new: to it this server is
+/// one more Basestation. Credentials stay here; nothing is passed on to the
+/// stations.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct MultiNetworkConfig {
+    /// Main switch: `false` stops every link to other networks (their
+    /// settings and the pools stay). Default on.
+    pub enabled: bool,
+    /// Name of this server's own network ("this server"), for the dashboard.
+    pub name: String,
+    /// MCC/MNC of this server's own network (the MNI of the stations that
+    /// connect here). 0 = not set.
+    pub mcc: u16,
+    pub mnc: u16,
+    pub networks: Vec<NetworkConfig>,
+}
+
+impl Default for MultiNetworkConfig {
+    fn default() -> Self {
+        Self { enabled: true, name: String::new(), mcc: 0, mnc: 0, networks: Vec::new() }
+    }
+}
+
+impl MultiNetworkConfig {
+    /// Nothing configured: left out of a written config file.
+    pub fn is_unset(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// One other Brew network (`[[multi_network.networks]]`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct NetworkConfig {
+    /// Unique name; talkgroup pools refer to the network by it.
+    pub name: String,
+    /// Connect to it. An off network keeps its settings but has no link.
+    pub enabled: bool,
+    /// MCC/MNC of that network, for the dashboard. 0 = not set.
+    pub mcc: u16,
+    pub mnc: u16,
+    /// `host:port` of its Brew listener.
+    pub remote_host: String,
+    /// Discovery path there (default `/brew`).
+    pub path: String,
+    /// Brew login this server uses there (the Basestation login that network
+    /// gave out), and its password.
+    pub username: String,
+    pub password: String,
+    /// Name this server introduces itself with there (`User-Agent`), free
+    /// text, e.g. "TMO-Austria Infra 1.0". Empty: `brew-server/<version>`.
+    pub user_agent: String,
+    /// ISSI of the bridge in that network: registered there and affiliated to
+    /// the network's groups used in talkgroup pools, so its server sends
+    /// their calls here. 0: nothing is registered (only for a server that
+    /// routes groups without affiliations).
+    pub bridge_issi: u32,
+    /// Register radios there, the way a Basestation registers its radios: a
+    /// radio affiliated here to a group of a switched-on bridge pool is
+    /// registered there and affiliated to the pool's groups of that
+    /// network, and leaves them (deregistered) when it leaves here. A
+    /// talker not known that way is registered before its first over.
+    /// Off: talkers are passed through unregistered.
+    pub register_talkers: bool,
+    /// "Register all": also register there every radio of a station with
+    /// the `mni` capability or named in `export_stations`, in a bridged
+    /// group or not (needs `register_talkers`). The app and radios from
+    /// peers or other networks are never exported.
+    pub register_all: bool,
+    /// Station logins whose radios "register all" exports as well; an app
+    /// (Terminal) named by its login or its ISSI is exported too.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub export_stations: Vec<String>,
+    /// ISSIs never registered there (an ISSI that network has itself).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub never_export: Vec<u32>,
+    /// "Forward unknown targets": an individual call or SDS from a station
+    /// that nobody here takes goes once to this network (loop guard 5 s).
+    pub forward_unknown: bool,
+    pub reconnect_interval_seconds: u64,
+    /// TLS settings, as for `[[federation.peers]]`.
+    pub tls: bool,
+    pub tls_ca_path: PathBuf,
+    pub tls_server_name: String,
+    pub tls_pinned_cert_path: PathBuf,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            enabled: true,
+            mcc: 0,
+            mnc: 0,
+            remote_host: String::new(),
+            path: "/brew".into(),
+            username: String::new(),
+            password: String::new(),
+            user_agent: String::new(),
+            bridge_issi: 0,
+            register_talkers: true,
+            register_all: false,
+            export_stations: Vec::new(),
+            never_export: Vec::new(),
+            forward_unknown: false,
+            reconnect_interval_seconds: 15,
+            tls: false,
+            tls_ca_path: "/etc/ssl/certs/ca-certificates.crt".into(),
+            tls_server_name: String::new(),
+            tls_pinned_cert_path: PathBuf::new(),
+        }
+    }
+}
+
+impl NetworkConfig {
+    /// The dial settings in the shape the federation dialer takes.
+    pub fn as_peer(&self) -> FederationPeerConfig {
+        FederationPeerConfig {
+            name: self.name.clone(),
+            remote_host: self.remote_host.clone(),
+            path: self.path.clone(),
+            username: self.username.clone(),
+            password: self.password.clone(),
+            reconnect_interval_seconds: self.reconnect_interval_seconds,
+            enabled: self.enabled,
+            tls: self.tls,
+            tls_ca_path: self.tls_ca_path.clone(),
+            tls_server_name: self.tls_server_name.clone(),
+            tls_pinned_cert_path: self.tls_pinned_cert_path.clone(),
+        }
+    }
 }
 
 /// `[roaming]`: what happens when a mobile station registers on one
@@ -78,6 +333,22 @@ pub struct RoamingConfig {
 
 impl Default for RoamingConfig {
     fn default() -> Self { Self { kick_old_issi: false, kick_delay_ms: 2000 } }
+}
+
+/// `[handover]`: relaying an announced cell change (U-PREPARE) from the
+/// serving Basestation to the target one (see `handover`). Only Basestations
+/// that announced the `handover-v1` capability take part.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HandoverConfig {
+    /// How long the target Basestation has to answer before the serving one
+    /// is told "timeout". Must stay below FlowStation's own 3 s fallback for
+    /// D-NEW-CELL, so the serving cell hears the answer before giving up.
+    pub timeout_ms: u64,
+}
+
+impl Default for HandoverConfig {
+    fn default() -> Self { Self { timeout_ms: 2000 } }
 }
 
 /// Accepts `true`/`false` as well as `1`/`0` for a boolean switch.
@@ -448,8 +719,16 @@ pub struct DashboardConfig {
     /// Has no effect when `users` itself is empty (auth disabled entirely).
     pub admins: Vec<String>,
     pub realm: String,
+    /// Name of this server: the main dashboard heading and the browser tab
+    /// title of every dashboard page.
+    pub servername: String,
     /// UI behavior toggles (currently just read-only/open mode).
     pub ui: DashboardUiConfig,
+    /// Serve the classic dashboard at `/` instead of the redesigned one
+    /// (sidebar layout, light and dark following the system, Routing page).
+    /// `false` (the default) serves the new one. Both stay reachable: the
+    /// classic dashboard under `/classic`, the new one under `/ui`.
+    pub legacy_ui: bool,
     pub tls: TlsConfig,
 }
 
@@ -461,7 +740,9 @@ impl Default for DashboardConfig {
             users: HashMap::new(),
             admins: Vec::new(),
             realm: "brew-server-dashboard".into(),
+            servername: "Tetra Network Monitor".into(),
             ui: DashboardUiConfig::default(),
+            legacy_ui: false,
             tls: TlsConfig::default(),
         }
     }
@@ -816,6 +1097,12 @@ impl Default for Config {
             allowlist: AllowlistConfig::default(),
             ha: HaConfig::default(),
             roaming: RoamingConfig::default(),
+            handover: HandoverConfig::default(),
+            talkgroup_pools: Vec::new(),
+            issi_names: std::collections::BTreeMap::new(),
+            gssi_names: std::collections::BTreeMap::new(),
+            group_access: std::collections::BTreeMap::new(),
+            multi_network: MultiNetworkConfig::default(),
         }
     }
 }
@@ -882,6 +1169,7 @@ impl Config {
             .with_context(|| format!("reading {}", path.display()))?;
         let cfg: Self = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
         cfg.ha.validate()?;
+        validate_group_access(&cfg.group_access)?;
         Ok(cfg)
     }
 
@@ -891,6 +1179,7 @@ impl Config {
     pub fn parse(text: &str) -> Result<Self> {
         let cfg: Self = toml::from_str(text).context("parsing config")?;
         cfg.ha.validate()?;
+        validate_group_access(&cfg.group_access)?;
         Ok(cfg)
     }
 
@@ -1034,6 +1323,13 @@ mod roaming_config_tests {
     fn parse(toml_src: &str) -> std::result::Result<Config, toml::de::Error> { toml::from_str(toml_src) }
 
     #[test]
+    fn server_name_is_a_dashboard_setting() {
+        assert_eq!(parse("").unwrap().dashboard.servername, "Tetra Network Monitor");
+        let cfg = parse("[dashboard]\nservername = \"OE Tetra\"\n").unwrap();
+        assert_eq!(cfg.dashboard.servername, "OE Tetra");
+    }
+
+    #[test]
     fn kick_old_issi_defaults_off() {
         assert!(!parse("").unwrap().roaming.kick_old_issi);
         assert!(!parse("[roaming]\n").unwrap().roaming.kick_old_issi);
@@ -1045,5 +1341,11 @@ mod roaming_config_tests {
         assert!(!parse("[roaming]\nkick_old_issi = 0\n").unwrap().roaming.kick_old_issi);
         assert!(parse("[roaming]\nkick_old_issi = true\n").unwrap().roaming.kick_old_issi);
         assert!(parse("[roaming]\nkick_old_issi = 2\n").is_err());
+    }
+
+    #[test]
+    fn handover_timeout_defaults_below_the_basestation_fallback() {
+        assert_eq!(parse("").unwrap().handover.timeout_ms, 2000);
+        assert_eq!(parse("[handover]\ntimeout_ms = 1500\n").unwrap().handover.timeout_ms, 1500);
     }
 }

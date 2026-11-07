@@ -174,7 +174,7 @@ fn is_dispatch_console(user_agent: &str) -> bool {
     user_agent.trim_start().to_ascii_lowercase().starts_with("tetradispatch/")
 }
 
-async fn brew_discovery(
+pub(crate) async fn brew_discovery(
     State(state): State<Arc<AppState>>,
     ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     request: Request<axum::body::Body>,
@@ -300,14 +300,27 @@ async fn upgrade_from_parts(state: Arc<AppState>, parts: &mut axum::http::reques
         }
     };
     let console = parts.headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).is_some_and(is_dispatch_console);
+    // What the client says it is (FlowStation: "Bost FlowStation/v0.5.6-<hash>"),
+    // shown on the dashboard.
+    let agent = user_agent(&parts.headers).map(|a| a.chars().take(120).collect::<String>());
     match WebSocketUpgrade::from_request_parts(parts, &state).await {
         Ok(ws) => {
             let requested = parts.headers.get(header::SEC_WEBSOCKET_PROTOCOL).and_then(|v| v.to_str().ok()).unwrap_or_default();
             debug!(requested_subprotocol=requested, mode=mode.as_str(), seed_version=?seed_version.map(ConnVersion::as_u8), loop_safe=fed_neighbour.is_some(), "WebSocket upgrade request");
             let protocol = state.config.websocket_subprotocol.clone();
+            let state_mn_enabled = state.networks.read().map(|c| c.enabled && !c.networks.is_empty()).unwrap_or(false);
             let mut response = ws.protocols([protocol])
-                .on_upgrade(move |socket| client_session(state, socket, mode, seed_version, remote_addr, username, fed_neighbour, console))
+                .on_upgrade(move |socket| client_session(state, socket, mode, seed_version, remote_addr, username, fed_neighbour, console, agent))
                 .into_response();
+            if mode == ClientMode::Basestation {
+                // Tells a Basestation which Brew extensions it may use here;
+                // one that sees no such header (TetraPack, Brandmeister) sends
+                // none of them.
+                // `mni` only while Multi Network is on (its main switch).
+                let mni_on = state_mn_enabled;
+                let offer = if mni_on { format!("{}, {}", crate::carriers::EXTENSIONS, crate::visitors::CAPABILITY) } else { crate::carriers::EXTENSIONS.to_owned() };
+                if let Ok(v) = HeaderValue::from_str(&offer) { response.headers_mut().insert(crate::carriers::X_BREW_EXTENSIONS, v); }
+            }
             if fed_neighbour.is_some() {
                 // Accepting: the dialling side only switches to loop-safe mode
                 // when it sees these in the 101.
@@ -354,7 +367,7 @@ const MAX_BREW_USERNAME_DIGITS: usize = 7;
 
 /// A Brew username must be non-empty, all decimal digits, and at most
 /// `MAX_BREW_USERNAME_DIGITS` long.
-fn is_valid_brew_username(username: &str) -> bool {
+pub(crate) fn is_valid_brew_username(username: &str) -> bool {
     !username.is_empty()
         && username.len() <= MAX_BREW_USERNAME_DIGITS
         && username.bytes().all(|b| b.is_ascii_digit())
@@ -372,7 +385,7 @@ async fn verify_digest(state: &Arc<AppState>, headers: &HeaderMap, method: &str,
         warn!(username = %username, "rejecting Brew auth: username must be 1-7 digits");
         return None;
     }
-    let password = state.config.auth.users.get(username)?;
+    let password = state.logins.brew.read().ok().and_then(|u| u.get(username).cloned())?;
     let nonce = p.get("nonce")?;
     if !state.inner.read().await.digest_nonces.contains_key(nonce) { return None; }
     let realm = p.get("realm").map(String::as_str).unwrap_or("");
@@ -396,7 +409,7 @@ async fn verify_digest(state: &Arc<AppState>, headers: &HeaderMap, method: &str,
     Some(username.clone())
 }
 
-async fn client_session(state: Arc<AppState>, socket: WebSocket, mode: ClientMode, seed_version: Option<ConnVersion>, remote_addr: SocketAddr, username: Option<String>, fed_neighbour: Option<u64>, console: bool) {
+async fn client_session(state: Arc<AppState>, socket: WebSocket, mode: ClientMode, seed_version: Option<ConnVersion>, remote_addr: SocketAddr, username: Option<String>, fed_neighbour: Option<u64>, console: bool, agent: Option<String>) {
     let id = Uuid::new_v4();
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -411,6 +424,9 @@ async fn client_session(state: Arc<AppState>, socket: WebSocket, mode: ClientMod
     crate::federation::attach_client(&state, id, client, fed_neighbour).await;
     if console {
         state.inner.write().await.consoles.insert(id);
+    }
+    if let Some(agent) = agent {
+        state.inner.write().await.client_agents.insert(id, agent);
     }
     info!(%id, console, mode=mode.as_str(), version=version.as_u8(), version_announced=seed_version.is_some(), %remote_addr, username=username.as_deref().unwrap_or(""),
         loop_safe_neighbour=fed_neighbour.map(fedroute::format_server_id).unwrap_or_default(), "Basestation connected");
@@ -580,6 +596,33 @@ mod tests {
         assert!(err.to_string().contains("409"), "{err}");
     }
 
+    #[tokio::test]
+    async fn basestation_upgrade_offers_the_brew_extensions() {
+        use super::{brew_discovery, get, AppState, SocketAddr};
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let state = AppState::for_test();
+        let app = axum::Router::new().route("/brew", get(brew_discovery)).with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await
+        });
+        let upgrade = |mode: Option<&'static str>| {
+            let mut request = format!("ws://{addr}/brew").into_client_request().unwrap();
+            if let Some(mode) = mode { request.headers_mut().insert("X-Brew-Mode", mode.parse().unwrap()); }
+            tokio_tungstenite::connect_async(request)
+        };
+
+        // FlowStation upgrades without any X-Brew header: a Basestation.
+        let (_bs, resp) = upgrade(None).await.unwrap();
+        assert_eq!(resp.headers()["X-Brew-Extensions"], "bts-info, handover-v1, ms-cell, ms-moved, ms-reselection, call-restore, call-handoff, cell-directory, group-access, issi-check");
+        let (_peer, resp) = upgrade(Some("Peer")).await.unwrap();
+        assert!(!resp.headers().contains_key("X-Brew-Extensions"));
+        let (_terminal, resp) = upgrade(Some("Terminal")).await.unwrap();
+        assert!(!resp.headers().contains_key("X-Brew-Extensions"));
+    }
+
     #[test]
     fn dispatch_console_is_recognised_by_its_user_agent() {
         assert!(super::is_dispatch_console("TetraDispatch/1.0.0"));
@@ -609,7 +652,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_silent_connection_is_dropped_and_one_that_answers_pings_is_kept() {
+    async fn silent_connections_are_dropped_but_answering_ones_stay() {
         use super::{brew_discovery, get, AppState, Arc, SocketAddr};
         use futures_util::StreamExt;
         use std::time::Duration;
@@ -628,18 +671,15 @@ mod tests {
             axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await
         });
 
-        // Every connection is pinged (since 1.17.0), whatever its mode. The
-        // peer is never read from, so it never answers a ping; the Basestation
-        // is read in the background, which is what makes tungstenite answer
-        // them, as a live stack does.
+        // The peer and the first Basestation are never read from, so neither
+        // answers a ping. The second Basestation is read, and the client stack
+        // answers pings on its own.
         let mut peer_request = format!("ws://{addr}/brew").into_client_request().unwrap();
         peer_request.headers_mut().insert("X-Brew-Mode", "Peer".parse().unwrap());
         let (_peer, _) = tokio_tungstenite::connect_async(peer_request).await.unwrap();
-        let (basestation, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/brew")).await.unwrap();
-        tokio::spawn(async move {
-            let (_tx, mut rx) = basestation.split();
-            while rx.next().await.is_some() {}
-        });
+        let (_silent, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/brew")).await.unwrap();
+        let (mut answering, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/brew")).await.unwrap();
+        tokio::spawn(async move { while answering.next().await.is_some() {} });
 
         let modes = || async {
             state.inner.read().await.clients.values().map(|c| c.mode).collect::<Vec<_>>()
@@ -650,12 +690,11 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         };
-        wait_for(2, Duration::from_secs(2)).await;
-        assert_eq!(modes().await.len(), 2, "both connections registered");
+        wait_for(3, Duration::from_secs(2)).await;
+        assert_eq!(modes().await.len(), 3, "all connections registered");
         wait_for(1, Duration::from_secs(6)).await;
-        // Margin: a Basestation that was being timed out regardless of its
-        // pongs would go at the same time as the peer.
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        // Margin: had the answering one been timed out too, it would go now.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
         assert_eq!(modes().await, vec![ClientMode::Basestation]);
     }
 
@@ -695,10 +734,15 @@ mod tests {
                     if !clients.is_empty() || tokio::time::Instant::now() >= deadline { break clients; }
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 };
+                // The software it named itself with is kept for the dashboard...
+                let agents: Vec<String> = state.inner.read().await.client_agents.values().cloned().collect();
+                assert_eq!(agents, agent.map(|a| vec![a.to_string()]).unwrap_or_default());
                 drop(ws);
                 tokio::time::timeout(Duration::from_secs(5), async {
                     while !state.inner.read().await.clients.is_empty() { tokio::time::sleep(Duration::from_millis(20)).await; }
                 }).await.expect("closed connection cleaned up");
+                // ...and goes with the connection.
+                assert!(state.inner.read().await.client_agents.is_empty());
                 registered
             }
         };

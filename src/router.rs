@@ -176,6 +176,44 @@ pub async fn handle_packet(state: Arc<AppState>, source: ClientId, raw: Vec<u8>)
         BrewMessage::Service(svc) if svc.service_type == protocol::SERVICE_BLACKLIST_CMD => {
             crate::blacklist::handle_command(&state, source, &svc.json_data).await;
         }
+        BrewMessage::Service(svc) if svc.service_type == protocol::SERVICE_MS_NETWORK => {
+            crate::visitors::handle_ms_network(&state, source, &svc.json_data).await;
+        }
+        BrewMessage::Service(svc) if svc.service_type == protocol::SERVICE_GROUP_NETWORK => {
+            crate::visitors::handle_group_network(&state, source, &svc.json_data).await;
+        }
+        BrewMessage::Service(svc) if svc.service_type == protocol::SERVICE_CALL_NETWORK => {
+            crate::visitors::handle_call_network(&state, source, &svc.json_data).await;
+        }
+        BrewMessage::Service(svc) if svc.service_type == protocol::SERVICE_ISSI_CHECK => {
+            crate::netlink::handle_issi_check(&state, source, &svc.json_data).await;
+        }
+        BrewMessage::Service(svc) if svc.service_type == protocol::SERVICE_BTS_INFO => {
+            crate::carriers::handle_bts_info(&state, source, &svc.json_data).await;
+        }
+        BrewMessage::Service(svc)
+            if svc.service_type == protocol::SERVICE_HO_PREPARE || svc.service_type == protocol::SERVICE_HO_FORWARD_REG =>
+        {
+            crate::handover::handle_request(&state, source, svc.service_type, &svc.json_data).await;
+        }
+        BrewMessage::Service(svc) if svc.service_type == protocol::SERVICE_HO_RESULT => {
+            crate::handover::handle_result(&state, source, &svc.json_data).await;
+        }
+        BrewMessage::Service(svc) if svc.service_type == protocol::SERVICE_MS_CELL => {
+            crate::carriers::handle_ms_cell(&state, source, &svc.json_data).await;
+        }
+        BrewMessage::Service(svc) if svc.service_type == protocol::SERVICE_MS_RESELECTION => {
+            crate::roaming_log::handle_reselection(&state, source, &svc.json_data).await;
+        }
+        BrewMessage::Service(svc) if svc.service_type == protocol::SERVICE_CALL_RESTORE => {
+            crate::call_restore::handle_request(&state, source, &svc.json_data).await;
+        }
+        BrewMessage::Service(svc) if svc.service_type == protocol::SERVICE_CALL_NOT_RESTORED => {
+            crate::call_restore::handle_not_restored(&state, source, &svc.json_data).await;
+        }
+        BrewMessage::Service(svc) if svc.service_type == protocol::SERVICE_CALL_HANDOFF => {
+            crate::call_restore::handle_handoff(&state, source, &svc.json_data).await;
+        }
         BrewMessage::Service(svc) => {
             debug!(%source, service_type = svc.service_type, json = %svc.json_data, "service message ignored");
         }
@@ -186,14 +224,36 @@ pub async fn handle_packet(state: Arc<AppState>, source: ClientId, raw: Vec<u8>)
     }
 }
 
-async fn handle_group_tx(state: &Arc<AppState>, source: ClientId, id: uuid::Uuid, payload: CallPayload, raw: Vec<u8>) {
-    let CallPayload::GroupTransmission(gt) = payload else { return };
+async fn handle_group_tx(state: &Arc<AppState>, source: ClientId, id: uuid::Uuid, payload: CallPayload, mut raw: Vec<u8>) {
+    let CallPayload::GroupTransmission(mut gt) = payload else { return };
+    // A visitor's call on a group of its home network (`SERVICE_CALL_NETWORK`
+    // before it): routed as that network's group (an alias).
+    let visitor_call = {
+        let mut inner = state.inner.write().await;
+        crate::visitors::call_alias(&mut inner, source, id)
+    };
+    if let Some(a) = visitor_call {
+        gt.destination = a;
+        if raw.len() >= 26 { raw[22..26].copy_from_slice(&a.to_le_bytes()); }
+    }
+    let visitor_call = visitor_call.is_some();
     let emergency = is_emergency_call(state, gt.source, gt.priority).await;
     if state.is_blocked(gt.source) && !emergency {
         info!(%source, uuid=%id, src_issi=gt.source, gssi=gt.destination, reason=state.bar_reason(gt.source).unwrap_or(""), "GROUP_TX from a barred ISSI dropped");
         return;
     }
+    if !state.group_may_talk(gt.destination, gt.source) && !emergency {
+        info!(%source, uuid=%id, src_issi=gt.source, gssi=gt.destination, "GROUP_TX from an ISSI that may not talk on the group dropped (group_access)");
+        return;
+    }
     let mut inner = state.inner.write().await;
+    // A group of another network (an alias, see `netlink`) is only ever
+    // started by that network's own link; nothing else may send into it.
+    let bridged = crate::netlink::split_alias(gt.destination).is_some();
+    if bridged && !visitor_call && crate::netlink::link_for(&inner, gt.destination) != Some(source) {
+        warn!(%source, uuid=%id, src_issi=gt.source, gssi=gt.destination, "GROUP_TX on another network's group from a connection that is not its link dropped");
+        return;
+    }
     let now = Instant::now();
     // The same transmission reaching us again over another peer link (a ring,
     // a mesh, a redundant link): drop it before it can pre-empt or take over
@@ -240,8 +300,17 @@ async fn handle_group_tx(state: &Arc<AppState>, source: ClientId, id: uuid::Uuid
         }
     }
 
-    let mut targets = if state.config.route_without_affiliations {
-        inner.clients.keys().copied().collect::<HashSet<_>>()
+    // A call on another network's group reaches this server's stations
+    // only through the legs of its pools and where a visitor from that
+    // network is in the group; a visitor's call goes to its home network.
+    let mut targets = if bridged {
+        let mut t = crate::visitors::targets(&inner, gt.destination);
+        if visitor_call { t.extend(crate::netlink::link_for(&inner, gt.destination)); }
+        t
+    } else if state.config.route_without_affiliations {
+        let mut t = inner.clients.keys().copied().filter(|c| !crate::visitors::other_network_station(state, &inner, *c)).collect::<HashSet<_>>();
+        t.extend(inner.group_clients.get(&gt.destination).into_iter().flatten().copied());
+        t
     } else {
         inner.group_clients.get(&gt.destination).cloned().unwrap_or_default()
     };
@@ -253,10 +322,12 @@ async fn handle_group_tx(state: &Arc<AppState>, source: ClientId, id: uuid::Uuid
     // explicit fallback to every other connected BS. Once affiliations exist, the
     // normal selective routing above is used.
     if targets.is_empty()
+        && !bridged
         && !state.config.route_without_affiliations
         && state.config.fallback_broadcast_when_no_affiliations
     {
-        targets = inner.clients.keys().copied().collect::<HashSet<_>>();
+        // Not to stations of another network (see `other_network_station`).
+        targets = inner.clients.keys().copied().filter(|c| !crate::visitors::other_network_station(state, &inner, *c)).collect::<HashSet<_>>();
         warn!(
             %source,
             gssi = gt.destination,
@@ -282,6 +353,10 @@ async fn handle_group_tx(state: &Arc<AppState>, source: ClientId, id: uuid::Uuid
         targets.extend(inner.clients.iter().filter(|(_, c)| c.mode == ClientMode::Peer).map(|(id, _)| *id));
     }
     targets.remove(&source);
+    // A link to another network only carries the calls of its bridged
+    // groups (pool legs), never this server's own group calls.
+    let home_link = if visitor_call { crate::netlink::link_for(&inner, gt.destination) } else { None };
+    targets.retain(|c| Some(*c) == home_link || inner.clients.get(c).is_none_or(|c| c.mode != ClientMode::Network));
     inner.group_floor.insert(gt.destination, id);
     inner.calls.insert(id, ActiveCall {
         kind: CallKind::Group,
@@ -307,11 +382,16 @@ async fn handle_group_tx(state: &Arc<AppState>, source: ClientId, id: uuid::Uuid
     let raised = (emergency && gt.priority < EMERGENCY_PRIORITY).then(|| with_emergency_priority(&raw));
     let txs = targets.iter().filter_map(|cid| inner.clients.get(cid).map(|c| {
         let raise = raised.is_some() && (inner.consoles.contains(cid) || c.mode == ClientMode::Peer);
-        (c.tx.clone(), c.forward_version(), raise)
+        (c.tx.clone(), c.forward_version(), raise, c.mode == ClientMode::Network)
     })).collect::<Vec<_>>();
     drop(inner);
-    for (tx, version, raise) in txs {
+    for (tx, version, raise, link) in txs {
         let packet = if raise { raised.as_deref().unwrap_or(&raw) } else { &raw };
+        if bridged && !link {
+            // A station: the group's own GSSI, with its network before it.
+            for p in crate::visitors::for_station(state, packet) { let _ = tx.send(protocol::adapt_to_version(&p, version).into_owned()); }
+            continue;
+        }
         let _ = tx.send(protocol::adapt_to_version(packet, version).into_owned());
     }
     if let Some(old) = preempted {
@@ -323,8 +403,15 @@ async fn handle_group_tx(state: &Arc<AppState>, source: ClientId, id: uuid::Uuid
         }
     }
     state.monitor.call_started(id, "group", gt.source, gt.destination, if emergency { gt.priority.max(EMERGENCY_PRIORITY) } else { gt.priority }).await;
+    crate::netlink::note_call(state, id).await;
     info!(%source, uuid=%id, src_issi=gt.source, gssi=gt.destination, priority=gt.priority,
         target_count=targets.len(), "routed GROUP_TX");
+    // Talkgroup pools: the call is played on the pool's other groups too.
+    // Not for a call a federation peer brought in: its server has the pools.
+    if !is_peer(&*state.inner.read().await, source) {
+        crate::pools::on_group_tx(state, source, id, gt.source, gt.destination,
+            if emergency { gt.priority.max(EMERGENCY_PRIORITY) } else { gt.priority }).await;
+    }
 }
 
 /// Relays a position decoded here to the peers -- unless it came out of an SDS
@@ -366,9 +453,29 @@ async fn handle_sds_header(state: &Arc<AppState>, source: ClientId, id: uuid::Uu
     }
     let mut inner = state.inner.write().await;
     let mut targets = HashSet::new();
-    if let Some(sub) = inner.subscribers.get(&destination) { targets.insert(sub.client_id); }
-    if let Some(group_targets) = inner.group_clients.get(&destination) { targets.extend(group_targets.iter().copied()); }
+    // Multi Network: a party of another network goes where `visitors`
+    // decides (never stored by the SMS Center).
+    let mut note: Option<(ClientId, Vec<u8>)> = None;
+    let decided = crate::visitors::individual_route(state, &mut inner, source, id, source_issi, destination);
+    let multi_network = decided.is_some();
+    match decided {
+        Some(crate::visitors::Decision::Station(to, n)) => { targets.insert(to); note = n.map(|n| (to, n)); }
+        Some(crate::visitors::Decision::Link(link)) => { targets.insert(link); }
+        Some(crate::visitors::Decision::Refuse) => {}
+        None => {
+            if let Some(sub) = inner.subscribers.get(&destination) { targets.insert(sub.client_id); }
+            if let Some(group_targets) = inner.group_clients.get(&destination) { targets.extend(group_targets.iter().copied()); }
+        }
+    }
     targets.remove(&source);
+    // Nobody here: "forward unknown targets" of a linked network, if on.
+    let mut forwarded = false;
+    if targets.is_empty() && !multi_network && !inner.group_clients.contains_key(&destination) {
+        if let Some(link) = crate::visitors::forward_unknown(state, &mut inner, source, source_issi, destination) {
+            targets.insert(link);
+            forwarded = true;
+        }
+    }
     // Always remember the UUID -> source ISSI mapping so a following
     // SDS_TRANSFER can be attributed (and its position decoded) even when the
     // destination is not a registered Brew subscriber — position beacons are
@@ -377,6 +484,8 @@ async fn handle_sds_header(state: &Arc<AppState>, source: ClientId, id: uuid::Uu
     // GSSI with affiliated members) is kept for later delivery once the
     // SDS_TRANSFER carrying the payload arrives.
     let store_offline = !lip_only
+        && !multi_network
+        && !forwarded
         && targets.is_empty()
         && !inner.group_clients.contains_key(&destination)
         && state.sms_center.wants(destination);
@@ -396,10 +505,15 @@ async fn handle_sds_header(state: &Arc<AppState>, source: ClientId, id: uuid::Uu
         return;
     }
     let inner = state.inner.read().await;
-    let txs = targets.iter().filter_map(|cid| inner.clients.get(cid).map(|c| c.tx.clone())).collect::<Vec<_>>();
+    let txs = targets.iter().filter_map(|cid| inner.clients.get(cid).map(|c| (*cid, c.tx.clone()))).collect::<Vec<_>>();
+    let (from_net, to_nets) = crate::netlink::crossing(state, &inner, source, targets.iter().copied());
     drop(inner);
-    for tx in txs { let _ = tx.send(raw.clone()); }
+    for (cid, tx) in txs {
+        if let Some((_, n)) = note.as_ref().filter(|(to, _)| *to == cid) { let _ = tx.send(n.clone()); }
+        let _ = tx.send(raw.clone());
+    }
     state.monitor.sds(id, source_issi, destination).await;
+    state.monitor.note_networks(id, from_net, to_nets).await;
     info!(%source, uuid=%id, channel="brew", source_issi, destination, lip=sds_is_lip(&raw), target_count=targets.len(), "routed SDS header");
 }
 
@@ -426,6 +540,7 @@ async fn handle_sds_transfer(state: &Arc<AppState>, source: ClientId, id: uuid::
                 let (source_issi, targets) = (route.source_issi, route.targets.clone());
                 let held = route.held_header.take().map(|h| (h, route.destination));
                 let txs = targets.iter().filter_map(|cid| inner.clients.get(cid).map(|c| c.tx.clone())).collect::<Vec<_>>();
+                let held = held.map(|(h, d)| (h, d, crate::netlink::crossing(state, &inner, source, targets.iter().copied())));
                 (source_issi, txs, store_for, held)
             }
             // Over a second peer link this is the payload of a duplicate SDS
@@ -451,9 +566,10 @@ async fn handle_sds_transfer(state: &Arc<AppState>, source: ClientId, id: uuid::
         }
     };
     // The header of a held (LIP-only) SDS goes out just before its payload.
-    if let Some((header, destination)) = held {
+    if let Some((header, destination, (from_net, to_nets))) = held {
         for tx in &txs { let _ = tx.send(header.clone()); }
         state.monitor.sds(id, source_issi, destination).await;
+        state.monitor.note_networks(id, from_net, to_nets).await;
     }
     for tx in &txs { let _ = tx.send(raw.clone()); }
 
@@ -573,10 +689,10 @@ async fn handle_private_setup(state: &Arc<AppState>, source: ClientId, id: uuid:
     // Prefer the structured CircularCall payload (parsed per Brew v1). Fall back
     // to the conservative raw source/destination pair for any peer that sends a
     // payload we could not fully structure.
-    let (source_issi, destination, number, mnemonic, service, priority) = match &payload {
-        CallPayload::CircularCall(c) => (c.source, c.destination, c.number.clone(), c.mnemonic.clone(), c.service, c.priority),
+    let (source_issi, destination, number, mnemonic, service, priority, duplex) = match &payload {
+        CallPayload::CircularCall(c) => (c.source, c.destination, c.number.clone(), c.mnemonic.clone(), c.service, c.priority, Some(c.duplex)),
         other => match protocol::raw_peer_pair(other) {
-            Some((s, d)) => (s, d, String::new(), None, 0, 0),
+            Some((s, d)) => (s, d, String::new(), None, 0, 0, None),
             None => {
                 warn!(%source, uuid=%id, "private SETUP_REQUEST has no routable source/destination pair");
                 return;
@@ -584,6 +700,11 @@ async fn handle_private_setup(state: &Arc<AppState>, source: ClientId, id: uuid:
         },
     };
     let ambience = service == AMBIENCE_LISTENING_SERVICE;
+    // A radio whose individual call moved here with it sets up a new call
+    // instead of restoring it: the old one is given up (see `call_restore`).
+    if source_issi != 0 {
+        crate::call_restore::abandoned(state, source, source_issi, "set up a new call").await;
+    }
     let mut inner = state.inner.write().await;
     // A copy of a setup already accepted over another peer link: dropped
     // silently -- never rejected, never offered to SIP a second time.
@@ -605,7 +726,20 @@ async fn handle_private_setup(state: &Arc<AppState>, source: ClientId, id: uuid:
         reject_setup(state, source, id).await;
         return;
     }
-    let Some(target_client) = inner.subscribers.get(&destination).map(|s| s.client_id) else {
+    // Multi Network: a party of another network (named by the station, or a
+    // call that came in over a link) goes where `visitors` decides.
+    let mut note = None;
+    let decided = match crate::visitors::individual_route(state, &mut inner, source, id, source_issi, destination) {
+        Some(crate::visitors::Decision::Station(to, n)) => { note = n; Some(to) }
+        Some(crate::visitors::Decision::Link(link)) => Some(link),
+        Some(crate::visitors::Decision::Refuse) => {
+            drop(inner);
+            reject_setup(state, source, id).await;
+            return;
+        }
+        None => None,
+    };
+    let Some(target_client) = decided.or_else(|| inner.subscribers.get(&destination).map(|s| s.client_id)) else {
         drop(inner);
         // The destination is not a registered Brew subscriber. Before giving up,
         // offer it to the SIP subsystem: a voice route may bridge this TETRA
@@ -637,6 +771,19 @@ async fn handle_private_setup(state: &Arc<AppState>, source: ClientId, id: uuid:
         if bridged {
             state.monitor.call_started(id, "private", source_issi, destination, priority).await;
             info!(%source, uuid=%id, source_issi, destination, dialled = %dialled, mnemonic=?mnemonic, "routed private SETUP_REQUEST to SIP");
+        } else if let Some(link) = {
+            let mut inner = state.inner.write().await;
+            crate::visitors::forward_unknown(state, &mut inner, source, source_issi, destination)
+        } {
+            // Multi Network "forward unknown targets".
+            let mut inner = state.inner.write().await;
+            inner.calls.insert(id, ActiveCall { kind: CallKind::Private, owner: source, source_issi, destination, priority, peers: HashSet::from([link]), started_at: std::time::Instant::now(), last_activity_ms: ActiveCall::new_activity() });
+            let tx = inner.clients.get(&link).map(|c| (c.tx.clone(), c.forward_version()));
+            drop(inner);
+            if let Some((tx, version)) = tx { let _ = tx.send(protocol::adapt_to_version(&raw, version).into_owned()); }
+            state.monitor.call_started(id, "private", source_issi, destination, priority).await;
+            crate::netlink::note_call(state, id).await;
+            info!(%source, uuid=%id, source_issi, destination, "routed private SETUP_REQUEST to another network (unknown here)");
         } else {
             warn!(%source, uuid=%id, destination, dialled = %dialled, "private call destination not registered (no SIP route); rejected");
             reject_setup(state, source, id).await;
@@ -661,15 +808,24 @@ async fn handle_private_setup(state: &Arc<AppState>, source: ClientId, id: uuid:
     }
     let peers = HashSet::from([target_client]);
     inner.calls.insert(id, ActiveCall { kind: CallKind::Private, owner: source, source_issi, destination, priority, peers: peers.clone(), started_at: std::time::Instant::now(), last_activity_ms: ActiveCall::new_activity() });
+    // Between two radios on Brew connections: may move with a radio to another
+    // Basestation (see `call_restore`).
+    if let Some(duplex) = duplex.filter(|_| source_issi != 0) {
+        crate::call_restore::note_setup(&mut inner, id, duplex);
+    }
     let target = inner.clients.get(&target_client).map(|c| (c.tx.clone(), c.forward_version()));
     // For an ambience-listening setup, also learn the Brew username the target's
     // Basestation authenticated as, so we can send it the control-channel
     // AmbienceListen command that actually forces the radio to key its mic.
     let bts_username = ambience.then(|| inner.clients.get(&target_client).and_then(|c| c.username.clone())).flatten();
     drop(inner);
-    if let Some((tx, version)) = target { let _ = tx.send(protocol::adapt_to_version(&raw, version).into_owned()); }
+    if let Some((tx, version)) = target {
+        if let Some(n) = note { let _ = tx.send(n); }
+        let _ = tx.send(protocol::adapt_to_version(&raw, version).into_owned());
+    }
     let kind = if ambience { "ambience" } else { "private" };
     state.monitor.call_started(id, kind, source_issi, destination, priority).await;
+    crate::netlink::note_call(state, id).await;
     if ambience {
         trigger_ambience_listen(state, bts_username, destination).await;
     }
@@ -719,10 +875,21 @@ async fn route_private_control(state: &Arc<AppState>, source: ClientId, id: uuid
         end_call(state, source, id, raw).await;
         return;
     }
-    let inner = state.inner.read().await;
+    let mut inner = state.inner.write().await;
     let Some(call) = inner.calls.get(&id) else { debug!(uuid=%id, "private control for unknown call"); return; };
     if call.kind != CallKind::Private { return; }
+    // A Basestation the call moved away from (see `call_restore`) no longer
+    // speaks for it.
+    if call.owner != source && !call.peers.contains(&source) {
+        debug!(%source, uuid=%id, "private control from a connection not in the call");
+        return;
+    }
     call.touch();
+    let floor = raw.get(1).copied().filter(|s| *s == CALL_SIMPLEX_GRANTED || *s == CALL_SIMPLEX_IDLE);
+    if let Some(s) = floor {
+        crate::call_restore::note_floor(&mut inner, source, id, s == CALL_SIMPLEX_GRANTED);
+    }
+    let Some(call) = inner.calls.get(&id) else { return };
     let mut recipients = call.peers.clone();
     recipients.insert(call.owner);
     recipients.remove(&source);
@@ -735,11 +902,13 @@ async fn route_call_frame(state: &Arc<AppState>, source: ClientId, id: uuid::Uui
     let Some(txs) = call_frame_recipients(state, source, id, "voice").await else { return };
     state.monitor.voice_frame(id).await;
     for tx in txs { let _ = tx.send(raw.clone()); }
+    crate::pools::on_frame(state, id, &raw).await;
 }
 
 async fn route_dtmf_frame(state: &Arc<AppState>, source: ClientId, id: uuid::Uuid, raw: Vec<u8>) {
     let Some(txs) = call_frame_recipients(state, source, id, "DTMF").await else { return };
     for tx in txs { let _ = tx.send(raw.clone()); }
+    crate::pools::on_frame(state, id, &raw).await;
 }
 
 /// Shared participant/permission check and recipient lookup for both call
@@ -824,13 +993,14 @@ pub async fn run_call_duration_sweep(state: Arc<AppState>) {
     }
 }
 
-async fn end_call(state: &Arc<AppState>, source: ClientId, id: uuid::Uuid, raw: Vec<u8>) {
+pub(crate) async fn end_call(state: &Arc<AppState>, source: ClientId, id: uuid::Uuid, raw: Vec<u8>) {
     let mut inner = state.inner.write().await;
     let Some(call) = inner.calls.remove(&id) else { debug!(uuid=%id, "call end for unknown call"); return; };
     let participant = call.owner == source || call.peers.contains(&source);
     if !participant { inner.calls.insert(id, call); return; }
     if call.kind == CallKind::Group && call.owner != source { inner.calls.insert(id, call); return; }
     if call.kind == CallKind::Group && inner.group_floor.get(&call.destination) == Some(&id) { inner.group_floor.remove(&call.destination); }
+    crate::call_restore::forget(&mut inner, &id);
     // A copy of the call's setup still on its way over another peer link must
     // not bring it back as a zombie that holds the group floor.
     crate::fedroute::note_call(&mut inner, id, call.source_issi, call.owner, Instant::now());
@@ -842,6 +1012,15 @@ async fn end_call(state: &Arc<AppState>, source: ClientId, id: uuid::Uuid, raw: 
     for tx in txs { let _ = tx.send(raw.clone()); }
     state.monitor.call_ended(id).await;
     info!(%source, uuid=%id, kind=?call.kind, "routed call end");
+
+    // Talkgroup pools: a pool call's legs end with it, and legs that waited
+    // for this group to become free join their call now.
+    if call.kind == CallKind::Group {
+        for leg in crate::pools::on_call_end(state, id, call.destination).await {
+            let release = protocol::build_call_cause(CALL_GROUP_IDLE, &leg, 0);
+            Box::pin(end_call(state, crate::pools::POOL_OWNER, leg, release)).await;
+        }
+    }
 
     // If this call was bridged to SIP (Brew subscriber calling out), the Brew
     // side just ended it first: tell the SIP peer too, instead of leaving its
@@ -904,6 +1083,9 @@ fn late_entry(inner: &mut Inner, client: ClientId, groups: &HashSet<u32>) -> Vec
 }
 
 async fn handle_subscriber(state: &Arc<AppState>, source: ClientId, msg: SubscriberMessage) {
+    // A radio of another network (extension `mni`): kept apart, passed on
+    // to its home network.
+    if crate::visitors::handle_subscriber(state, source, &msg).await { return; }
     let mut inner = state.inner.write().await;
     if inner.fed.links.contains_key(&source) {
         // A loop-safe link carries registrations as route adverts only.
@@ -919,6 +1101,11 @@ async fn handle_subscriber(state: &Arc<AppState>, source: ClientId, msg: Subscri
     // released (mirrors how position decoding logs via `state.telemetry`
     // outside of the `inner` lock elsewhere in this module).
     let mut ms_reg_event: Option<&'static str> = None;
+    // A radio that left another Basestation unprepared: what to tell it and
+    // which of its overs there to end (see `handover::radio_moved`).
+    let mut moved: Option<(ClientId, Option<Vec<u8>>, Vec<uuid::Uuid>)> = None;
+    // Individual calls that moved here with the radio (see `call_restore`).
+    let mut moved_calls: Vec<uuid::Uuid> = Vec::new();
     // Whatever registers here -- a Basestation, a Terminal or a legacy peer
     // link, for everything behind it -- is a local registration, stamped with
     // this server's registration clock (see `fedroute`).
@@ -930,6 +1117,20 @@ async fn handle_subscriber(state: &Arc<AppState>, source: ClientId, msg: Subscri
     let new = match msg.msg_type {
         SUB_REGISTER | SUB_REREGISTER => {
             info!(%source, issi=msg.issi, mode=source_mode.as_str(), "subscriber registered");
+            // Registered here (not learnt from a peer) on another Basestation: a cell change.
+            if let Some(o) = old.as_ref().filter(|o| o.client_id != source && o.route.path.is_empty()) {
+                let handed_over = inner.handovers.handed_over_to(msg.issi, source, Instant::now(), crate::handover::kick_guard(&state.config));
+                crate::roaming_log::registration_moved(&mut inner, msg.issi, o.client_id, source, handed_over);
+                moved_calls = crate::call_restore::move_calls(&mut inner, msg.issi, o.client_id, source);
+                for id in &moved_calls {
+                    info!(from=%o.client_id, to=%source, issi=msg.issi, uuid=%id, "call restore: individual call moved with the radio");
+                    crate::call_restore::release_on_old(&inner, o.client_id, id);
+                }
+                if !handed_over {
+                    let (notice, talking) = crate::handover::radio_moved(&inner, msg.issi, o.client_id, source);
+                    moved = Some((o.client_id, notice, talking));
+                }
+            }
             if source_mode == ClientMode::Terminal { ms_reg_event = Some("register"); }
             Some(local(&mut inner, old.as_ref().map(|o| o.groups.clone()).unwrap_or_default()))
         }
@@ -938,6 +1139,7 @@ async fn handle_subscriber(state: &Arc<AppState>, source: ClientId, msg: Subscri
             // (and nobody else's DEREGISTER is passed on to peers).
             let Some(sub) = old.as_ref().filter(|o| o.client_id == source) else { return };
             info!(%source, issi=msg.issi, mode=sub.mode.as_str(), "subscriber deregistered");
+            crate::visitors::forget_foreign(&mut inner, source, Some(msg.issi));
             if sub.mode == ClientMode::Terminal { ms_reg_event = Some("deregister"); }
             None
         }
@@ -948,6 +1150,17 @@ async fn handle_subscriber(state: &Arc<AppState>, source: ClientId, msg: Subscri
                 None => local(&mut inner, HashSet::new()),
             };
             for gssi in &msg.groups {
+                // A group of a linked network (Multi Network): kept as its alias.
+                let a = crate::visitors::group_alias(&inner, source, msg.issi, *gssi);
+                if a != *gssi {
+                    sub.groups.insert(a);
+                    info!(%source, issi=msg.issi, gssi, alias=a, "subscriber affiliated to a group of a linked network");
+                    continue;
+                }
+                if !state.group_permits(*gssi, msg.issi) {
+                    info!(%source, issi=msg.issi, gssi, "affiliation not recorded: the group does not admit this ISSI (group_access)");
+                    continue;
+                }
                 sub.groups.insert(*gssi);
                 info!(%source, issi=msg.issi, gssi, "subscriber affiliated");
             }
@@ -956,7 +1169,8 @@ async fn handle_subscriber(state: &Arc<AppState>, source: ClientId, msg: Subscri
         SUB_DEAFFILIATE => {
             let Some(mut sub) = old.clone().filter(|o| o.client_id == source) else { return };
             for gssi in &msg.groups {
-                sub.groups.remove(gssi);
+                let a = crate::visitors::group_alias(&inner, source, msg.issi, *gssi);
+                sub.groups.remove(&a);
                 info!(%source, issi=msg.issi, gssi, "subscriber deaffiliated");
             }
             Some(sub)
@@ -998,7 +1212,24 @@ async fn handle_subscriber(state: &Arc<AppState>, source: ClientId, msg: Subscri
     for (tx, packet) in late_entry(&mut inner, source, &joined) {
         let _ = tx.send(packet);
     }
+    if let Some((from, Some(notice), _)) = &moved {
+        if let Some(c) = inner.clients.get(from) {
+            let _ = c.tx.send(notice.clone());
+        }
+        info!(%from, to=%source, issi=msg.issi, "handover: radio left unprepared, old Basestation told");
+    }
     drop(inner);
+    for id in moved_calls {
+        crate::call_restore::spawn_window(state, id);
+    }
+    // Its overs on the Basestation it left end now, before this connection's
+    // next message (a GROUP_TX of the same radio) is handled.
+    if let Some((from, _, talking)) = moved {
+        for id in talking {
+            info!(%from, to=%source, issi=msg.issi, uuid=%id, "handover: talker left its Basestation, ending its over there");
+            end_call(state, from, id, protocol::build_call_cause(protocol::CALL_GROUP_IDLE, &id, 0)).await;
+        }
+    }
     // Log Terminal-mode (actual MS) registration lifecycle events to the same
     // dashboard registration log Basestation telemetry registrations use, so
     // an MS registering directly over the Brew protocol is visible there too.
@@ -1008,6 +1239,8 @@ async fn handle_subscriber(state: &Arc<AppState>, source: ClientId, msg: Subscri
     if registered {
         subscriber_registered(state, msg.issi);
     }
+    // Bridged groups: the radio joins or leaves them in the other networks.
+    crate::netlink::sync_members(state).await;
 }
 
 /// An ISSI (re)registered somewhere on the Brew network -- here or at a peer
@@ -2278,5 +2511,430 @@ mod late_entry_tests {
             assert_eq!(drain(rx), vec![gt.clone(), voice(&id)]);
         }
         assert_eq!(state.inner.read().await.calls[&id].peers.len(), 10);
+    }
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+    use crate::config::TalkgroupPoolConfig;
+    use crate::{protocol::ConnVersion, state::{Client, ClientMode}};
+
+    /// A Basestation with radios in `groups`, plus the queue of what it is sent.
+    async fn station(state: &AppState, groups: &[u32]) -> (ClientId, mpsc::UnboundedReceiver<Vec<u8>>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let id = uuid::Uuid::new_v4();
+        let mut inner = state.inner.write().await;
+        inner.clients.insert(id, Client { tx, mode: ClientMode::Basestation, version: ConnVersion::V0, version_announced: true, remote_addr: None, connected_at_ms: 0, username: None });
+        for g in groups { inner.group_clients.entry(*g).or_default().insert(id); }
+        (id, rx)
+    }
+
+    fn drain(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> Vec<Vec<u8>> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    /// (call state, call id, destination) of every GROUP_TX in `msgs`.
+    fn group_txs(msgs: &[Vec<u8>]) -> Vec<(uuid::Uuid, u32, u32)> {
+        msgs.iter().filter(|m| m.len() >= 26 && m[0] == protocol::CLASS_CALL_CONTROL && m[1] == CALL_GROUP_TX)
+            .map(|m| (uuid::Uuid::from_slice(&m[2..18]).unwrap(), u32::from_le_bytes(m[18..22].try_into().unwrap()), u32::from_le_bytes(m[22..26].try_into().unwrap())))
+            .collect()
+    }
+
+    fn ids_of(msgs: &[Vec<u8>], class: u8, kind: u8) -> Vec<uuid::Uuid> {
+        msgs.iter().filter(|m| m.len() >= 18 && m[0] == class && m[1] == kind).map(|m| uuid::Uuid::from_slice(&m[2..18]).unwrap()).collect()
+    }
+
+    fn pool(both_ways: bool, groups: &[u32]) -> TalkgroupPoolConfig {
+        TalkgroupPoolConfig { name: "Nord".into(), enabled: true, both_ways, groups: groups.to_vec(), remote: Vec::new() }
+    }
+
+    fn state_with(pools: Vec<TalkgroupPoolConfig>) -> Arc<AppState> {
+        let state = AppState::for_test();
+        *state.pools.write().unwrap() = pools;
+        state
+    }
+
+    fn voice(id: &uuid::Uuid) -> Vec<u8> {
+        protocol::build_traffic_frame(id, &[1; protocol::ACELP_CODED_FRAME_BYTES], &[2; protocol::ACELP_CODED_FRAME_BYTES])
+    }
+
+    #[tokio::test]
+    async fn answer_in_a_leg_is_heard_on_the_whole_pool_and_ends_with_the_call() {
+        let state = state_with(vec![pool(true, &[2321, 2323])]);
+        let (bs1, mut rx1) = station(&state, &[2321]).await;
+        let (bs2, mut rx2) = station(&state, &[2323]).await;
+        let id = uuid::Uuid::new_v4();
+        handle_packet(state.clone(), bs1, protocol::build_group_tx(&id, 4001, 2321, 0)).await;
+        let leg = group_txs(&drain(&mut rx2))[0].0;
+        drain(&mut rx1);
+        // A radio on bs2 answers in the call it hears (the leg's identifier).
+        handle_packet(state.clone(), bs2, protocol::build_group_tx(&leg, 5002, 2323, 0)).await;
+        assert_eq!(group_txs(&drain(&mut rx1)), vec![(id, 5002, 2321)], "the answer is announced on the original call");
+        assert!(group_txs(&drain(&mut rx2)).is_empty(), "nothing back to the answering station");
+        let frame = voice(&leg);
+        handle_packet(state.clone(), bs2, frame.clone()).await;
+        let got = drain(&mut rx1);
+        assert_eq!(ids_of(&got, protocol::CLASS_FRAME, protocol::FRAME_TRAFFIC_CHANNEL), vec![id]);
+        assert!(drain(&mut rx2).is_empty());
+        // The first talker talks again: the leg is a copy again.
+        handle_packet(state.clone(), bs1, protocol::build_group_tx(&id, 4001, 2321, 0)).await;
+        assert_eq!(group_txs(&drain(&mut rx2)), vec![(leg, 4001, 2323)]);
+        // bs2's call of the answer ends: as for any group call, the call of
+        // the last talker's station ending ends it for everyone.
+        handle_packet(state.clone(), bs2, protocol::build_group_tx(&leg, 5002, 2323, 0)).await;
+        drain(&mut rx1);
+        handle_packet(state.clone(), bs2, protocol::build_call_cause(CALL_GROUP_IDLE, &leg, 0)).await;
+        assert_eq!(ids_of(&drain(&mut rx1), protocol::CLASS_CALL_CONTROL, CALL_GROUP_IDLE), vec![id]);
+        assert!(state.inner.read().await.calls.is_empty());
+        // Again, but now the first talker's station ends the call: the leg
+        // ends with it although bs2 holds it.
+        let id = uuid::Uuid::new_v4();
+        handle_packet(state.clone(), bs1, protocol::build_group_tx(&id, 4001, 2321, 0)).await;
+        let leg = group_txs(&drain(&mut rx2))[0].0;
+        handle_packet(state.clone(), bs2, protocol::build_group_tx(&leg, 5002, 2323, 0)).await;
+        drain(&mut rx1);
+        handle_packet(state.clone(), bs1, protocol::build_call_cause(CALL_GROUP_IDLE, &id, 0)).await;
+        assert_eq!(ids_of(&drain(&mut rx2), protocol::CLASS_CALL_CONTROL, CALL_GROUP_IDLE), vec![leg]);
+        let inner = state.inner.read().await;
+        assert!(inner.calls.is_empty() && inner.pools.runs.is_empty() && inner.pools.legs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pool_call_is_played_on_the_other_groups_with_voice_and_end() {
+        let state = state_with(vec![pool(true, &[2321, 2323, 264])]);
+        let (bs1, mut rx1) = station(&state, &[2321]).await;
+        let (_bs2, mut rx2) = station(&state, &[2323, 264]).await;
+        let id = uuid::Uuid::new_v4();
+        handle_packet(state.clone(), bs1, protocol::build_group_tx(&id, 4001, 2321, 0)).await;
+        let got = drain(&mut rx2);
+        let txs = group_txs(&got);
+        // The call itself does not reach bs2 (no 2321 radios there); its two legs do.
+        let mut dests: Vec<u32> = txs.iter().map(|t| t.2).collect();
+        dests.sort();
+        assert_eq!(dests, vec![264, 2323]);
+        assert!(txs.iter().all(|t| t.0 != id && t.1 == 4001));
+        let legs: Vec<uuid::Uuid> = txs.iter().map(|t| t.0).collect();
+        // The talker's own station gets nothing back for its own group.
+        assert!(group_txs(&drain(&mut rx1)).is_empty());
+
+        // Voice is copied to each leg under the leg's identifier.
+        let frame = voice(&id);
+        handle_packet(state.clone(), bs1, frame.clone()).await;
+        let got = drain(&mut rx2);
+        let mut frame_ids = ids_of(&got, protocol::CLASS_FRAME, protocol::FRAME_TRAFFIC_CHANNEL);
+        frame_ids.sort();
+        let mut want = legs.clone();
+        want.sort();
+        assert_eq!(frame_ids, want);
+        assert!(got.iter().all(|m| m[18..] == frame[18..]));
+
+        // The end of the call ends the legs.
+        handle_packet(state.clone(), bs1, protocol::build_call_cause(CALL_GROUP_IDLE, &id, 0)).await;
+        let mut ended = ids_of(&drain(&mut rx2), protocol::CLASS_CALL_CONTROL, CALL_GROUP_IDLE);
+        ended.sort();
+        assert_eq!(ended, want);
+        let inner = state.inner.read().await;
+        assert!(inner.calls.is_empty() && inner.pools.runs.is_empty() && inner.pools.legs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn one_way_pool_copies_only_from_its_first_group() {
+        let state = state_with(vec![pool(false, &[9, 2321])]);
+        let (bs1, _rx1) = station(&state, &[9]).await;
+        let (bs2, mut rx2) = station(&state, &[2321]).await;
+        let id = uuid::Uuid::new_v4();
+        handle_packet(state.clone(), bs2, protocol::build_group_tx(&id, 4002, 2321, 0)).await;
+        assert!(state.inner.read().await.pools.runs.is_empty());
+        handle_packet(state.clone(), bs2, protocol::build_call_cause(CALL_GROUP_IDLE, &id, 0)).await;
+        let id = uuid::Uuid::new_v4();
+        handle_packet(state.clone(), bs1, protocol::build_group_tx(&id, 4001, 9, 0)).await;
+        assert_eq!(group_txs(&drain(&mut rx2)).iter().map(|t| t.2).collect::<Vec<_>>(), vec![2321]);
+    }
+
+    #[tokio::test]
+    async fn busy_group_joins_when_its_own_call_ends() {
+        // One way, so 2324's own call is not copied to 2321.
+        let state = state_with(vec![pool(false, &[2321, 2324])]);
+        let (bs1, _rx1) = station(&state, &[2321]).await;
+        let (bs2, mut rx2) = station(&state, &[2324]).await;
+        // 2324 has its own call (only bs2 has 2324 radios, so it reaches nobody else).
+        let own = uuid::Uuid::new_v4();
+        handle_packet(state.clone(), bs2, protocol::build_group_tx(&own, 5000, 2324, 0)).await;
+        // While 2324 talks the pool call on 2321 starts: 2324's leg waits...
+        let id = uuid::Uuid::new_v4();
+        handle_packet(state.clone(), bs1, protocol::build_group_tx(&id, 4001, 2321, 0)).await;
+        drain(&mut rx2);
+        assert_eq!(state.inner.read().await.pools.runs[&id].waiting.iter().copied().collect::<Vec<_>>(), vec![2324]);
+        // ...and joins once 2324's over ends.
+        handle_packet(state.clone(), bs2, protocol::build_call_cause(CALL_GROUP_IDLE, &own, 0)).await;
+        let txs = group_txs(&drain(&mut rx2));
+        assert_eq!(txs.len(), 1);
+        assert_eq!((txs[0].1, txs[0].2), (4001, 2324));
+        let leg = txs[0].0;
+        handle_packet(state.clone(), bs1, voice(&id)).await;
+        assert_eq!(ids_of(&drain(&mut rx2), protocol::CLASS_FRAME, protocol::FRAME_TRAFFIC_CHANNEL), vec![leg]);
+    }
+
+    #[tokio::test]
+    async fn a_leg_never_starts_further_legs() {
+        // 2321 and 2323 are in two pools that share 2323: a call on 2321
+        // reaches 2323 (pool A) but not 2399 (pool B, through 2323).
+        let mut b = pool(true, &[2323, 2399]);
+        b.name = "B".into();
+        let state = state_with(vec![pool(true, &[2321, 2323]), b]);
+        let (bs1, _rx1) = station(&state, &[2321]).await;
+        let (_bs2, mut rx2) = station(&state, &[2323, 2399]).await;
+        let id = uuid::Uuid::new_v4();
+        handle_packet(state.clone(), bs1, protocol::build_group_tx(&id, 4001, 2321, 0)).await;
+        assert_eq!(group_txs(&drain(&mut rx2)).iter().map(|t| t.2).collect::<Vec<_>>(), vec![2323]);
+    }
+
+    /// Internal simulation: 10 stations, 25 radios spread over 6 groups, a
+    /// both-ways pool of 4 of them and a one-way pool. Every station gets
+    /// each call exactly once per group it has radios in, voice under the
+    /// right identifier, and every call ends cleanly.
+    #[tokio::test]
+    async fn pool_sim_10_stations_25_radios() {
+        let mut info = pool(false, &[9, 2330]);
+        info.name = "Info".into();
+        let state = state_with(vec![pool(true, &[2321, 2323, 2324, 264]), info]);
+        let groups = [2321u32, 2323, 2324, 264, 9, 2330];
+        let mut stations = Vec::new();
+        for s in 0..10usize {
+            // 2 or 3 radios per station (25 in all), each in one group.
+            let radios = if s < 5 { 3 } else { 2 };
+            let gs: Vec<u32> = (0..radios).map(|r| groups[(s + r * 2) % groups.len()]).collect();
+            let (id, rx) = station(&state, &gs).await;
+            let mut wanted: Vec<u32> = gs.clone();
+            wanted.sort();
+            wanted.dedup();
+            stations.push((id, rx, wanted));
+        }
+        for (talker_station, gssi) in [(0usize, 2321u32), (3, 264), (7, 9), (2, 2330)] {
+            for (_, rx, _) in stations.iter_mut() { drain(rx); }
+            let id = uuid::Uuid::new_v4();
+            let talker = stations[talker_station].0;
+            handle_packet(state.clone(), talker, protocol::build_group_tx(&id, 4000 + gssi, gssi, 0)).await;
+            let reached: Vec<u32> = std::iter::once(gssi).chain(crate::pools::targets_for(&state.pools.read().unwrap(), &std::collections::HashMap::new(), gssi).into_keys()).collect();
+            for _ in 0..3 { handle_packet(state.clone(), talker, voice(&id)).await; }
+            handle_packet(state.clone(), talker, protocol::build_call_cause(CALL_GROUP_IDLE, &id, 0)).await;
+            for (sid, rx, wanted) in stations.iter_mut() {
+                let got = drain(rx);
+                let mut dests: Vec<u32> = group_txs(&got).iter().map(|t| t.2).collect();
+                dests.sort();
+                let mut expect: Vec<u32> = wanted.iter().copied().filter(|g| reached.contains(g)).collect();
+                // The talker's station does not get its own group back.
+                if *sid == talker { expect.retain(|g| *g != gssi); }
+                assert_eq!(dests, expect, "station {sid} for a call on {gssi}");
+                let calls: HashSet<uuid::Uuid> = group_txs(&got).iter().map(|t| t.0).collect();
+                let frames = ids_of(&got, protocol::CLASS_FRAME, protocol::FRAME_TRAFFIC_CHANNEL);
+                assert_eq!(frames.len(), calls.len() * 3);
+                assert!(frames.iter().all(|f| calls.contains(f)));
+                let mut ended: Vec<uuid::Uuid> = ids_of(&got, protocol::CLASS_CALL_CONTROL, CALL_GROUP_IDLE);
+                ended.sort();
+                let mut c: Vec<uuid::Uuid> = calls.into_iter().collect();
+                c.sort();
+                assert_eq!(ended, c);
+            }
+            let inner = state.inner.read().await;
+            assert!(inner.calls.is_empty() && inner.pools.runs.is_empty() && inner.pools.legs.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_station_cannot_send_voice_into_a_leg() {
+        let state = state_with(vec![pool(true, &[2321, 2323])]);
+        let (bs1, mut rx1) = station(&state, &[2321]).await;
+        let (bs2, _rx2) = station(&state, &[2323]).await;
+        let id = uuid::Uuid::new_v4();
+        handle_packet(state.clone(), bs1, protocol::build_group_tx(&id, 4001, 2321, 0)).await;
+        let leg = *state.inner.read().await.pools.legs.keys().next().unwrap();
+        drain(&mut rx1);
+        handle_packet(state.clone(), bs2, voice(&leg)).await;
+        assert!(drain(&mut rx1).is_empty());
+    }
+}
+
+/// `[group_access]`: an allow or block list per group decides who may
+/// affiliate to it and talk on it across the network.
+#[cfg(test)]
+mod group_access_tests {
+    use super::*;
+    use crate::config::{GroupAccessConfig, GroupAccessMode};
+    use crate::protocol::{ConnVersion, SUB_AFFILIATE, SUB_REGISTER};
+    use crate::state::Client;
+
+    const GSSI: u32 = 2321;
+
+    async fn bts(state: &AppState) -> (ClientId, mpsc::UnboundedReceiver<Vec<u8>>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let id = uuid::Uuid::new_v4();
+        state.inner.write().await.clients.insert(id, Client { tx, mode: ClientMode::Basestation, version: ConnVersion::V0, version_announced: true, remote_addr: None, connected_at_ms: 0, username: None });
+        (id, rx)
+    }
+
+    fn drain(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> usize {
+        std::iter::from_fn(|| rx.try_recv().ok()).filter(|p| p.len() > 1 && p[0] == protocol::CLASS_CALL_CONTROL && p[1] == CALL_GROUP_TX).count()
+    }
+
+    async fn sub(state: &Arc<AppState>, from: ClientId, msg_type: u8, issi: u32, groups: &[u32]) {
+        handle_packet(state.clone(), from, protocol::build_subscriber_message(msg_type, issi, groups)).await;
+    }
+
+    async fn talk(state: &Arc<AppState>, from: ClientId, issi: u32, priority: u8) -> uuid::Uuid {
+        let id = uuid::Uuid::new_v4();
+        handle_packet(state.clone(), from, protocol::build_group_tx(&id, issi, GSSI, priority)).await;
+        id
+    }
+
+    /// Ten stations, 25 radios (ISSI 5000 + n on station n % 10), all
+    /// affiliating to the group. Returns the stations and their queues.
+    async fn network(state: &Arc<AppState>) -> Vec<(ClientId, mpsc::UnboundedReceiver<Vec<u8>>)> {
+        let mut st = Vec::new();
+        for _ in 0..10 { st.push(bts(state).await); }
+        for n in 0..25u32 {
+            let s = st[(n % 10) as usize].0;
+            sub(state, s, SUB_REGISTER, 5000 + n, &[]).await;
+            sub(state, s, SUB_AFFILIATE, 5000 + n, &[GSSI]).await;
+        }
+        st
+    }
+
+    fn strict(access: Option<GroupAccessConfig>) -> Arc<AppState> {
+        let mut config = crate::config::Config::default();
+        config.storage.enabled = false;
+        config.sms_center.enabled = false;
+        config.fallback_broadcast_when_no_affiliations = false;
+        if let Some(a) = access { config.group_access.insert(GSSI.to_string(), a); }
+        Arc::new(AppState::new(config, "test.toml".into()).0)
+    }
+
+    async fn affiliated(state: &AppState) -> Vec<u32> {
+        let inner = state.inner.read().await;
+        let mut v: Vec<u32> = inner.subscribers.iter().filter(|(_, s)| s.groups.contains(&GSSI)).map(|(i, _)| *i).collect();
+        v.sort_unstable();
+        v
+    }
+
+    #[tokio::test]
+    async fn an_allow_list_admits_only_the_listed_radios() {
+        // Only 5000 (station 0) and 5001 (station 1).
+        let state = strict(Some(GroupAccessConfig { mode: GroupAccessMode::Allow, issis: vec![5000, 5001], ..Default::default() }));
+        let mut st = network(&state).await;
+        assert_eq!(affiliated(&state).await, vec![5000, 5001], "other affiliations are not recorded");
+
+        talk(&state, st[2].0, 5002, 0).await;
+        assert!(st.iter_mut().all(|(_, rx)| drain(rx) == 0), "a radio not on the list cannot talk on the group");
+        assert!(state.inner.read().await.calls.is_empty());
+
+        talk(&state, st[0].0, 5000, 0).await;
+        let heard: Vec<usize> = st.iter_mut().map(|(_, rx)| drain(rx)).collect();
+        assert_eq!(heard, vec![0, 1, 0, 0, 0, 0, 0, 0, 0, 0], "only the station of the other admitted radio gets the call");
+
+        // An emergency call always passes.
+        let id = talk(&state, st[3].0, 5003, EMERGENCY_PRIORITY).await;
+        assert!(state.inner.read().await.calls.contains_key(&id));
+    }
+
+    #[tokio::test]
+    async fn a_block_list_keeps_the_listed_radios_out_and_an_empty_list_is_open() {
+        let state = strict(Some(GroupAccessConfig { mode: GroupAccessMode::Block, issis: vec![5000, 5010, 5020], ..Default::default() }));
+        let mut st = network(&state).await;
+        let all: Vec<u32> = (5001..5025).filter(|i| ![5010, 5020].contains(i)).collect();
+        assert_eq!(affiliated(&state).await, all);
+        talk(&state, st[0].0, 5000, 0).await;
+        assert!(st.iter_mut().all(|(_, rx)| drain(rx) == 0), "a blocked radio cannot talk on the group");
+        talk(&state, st[1].0, 5001, 0).await;
+        let heard: Vec<usize> = st.iter_mut().map(|(_, rx)| drain(rx)).collect();
+        assert_eq!(heard[0], 0, "station 0 has only blocked radios: no call for it");
+        assert_eq!(heard.iter().filter(|n| **n == 1).count(), 8, "every other station with an admitted radio hears it");
+
+        let open = strict(Some(GroupAccessConfig { mode: GroupAccessMode::Allow, issis: vec![], ..Default::default() }));
+        network(&open).await;
+        assert_eq!(affiliated(&open).await.len(), 25, "an empty list leaves the group open");
+    }
+
+    #[tokio::test]
+    async fn rx_only_radios_listen_but_may_not_talk() {
+        // Everyone listens only, except nobody: no talker at all (but an emergency).
+        let state = strict(Some(GroupAccessConfig { rx_only: true, ..Default::default() }));
+        let mut st = network(&state).await;
+        assert_eq!(affiliated(&state).await.len(), 25, "listeners stay affiliated");
+        talk(&state, st[0].0, 5000, 0).await;
+        assert!(st.iter_mut().all(|(_, rx)| drain(rx) == 0));
+        let id = talk(&state, st[0].0, 5000, EMERGENCY_PRIORITY).await;
+        assert!(state.inner.read().await.calls.contains_key(&id), "an emergency call passes");
+
+        // Only 5001 and 5002 listen only; 5003 talks and all nine other stations hear it.
+        let state = strict(Some(GroupAccessConfig { rx_only: true, rx_only_issis: vec![5001, 5002], ..Default::default() }));
+        let mut st = network(&state).await;
+        talk(&state, st[1].0, 5001, 0).await;
+        assert!(st.iter_mut().all(|(_, rx)| drain(rx) == 0));
+        talk(&state, st[3].0, 5003, 0).await;
+        let heard: Vec<usize> = st.iter_mut().map(|(_, rx)| drain(rx)).collect();
+        assert_eq!(heard.iter().filter(|n| **n == 1).count(), 9);
+    }
+
+    /// A Basestation that announced `group-access` gets the lists after its
+    /// `SERVICE_BTS_INFO` and on every change; one without it never does.
+    #[tokio::test]
+    async fn capable_stations_get_the_lists() {
+        let path = std::env::temp_dir().join(format!("brew-access2-{}.toml", uuid::Uuid::new_v4().simple()));
+        let mut config = crate::config::Config::default();
+        config.storage.enabled = false;
+        config.sms_center.enabled = false;
+        config.group_access.insert("2321".into(), GroupAccessConfig { mode: GroupAccessMode::Block, issis: vec![4013], ..Default::default() });
+        let state = Arc::new(AppState::new(config, path.clone()).0);
+        let (a, mut a_rx) = bts(&state).await;
+        let (b, mut b_rx) = bts(&state).await;
+        let lists = |rx: &mut mpsc::UnboundedReceiver<Vec<u8>>| -> Vec<serde_json::Value> {
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .filter(|p| p.len() > 2 && p[0] == protocol::CLASS_SERVICE && p[1] == protocol::SERVICE_GROUP_ACCESS)
+                .map(|p| serde_json::from_slice(&p[2..p.len() - 1]).unwrap())
+                .collect()
+        };
+        handle_packet(state.clone(), a, protocol::build_service(protocol::SERVICE_BTS_INFO,
+            r#"{"mcc":232,"mnc":5,"cells":[{"carrier":1528,"carrier_ext":264,"location_area":2}],"capabilities":["group-access"]}"#)).await;
+        handle_packet(state.clone(), b, protocol::build_service(protocol::SERVICE_BTS_INFO,
+            r#"{"mcc":232,"mnc":5,"cells":[{"carrier":1530,"carrier_ext":264,"location_area":1}]}"#)).await;
+        let got = lists(&mut a_rx);
+        assert_eq!(got, vec![serde_json::json!({"groups":[{"gssi":2321,"mode":"block","issis":[4013],"rx_only":false,"rx_only_issis":[]}]})]);
+        assert!(lists(&mut b_rx).is_empty(), "no capability, no lists");
+
+        let r = crate::group_access::set(
+            axum::extract::State(state.clone()),
+            axum::Json(crate::group_access::AccessRequest { gssi: "2321".into(), mode: GroupAccessMode::Allow, issis: String::new(), rx_only: true, rx_only_issis: "4014".into() }),
+        ).await;
+        assert_eq!(r.status(), axum::http::StatusCode::OK);
+        assert_eq!(lists(&mut a_rx), vec![serde_json::json!({"groups":[{"gssi":2321,"mode":"allow","issis":[],"rx_only":true,"rx_only_issis":[4014]}]})]);
+        assert!(lists(&mut b_rx).is_empty());
+        crate::CONFIG_WRITE_APPLIED_LIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn a_live_change_drops_the_affiliations_the_group_no_longer_admits() {
+        let path = std::env::temp_dir().join(format!("brew-access-{}.toml", uuid::Uuid::new_v4().simple()));
+        let mut config = crate::config::Config::default();
+        config.storage.enabled = false;
+        config.sms_center.enabled = false;
+        config.fallback_broadcast_when_no_affiliations = false;
+        let state = Arc::new(AppState::new(config, path.clone()).0);
+        let mut st = network(&state).await;
+        assert_eq!(affiliated(&state).await.len(), 25);
+        let r = crate::group_access::set(
+            axum::extract::State(state.clone()),
+            axum::Json(crate::group_access::AccessRequest { gssi: GSSI.to_string(), mode: GroupAccessMode::Allow, issis: "5000\n5001".into(), rx_only: false, rx_only_issis: String::new() }),
+        ).await;
+        assert_eq!(r.status(), axum::http::StatusCode::OK);
+        assert_eq!(affiliated(&state).await, vec![5000, 5001]);
+        talk(&state, st[0].0, 5000, 0).await;
+        let heard: Vec<usize> = st.iter_mut().map(|(_, rx)| drain(rx)).collect();
+        assert_eq!(heard, vec![0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let saved = crate::config::Config::load(path.to_str().unwrap()).unwrap();
+        assert_eq!(saved.group_access[&GSSI.to_string()].issis, vec![5000, 5001]);
+        crate::CONFIG_WRITE_APPLIED_LIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::fs::remove_file(&path);
     }
 }

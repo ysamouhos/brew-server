@@ -1,0 +1,1216 @@
+//! The redesigned dashboard, served at `/` (unless `[dashboard] legacy_ui =
+//! true`) and always at `/ui`. One page with a sidebar (FlowStation's layout), light
+//! and dark following the system. Its own pages read the same JSON APIs as
+//! the classic dashboard; the classic sub-pages (SIP, SMS Center, HA,
+//! Settings, Map, Telemetry SDS) are shown inside it in their embedded form
+//! (`?embed=1`, see `EMBED_STYLE`).
+
+use axum::response::Html;
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+static PAGE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let name = crate::dashboard::html_escape(crate::dashboard::server_name());
+    PAGE_HTML.replace("__VERSION__", VERSION).replace("__SERVERNAME__", &name)
+});
+
+pub async fn page() -> Html<&'static str> {
+    Html(PAGE.as_str())
+}
+
+// The classic pages' embedded form lives in `dashboard::STYLE` (`html.embed`).
+const PAGE_HTML: &str = r##"<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>__SERVERNAME__</title>
+<style>
+:root{
+  --bg:#eceff4;--bg2:#ffffff;--bg3:#f3f5f9;--bg4:#d6dde7;
+  --border:#dde3ec;--sep:rgba(20,30,50,0.09);
+  --accent:#00876a;--accent2:#1565c0;--warn:#9a5400;--danger:#c0203a;--ok:#16876b;
+  --text:#16202e;--text2:#3d4f66;--text3:#5f7188;
+  --sidebar:#ffffff;--sidebar-border:#e3e8ef;
+  --shadow:0 1px 3px rgba(20,30,50,.06),0 4px 16px -8px rgba(20,30,50,.10);
+  --hair:inset 0 1px 0 rgba(255,255,255,.7);
+  --on-accent:#ffffff;
+  --mono:ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,'Inter','Segoe UI',system-ui,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){
+  --bg:#090d14;--bg2:#111824;--bg3:#19212f;--bg4:#2b3850;
+  --border:#232e40;--sep:rgba(255,255,255,0.07);
+  --accent:#00d4a8;--accent2:#4da6ff;--warn:#ffb224;--danger:#ff4d6d;--ok:#2ec6a6;
+  --text:#eef3fb;--text2:#94abc9;--text3:#7f93b5;
+  --sidebar:#070a10;--sidebar-border:#161d2c;
+  --shadow:0 1px 2px rgba(0,0,0,.45),0 10px 28px -14px rgba(0,0,0,.65);
+  --hair:inset 0 1px 0 rgba(255,255,255,.05);
+  --on-accent:#04120e;
+}}
+:root[data-theme=dark]{
+  --bg:#090d14;--bg2:#111824;--bg3:#19212f;--bg4:#2b3850;
+  --border:#232e40;--sep:rgba(255,255,255,0.07);
+  --accent:#00d4a8;--accent2:#4da6ff;--warn:#ffb224;--danger:#ff4d6d;--ok:#2ec6a6;
+  --text:#eef3fb;--text2:#94abc9;--text3:#7f93b5;
+  --sidebar:#070a10;--sidebar-border:#161d2c;
+  --shadow:0 1px 2px rgba(0,0,0,.45),0 10px 28px -14px rgba(0,0,0,.65);
+  --hair:inset 0 1px 0 rgba(255,255,255,.05);
+  --on-accent:#04120e;
+}
+:root[data-theme=dark]{color-scheme:dark} :root[data-theme=light]{color-scheme:light}
+@media (prefers-contrast:more){:root{--text2:var(--text);--text3:var(--text2);--border:var(--text3)}}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--text);font:14px/1.45 var(--sans);display:flex;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit}
+svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+a{color:var(--accent2);text-decoration:none}
+:focus-visible{outline:2px solid var(--accent2);outline-offset:2px}
+[hidden]{display:none!important}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+
+/* Sidebar */
+#sb{width:236px;min-width:236px;background:var(--sidebar);border-right:1px solid var(--sidebar-border);display:flex;flex-direction:column;height:100vh;height:100dvh;position:sticky;top:0;z-index:20}
+.brand{padding:18px 16px 14px;border-bottom:1px solid var(--sidebar-border);display:flex;flex-direction:column;gap:12px}
+.brand-row{display:flex;gap:10px;align-items:center}
+.logo{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;color:var(--accent);flex-shrink:0;
+  background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 16%,transparent),color-mix(in srgb,var(--accent2) 16%,transparent));
+  border:1px solid color-mix(in srgb,var(--accent) 30%,transparent)}
+.bname{font-weight:700;font-size:14px;line-height:1.2;overflow-wrap:anywhere}
+.bsub{font:10.5px var(--mono);color:var(--text3);letter-spacing:.04em}
+.hw{border:1px solid var(--sidebar-border);border-radius:10px;padding:4px;background:color-mix(in srgb,var(--text) 3%,transparent);box-shadow:var(--hair)}
+.hw-row{display:flex;align-items:center;gap:9px;padding:6px 7px;border-radius:7px;cursor:pointer}
+.hw-row:hover{background:color-mix(in srgb,var(--text) 4%,transparent)}
+.hw-row+.hw-row{box-shadow:inset 0 1px 0 var(--sidebar-border)}
+.hw-g{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;color:var(--accent);background:color-mix(in srgb,var(--accent) 13%,transparent)}
+.hw-g svg{width:13px;height:13px}
+.hw-g.b{color:var(--accent2);background:color-mix(in srgb,var(--accent2) 13%,transparent)}
+.hw-k{font:700 9px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--text3)}
+.hw-v{font:600 11.5px var(--mono);color:var(--text2)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);margin-left:auto;flex-shrink:0}
+.dot.w{background:var(--warn)} .dot.d{background:var(--danger)} .dot.i{background:var(--text3)}
+nav{padding:8px 8px 12px;overflow:auto;flex:1}
+.grp{font:700 10.5px var(--sans);letter-spacing:.1em;text-transform:uppercase;color:var(--text3);padding:14px 10px 6px}
+.nv{display:flex;align-items:center;gap:11px;padding:8px 10px;border-radius:8px;color:var(--text2);font-size:14px;cursor:pointer;min-height:36px;border:0;background:none;width:100%;text-align:left}
+.nv svg{color:var(--text3)}
+.nv:hover{background:color-mix(in srgb,var(--text) 5%,transparent)}
+.nv.on{background:color-mix(in srgb,var(--accent) 13%,transparent);color:var(--accent);font-weight:600}
+.nv.on svg{color:var(--accent)}
+.badge{margin-left:auto;font:700 10.5px var(--mono);padding:1px 7px;border-radius:99px;background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)}
+.badge.w{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.badge:empty{display:none}
+.lock{margin-left:auto;color:var(--text3);display:none} .lock svg{width:13px;height:13px}
+body.ro .lock{display:inline-flex}
+.sbfoot{border-top:1px solid var(--sidebar-border);padding:10px 14px 12px;font:11px var(--sans);color:var(--text3);line-height:1.6}
+.sbfoot a{color:var(--accent2)}
+.sbfoot .acct{display:flex;align-items:center;gap:8px;margin-bottom:6px;color:var(--text2)}
+.sbfoot .acct button{margin-left:auto}
+
+/* Main */
+main{flex:1;min-width:0;display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:auto}
+.top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;padding:14px 28px;border-bottom:1px solid var(--sidebar-border);
+  background:color-mix(in srgb,var(--bg) 82%,transparent);-webkit-backdrop-filter:blur(14px) saturate(1.4);backdrop-filter:blur(14px) saturate(1.4)}
+@media (prefers-reduced-transparency:reduce){.top{background:var(--bg)}}
+.top h1{font-size:22px;font-weight:700;margin:0;letter-spacing:-.01em}
+.pill{display:inline-flex;align-items:center;gap:6px;font:600 11.5px var(--sans);padding:3px 10px;border-radius:99px;border:1px solid var(--border);color:var(--text2);background:var(--bg2);white-space:nowrap}
+.pill i{width:7px;height:7px;border-radius:50%;background:var(--ok)}
+.pill.w i{background:var(--warn)} .pill.d i{background:var(--danger)}
+.sp{flex:1}
+.btn{display:inline-flex;align-items:center;gap:7px;min-height:32px;padding:0 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font:600 12.5px var(--sans);cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:var(--text3)}
+.btn svg{width:15px;height:15px}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.btn.danger{color:var(--danger)}
+.btn:disabled{opacity:.45;cursor:default}
+.btn.ic{width:32px;padding:0;justify-content:center}
+.content{padding:22px 28px 40px;display:flex;flex-direction:column;gap:18px;width:100%;max-width:1500px}
+.emg{display:none;align-items:center;gap:10px;flex-wrap:wrap;background:var(--danger);color:#fff;padding:10px 28px;font-weight:700}
+.emg.on{display:flex}
+.emg .c{background:rgba(255,255,255,.2);border-radius:5px;padding:2px 8px;font-weight:600;font-size:13px}
+
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:12px}
+.tile{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow),var(--hair);cursor:default}
+a.tile{color:inherit;cursor:pointer}
+.tile .k{font-size:12.5px;color:var(--text2);display:flex;align-items:center;gap:7px}
+.tile .k svg{width:15px;height:15px;color:var(--text3)}
+.tile .v{font-size:28px;font-weight:700;letter-spacing:-.02em;margin-top:4px;font-variant-numeric:tabular-nums}
+.tile .s{font-size:12.5px;color:var(--text3)}
+.tile.live{border-color:color-mix(in srgb,var(--accent) 45%,var(--border))}
+.tile.live .v{color:var(--accent)}
+
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow),var(--hair);overflow:hidden}
+.ch{display:flex;align-items:center;gap:10px;padding:13px 18px;border-bottom:1px solid var(--sep);flex-wrap:wrap}
+.ch h2{margin:0;font-size:15px;font-weight:650}
+.ch .cnt{font:600 11.5px var(--mono);color:var(--text3)}
+.ch a{font-size:12.5px;font-weight:600}
+.help{width:22px;height:22px;border-radius:50%;border:1px solid var(--border);display:grid;place-items:center;color:var(--text3);font:700 11px var(--sans);cursor:pointer;background:none;padding:0}
+.help[aria-expanded=true]{color:var(--accent2);border-color:var(--accent2)}
+.note{padding:12px 18px;font-size:12.5px;color:var(--text2);background:color-mix(in srgb,var(--accent2) 6%,transparent);border-top:1px solid var(--sep);display:flex;gap:10px}
+.note[hidden]{display:none}
+.note svg{color:var(--accent2);width:16px;height:16px;margin-top:1px}
+.empty{padding:16px 18px;color:var(--text3);font-size:13px}
+.grid2{display:grid;grid-template-columns:1.35fr 1fr;gap:18px}
+.tw{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font:600 11px var(--sans);letter-spacing:.04em;text-transform:uppercase;color:var(--text3);padding:9px 18px;background:color-mix(in srgb,var(--text) 2.5%,transparent);white-space:nowrap}
+td{padding:10px 18px;border-top:1px solid var(--sep);font-size:13.5px;vertical-align:middle}
+td.m,.m{font-family:var(--mono);font-size:12.5px}
+.mut{color:var(--text3)}
+.num{font-variant-numeric:tabular-nums}
+tr.click{cursor:pointer}
+tr.click:hover td{background:color-mix(in srgb,var(--text) 2.5%,transparent)}
+tr.off td{color:var(--text3)}
+.chip{display:inline-flex;align-items:center;gap:5px;font:600 11.5px var(--sans);padding:2px 8px;border-radius:6px;background:var(--bg3);border:1px solid var(--border);color:var(--text2);white-space:nowrap;margin:1px 0}
+.chip.a{color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);border-color:color-mix(in srgb,var(--accent) 28%,transparent)}
+.chip.b{color:var(--accent2);background:color-mix(in srgb,var(--accent2) 12%,transparent);border-color:color-mix(in srgb,var(--accent2) 28%,transparent)}
+.chip.w{color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent);border-color:color-mix(in srgb,var(--warn) 30%,transparent)}
+.chip.d{color:var(--danger);background:color-mix(in srgb,var(--danger) 12%,transparent);border-color:color-mix(in srgb,var(--danger) 30%,transparent)}
+.chip.i{color:var(--text3)}
+.tg{font:600 12px var(--mono);padding:2px 8px;border-radius:6px;background:var(--bg3);border:1px solid var(--border);display:inline-block;margin:1px 0;white-space:nowrap}
+.tg.src{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 35%,transparent);background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.st{display:inline-flex;align-items:center;gap:7px;font-weight:600;font-size:13px;white-space:nowrap}
+.st i{width:8px;height:8px;border-radius:50%;background:var(--ok)}
+.st.w i{background:var(--warn)} .st.d i{background:var(--danger)} .st.i i{background:var(--text3)} .st.i{color:var(--text3)}
+
+.row{display:flex;align-items:center;gap:14px;padding:13px 18px;border-top:1px solid var(--sep)}
+.row:first-child{border-top:0}
+.ric{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;background:color-mix(in srgb,var(--accent) 14%,transparent);color:var(--accent);flex-shrink:0}
+.ric.p{background:color-mix(in srgb,var(--accent2) 14%,transparent);color:var(--accent2)}
+.ric.e{background:color-mix(in srgb,var(--danger) 14%,transparent);color:var(--danger)}
+.ric.s{background:var(--bg3);color:var(--text2);border:1px solid var(--border)}
+.rm{flex:1;min-width:0}
+.rt{font-weight:650;font-size:14.5px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.rs{font-size:12.5px;color:var(--text2);margin-top:2px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.rr{text-align:right;font-size:12.5px;color:var(--text2);flex-shrink:0}
+.rr b{font:600 13px var(--mono);color:var(--text2)}
+.talk{display:inline-flex;align-items:center;gap:6px;color:var(--accent);font-weight:600}
+.bars{display:inline-flex;gap:2px;align-items:flex-end;height:12px}
+.bars b{width:3px;background:var(--accent);border-radius:1px;animation:eq 1s ease-in-out infinite}
+.bars b:nth-child(2){animation-delay:-.3s}.bars b:nth-child(3){animation-delay:-.6s}.bars b:nth-child(4){animation-delay:-.15s}
+@keyframes eq{0%,100%{height:4px}50%{height:12px}}
+@media (prefers-reduced-motion:reduce){.bars b{animation:none;height:9px}}
+.ev{display:flex;gap:10px;padding:10px 18px;border-top:1px solid var(--sep);align-items:center;font-size:13px;flex-wrap:wrap}
+.ev:first-child{border-top:0}
+.ev time{font:12px var(--mono);color:var(--text3);min-width:62px}
+.arrow{color:var(--text3)}
+.ml{margin-left:auto}
+
+.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.seg{display:inline-flex;background:var(--bg3);border:1px solid var(--border);border-radius:9px;padding:2px;flex-wrap:wrap}
+.seg button{padding:5px 12px;border-radius:7px;font-size:12.5px;font-weight:600;color:var(--text2);border:0;background:none;cursor:pointer;min-height:28px}
+.seg button[aria-pressed=true]{background:var(--bg2);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.2)}
+input.f,select.f,textarea.f{height:32px;padding:0 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font:13px var(--sans);min-width:0}
+input.f::placeholder,textarea.f::placeholder{color:var(--text3)}
+.search{position:relative;display:inline-flex;align-items:center}
+.search svg{position:absolute;left:9px;width:15px;height:15px;color:var(--text3);pointer-events:none}
+.search input{padding-left:30px;width:240px}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px 24px;padding:6px 0 10px}
+.kv span.l{display:block;font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+tr.exp td{background:var(--bg3);border-top:0}
+
+/* Routing */
+.tog{width:44px;height:26px;border-radius:13px;background:var(--bg4);position:relative;flex-shrink:0;border:0;cursor:pointer;padding:0}
+.tog::after{content:"";position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.35);transition:left .15s}
+.tog[aria-checked=true]{background:var(--ok)} .tog[aria-checked=true]::after{left:20px}
+.tog:disabled{opacity:.5;cursor:default}
+@media (prefers-reduced-motion:reduce){.tog::after{transition:none}}
+.pool .flow{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px}
+.pool.offp .rt{color:var(--text3)} .pool.offp .flow{opacity:.6}
+@media (max-width:760px){.row.pool{flex-wrap:wrap;align-items:flex-start}.row.pool .rm{flex:1 1 calc(100% - 70px);min-width:0}.row.pool>.btn{margin-left:auto}.row.pool>.btn+.btn{margin-left:0}}
+.chk{width:18px;height:18px;accent-color:var(--accent);cursor:pointer}
+.selbar{display:flex;gap:10px;align-items:center;padding:12px 18px;border-top:1px solid var(--sep);background:color-mix(in srgb,var(--accent) 6%,transparent);flex-wrap:wrap}
+.msg{font-size:12.5px;padding:0 18px 12px}
+.msg:empty{display:none}
+#cfg-msg{white-space:pre-wrap;font-family:var(--mono,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:12px}
+.msg.err{color:var(--danger)} .msg.ok{color:var(--ok)}
+
+/* Sheet (pool editor) */
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center;z-index:50;padding:16px}
+.scrim.on{display:flex}
+.sheet{background:var(--bg2);border:1px solid var(--border);border-radius:14px;box-shadow:0 28px 64px -22px rgba(0,0,0,.5);width:min(520px,100%);max-height:90vh;overflow:auto}
+.sheet h3{margin:0;font-size:17px}
+.sheet .sb{padding:16px 20px;display:flex;flex-direction:column;gap:14px}
+.sheet label.l{font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:5px}
+.sheet .acts{display:flex;gap:10px;justify-content:flex-end;padding:14px 20px;border-top:1px solid var(--sep)}
+.sheet input.f{width:100%}
+
+/* Account button (top right) and login window */
+.acctbtn{display:inline-flex;align-items:center;gap:8px;min-height:34px;padding:0 10px 0 4px;border-radius:99px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font:600 12.5px var(--sans);cursor:pointer}
+.acctbtn:hover{border-color:var(--text3)}
+.acctbtn .av{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;background:var(--accent);color:var(--on-accent);font-weight:700;font-size:12px;text-transform:uppercase}
+.acctbtn svg{width:14px;height:14px;color:var(--text3)}
+.loginbtn{padding:0 14px}
+.loginbtn svg{width:16px;height:16px}
+.menu{position:absolute;right:28px;top:56px;z-index:40;min-width:220px;background:var(--bg2);border:1px solid var(--border);border-radius:12px;box-shadow:0 18px 48px -16px rgba(0,0,0,.45);padding:6px;display:none}
+.menu.on{display:block}
+.menu .who{padding:10px 12px 8px;border-bottom:1px solid var(--sep);margin-bottom:4px}
+.menu .who b{display:block;font-size:14px}
+.menu .who span{font-size:12px;color:var(--text3)}
+.menu button{display:flex;width:100%;align-items:center;gap:10px;padding:9px 12px;border:0;background:none;color:var(--text);font:500 13px var(--sans);border-radius:8px;cursor:pointer;text-align:left}
+.menu button:hover{background:var(--bg3)}
+.menu button svg{width:16px;height:16px;color:var(--text3)}
+.login{position:fixed;inset:0;z-index:60;display:none;align-items:center;justify-content:center;padding:16px;
+  background:color-mix(in srgb,var(--bg) 55%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.3);backdrop-filter:blur(18px) saturate(1.3)}
+.login.on{display:flex}
+.login.solid{background:var(--bg)}
+@media (prefers-reduced-transparency:reduce){.login{background:var(--bg)}}
+.lcard{width:min(380px,100%);background:var(--bg2);border:1px solid var(--border);border-radius:18px;box-shadow:0 32px 80px -28px rgba(0,0,0,.6);padding:30px 28px 24px;position:relative}
+.lcard .logo{width:52px;height:52px;border-radius:14px;margin:0 auto 14px;display:grid;place-items:center}
+.lcard .logo svg{width:28px;height:28px}
+.lcard h2{text-align:center;margin:0;font-size:20px;letter-spacing:-.01em}
+.lcard .lsub{text-align:center;color:var(--text3);font-size:13px;margin:4px 0 22px}
+.lcard label{display:block;font-size:12px;font-weight:600;color:var(--text2);margin:0 0 6px}
+.lcard .fld{position:relative;margin-bottom:14px}
+.lcard input{width:100%;height:42px;padding:0 12px;border-radius:10px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font:15px var(--sans)}
+.lcard input:focus{outline:2px solid color-mix(in srgb,var(--accent) 55%,transparent);outline-offset:1px;border-color:var(--accent)}
+.lcard .eye{position:absolute;right:6px;bottom:6px;width:30px;height:30px;border:0;background:none;color:var(--text3);cursor:pointer;border-radius:7px;display:grid;place-items:center}
+.lcard .eye svg{width:17px;height:17px}
+.lcard .go{width:100%;height:42px;justify-content:center;font-size:14px;margin-top:4px}
+.lcard .lerr{color:var(--danger);font-size:13px;min-height:18px;margin:2px 0 8px;display:flex;gap:6px;align-items:center}
+.lcard .lerr svg{width:15px;height:15px;flex-shrink:0}
+.lcard .x{position:absolute;right:12px;top:12px;width:32px;height:32px;border:0;background:none;color:var(--text3);border-radius:8px;cursor:pointer;display:grid;place-items:center}
+.lcard .x svg{width:16px;height:16px}
+.lcard .lfoot{text-align:center;font-size:12px;color:var(--text3);margin-top:16px}
+@keyframes shake{20%,60%{transform:translateX(-6px)}40%,80%{transform:translateX(6px)}}
+.lcard.bad{animation:shake .35s}
+@media (prefers-reduced-motion:reduce){.lcard.bad{animation:none}}
+body.locked aside,body.locked main,body.locked .tabbar{visibility:hidden}
+
+/* Accounts and configuration */
+.svc{display:flex;gap:8px;flex-wrap:wrap;padding:12px 18px;border-bottom:1px solid var(--sep)}
+.yes{color:var(--ok);font-weight:600} .no{color:var(--text3)}
+textarea.cfg{width:100%;min-height:62vh;resize:vertical;border:0;border-top:1px solid var(--sep);background:var(--bg3);color:var(--text);font:12.5px/1.55 var(--mono,ui-monospace,SFMono-Regular,Menlo,monospace);padding:14px 18px;tab-size:4;white-space:pre;overflow:auto}
+textarea.cfg:focus{outline:none;box-shadow:inset 0 0 0 2px color-mix(in srgb,var(--accent) 45%,transparent)}
+
+iframe.embed{width:100%;border:0;min-height:calc(100vh - 130px);background:transparent}
+/* The map sizes itself to the frame: a fixed frame, no growing with it. */
+iframe.embed.fixed{min-height:0;height:calc(100dvh - 120px)}
+.menu .mob{display:none}
+.menu .thm{padding:8px 8px 6px;border-top:1px solid var(--sep);margin-top:4px}
+.menu .thm .k{font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin:0 4px 6px}
+.menu .thm .seg{display:flex;width:100%}
+.menu .thm .seg button{flex:1;display:flex;justify-content:center;gap:5px;align-items:center;padding:6px 4px;font-size:12px;border-radius:7px;width:auto;margin:0}
+.menu .thm .seg button svg{width:14px;height:14px}
+.menu.anon .who,.menu.anon .acc-only{display:none}
+.menu.anon .thm{border-top:0;margin-top:0}
+.iconbtn{width:34px;height:34px;padding:0;justify-content:center;border-radius:50%;flex:none}
+.kv.tight{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px 18px}
+td .sub{display:block;font-size:12px;color:var(--text3);font-weight:400;margin-top:2px;white-space:normal}
+.yn{white-space:nowrap}
+
+/* Phone */
+.tabbar{display:none}
+@media (max-width:760px){
+  #rochip{display:none}
+  #sb{position:fixed;left:0;top:0;transform:translateX(-100%);transition:transform .2s;box-shadow:var(--shadow);z-index:35;padding-bottom:env(safe-area-inset-bottom)}
+  body.sbopen #sb{transform:none}
+  .top{padding:12px 16px}
+  .top h1{font-size:24px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .hide-s{display:none!important}
+  .content{padding:14px 16px 100px;gap:14px}
+  .tiles{grid-template-columns:1fr 1fr;gap:10px}
+  .grid2{grid-template-columns:1fr}
+  th,td{padding-left:12px;padding-right:12px}
+  .search input{width:100%}
+  .tabbar{display:flex;position:fixed;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom) - 13px);height:62px;border-radius:31px;z-index:30;
+    background:color-mix(in srgb,var(--bg2) 76%,transparent);-webkit-backdrop-filter:blur(20px) saturate(1.6);backdrop-filter:blur(20px) saturate(1.6);border:1px solid var(--border);box-shadow:var(--shadow);justify-content:space-around;align-items:center}
+  .tab{display:flex;flex-direction:column;align-items:center;gap:2px;font-size:10.5px;color:var(--text3);font-weight:600;min-width:56px;min-height:44px;justify-content:center;border:0;background:none;cursor:pointer}
+  .tab svg{width:22px;height:22px}
+  .tab.on{color:var(--accent)}
+  .menu{right:16px}
+  .menu .mob{display:flex}
+  .sbfoot .classic{display:none}
+  iframe.embed.fixed{height:calc(100dvh - 150px)}
+  /* Telemetry and other detail lists: two columns, smaller type */
+  .kv.tight{grid-template-columns:1fr 1fr;gap:6px 14px;padding:4px 0 6px;font-size:13px}
+  .kv.tight span.l{font-size:10px}
+  .card .ch h2{font-size:14.5px}
+  .tlm .chips{padding:0 14px 10px!important;gap:4px!important}
+  .tlm .chips .chip{font-size:11px;padding:2px 7px}
+  .tlm .kv{padding:10px 14px!important}
+  .acc td,.acc th{padding-left:8px;padding-right:8px}
+}
+@media (max-width:760px) and (prefers-reduced-transparency:reduce){.tabbar{background:var(--bg2)}}
+</style>
+<script>try{const t=localStorage.getItem('brew-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;}catch(e){}</script>
+</head>
+<body>
+<aside id="sb" aria-label="Navigation">
+  <div class="brand">
+    <div class="brand-row">
+      <div class="logo" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><path d="M12 11v10M8 21h8M9.5 21l2.5-10 2.5 10"/><circle cx="12" cy="9" r="1.4"/><path d="M7.8 5.8a6 6 0 0 0 0 6.4M16.2 5.8a6 6 0 0 1 0 6.4M5 3.5a10 10 0 0 0 0 11M19 3.5a10 10 0 0 1 0 11"/></svg></div>
+      <div><div class="bname">__SERVERNAME__</div><div class="bsub">brew-server v__VERSION__</div></div>
+    </div>
+    <div class="hw">
+      <div class="hw-row" data-go="stations"><div class="hw-g" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><path d="M4 12h4l3-8 4 16 3-8h2"/></svg></div><div><div class="hw-k">Brew</div><div class="hw-v" id="hw-brew">…</div></div><span class="dot i" id="hw-brew-dot"></span></div>
+      <div class="hw-row" data-go="ha"><div class="hw-g b" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg></div><div><div class="hw-k">HA</div><div class="hw-v" id="hw-ha">…</div></div><span class="dot i" id="hw-ha-dot"></span></div>
+    </div>
+  </div>
+  <nav id="nav"></nav>
+  <div class="sbfoot">
+    <span class="classic"><a href="/classic">Classic dashboard</a><br></span>
+    brew-server by ysamouhos<br>
+    Redesign + extra features: <a href="https://github.com/sebastianmadl" target="_blank" rel="noopener">OE4SXM</a>
+  </div>
+</aside>
+
+<main>
+  <div class="emg" id="emg" role="alert"><span>EMERGENCY ACTIVE</span><span id="emg-list" style="display:flex;gap:8px;flex-wrap:wrap"></span></div>
+  <div class="top">
+    <h1 id="title">Overview</h1>
+    <span class="pill" id="live"><i></i><span>Live</span></span>
+    <span class="sp"></span>
+    <span class="pill" id="rochip" hidden title="You can look at everything; changes need an admin login">Read only</span>
+    <button class="btn iconbtn" id="themebtn" hidden aria-haspopup="menu" aria-expanded="false" title="Appearance" onclick="toggleMenu(event,true)"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><span class="sr">Appearance</span></button>
+    <button class="btn loginbtn" id="loginbtn" hidden onclick="openLogin(false)"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h3M14 17l5-5-5-5M19 12H8"/></svg><span>Log in</span></button>
+    <button class="acctbtn" id="acctbtn" hidden aria-haspopup="menu" aria-expanded="false" onclick="toggleMenu(event)"><span class="av" id="acct-av"></span><span id="acct-name"></span><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button>
+  </div>
+  <div class="menu" id="menu" role="menu"><div class="who"><b id="menu-name"></b><span id="menu-role"></span></div>
+    <button role="menuitem" class="acc-only" onclick="go('accounts');closeMenu()" id="menu-acc"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M15 8l2 2"/></svg>Accounts</button>
+    <button role="menuitem" class="mob acc-only" onclick="location.href='/classic'"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>Classic dashboard</button>
+    <button role="menuitem" class="acc-only" onclick="doLogout()"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l-5-5 5-5M5 12h11"/></svg>Log out</button>
+    <div class="thm"><div class="k">Appearance</div><div class="seg" role="radiogroup" aria-label="Appearance" id="thm"></div></div>
+  </div>
+  <div class="content" id="content"></div>
+</main>
+
+<div class="tabbar" role="tablist" aria-label="Pages">
+  <button class="tab" data-tab="overview"></button>
+  <button class="tab" data-tab="calls"></button>
+  <button class="tab" data-tab="stations"></button>
+  <button class="tab" data-tab="routing"></button>
+  <button class="tab" data-tab="more"></button>
+</div>
+
+<div class="login" id="login" role="dialog" aria-modal="true" aria-labelledby="login-title">
+  <form class="lcard" id="lcard" onsubmit="submitLogin(event)" autocomplete="on">
+    <button type="button" class="x" id="login-x" onclick="closeLogin()" title="Close"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg><span class="sr">Close</span></button>
+    <div class="logo" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><path d="M12 11v10M8 21h8M9.5 21l2.5-10 2.5 10"/><circle cx="12" cy="9" r="1.4"/><path d="M7.8 5.8a6 6 0 0 0 0 6.4M16.2 5.8a6 6 0 0 1 0 6.4M5 3.5a10 10 0 0 0 0 11M19 3.5a10 10 0 0 1 0 11"/></svg></div>
+    <h2 id="login-title">Sign in</h2>
+    <div class="lsub">__SERVERNAME__</div>
+    <div class="fld"><label for="lu">Username</label><input id="lu" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required></div>
+    <div class="fld"><label for="lp">Password</label><input id="lp" name="password" type="password" autocomplete="current-password" required style="padding-right:42px">
+      <button type="button" class="eye" onclick="const p=$('lp');p.type=p.type==='password'?'text':'password';this.setAttribute('aria-pressed',p.type==='text')" aria-pressed="false" title="Show password"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg><span class="sr">Show password</span></button></div>
+    <div class="lerr" id="lerr" role="alert"></div>
+    <button class="btn pri go" id="lgo" type="submit">Sign in</button>
+    <div class="lfoot">brew-server dashboard</div>
+  </form>
+</div>
+
+<div class="scrim" id="scrim" onclick="if(event.target===this)closeSheet()"><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" id="sheet"></div></div>
+
+<script>
+'use strict';
+const I={
+ home:'<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>',
+ call:'<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/>',
+ sds:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+ radios:'<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M21.5 20a6.5 6.5 0 0 0-4-6"/>',
+ map:'<path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2zM9 4v14M15 6v14"/>',
+ bts:'<path d="M12 11v10M8 21h8M9.5 21l2.5-10 2.5 10"/><circle cx="12" cy="9" r="1.4"/><path d="M7.8 5.8a6 6 0 0 0 0 6.4M16.2 5.8a6 6 0 0 1 0 6.4"/>',
+ routing:'<circle cx="5" cy="6" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="12" r="2"/><path d="M7 6h3a4 4 0 0 1 4 4 2 2 0 0 0 2 2h1M7 18h3a4 4 0 0 0 4-4"/>',
+ roam:'<path d="M7 4L3 8l4 4M3 8h13a5 5 0 0 1 0 10h-2M17 20l4-4-4-4M21 16H8"/>',
+ globe:'<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
+ tele:'<path d="M3 12h4l3-7 4 14 3-7h4"/>',
+ ctl:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2"/>',
+ sip:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 10h4M7 14h7M16 10h1"/>',
+ sipcfg:'<path d="M4 6h10M4 12h6M4 18h10"/><circle cx="17" cy="6" r="2"/><circle cx="13" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
+ sms:'<path d="M4 6h16v12H4z"/><path d="M4 6l8 7 8-7"/>',
+ tsds:'<path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8M8 17h5"/>',
+ ha:'<path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/>',
+ set:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 14H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 3.1V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0 1.2 2.9H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+ key:'<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M15 8l2 2"/>',
+ file:'<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/>',
+ book:'<path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v17H6.5A2.5 2.5 0 0 0 4 21.5zM4 21.5A2.5 2.5 0 0 1 6.5 19H20v3H6.5"/><path d="M9 7h7M9 11h5"/>',
+ trash:'<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
+ pin:'<path d="M12 21s-7-6.5-7-12a7 7 0 0 1 14 0c0 5.5-7 12-7 12z"/><circle cx="12" cy="9" r="2.5"/>',
+ lock:'<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+ info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/>',
+ more:'<circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/>',
+ plus:'<path d="M12 5v14M5 12h14"/>',
+ search:'<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
+ alert:'<path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/>'
+};
+const ic=(n,cls)=>`<svg class="i${cls?' '+cls:''}" viewBox="0 0 24 24" aria-hidden="true">${I[n]}</svg>`;
+// Pages: [id, title, icon, group, embedded classic page or null, admin only]
+const PAGES=[
+ ['overview','Overview','home','Monitor'],['calls','Calls','call','Monitor'],['sds','SDS','sds','Monitor'],
+ ['radios','Radios','radios','Monitor'],['issis','Directory','book','Monitor'],['map','Map','map','Monitor','/map'],
+ ['stations','Stations & Cells','bts','Network'],['routing','Routing','routing','Network'],['roaming','Roaming','roam','Network'],['multinet','Multi Network','globe','Network',null,true],
+ ['telemetry','Telemetry','tele','Network'],['control','Control','ctl','Network',null,true],['accounts','Accounts','key','Network',null,true],
+ ['sip','SIP / VoIP','sip','Integrations','/sip'],['sipcfg','SIP Config','sipcfg','Integrations','/sip-config'],
+ ['sms','SMS Center','sms','Integrations','/sms-center'],['tsds','Telemetry SDS','tsds','Integrations','/telemetry-sds'],
+ ['ha','High Availability','ha','System','/ha'],['config','Configuration','file','System',null,true],['settings','Settings','set','System','/settings',true]
+];
+const PG=Object.fromEntries(PAGES.map(p=>[p[0],p]));
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const tm=ms=>ms?new Date(ms).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}):'';
+const tmd=ms=>{if(!ms)return '';const d=new Date(ms),n=new Date();return d.toDateString()===n.toDateString()?tm(ms):d.toLocaleDateString()+' '+tm(ms);};
+function dur(ms){const s=Math.max(0,Math.floor(ms/1000));const h=Math.floor(s/3600),m=Math.floor(s%3600/60),x=s%60;return (h?h+':'+String(m).padStart(2,'0'):String(m).padStart(2,'0'))+':'+String(x).padStart(2,'0');}
+function ago(ms){if(!ms)return '—';const s=Math.max(0,(Date.now()-ms)/1000);if(s<60)return Math.floor(s)+' s';if(s<3600)return Math.floor(s/60)+' min';if(s<86400)return Math.floor(s/3600)+' h '+Math.floor(s%3600/60)+' min';return Math.floor(s/86400)+' d';}
+const mhz=hz=>hz?(hz/1e6).toFixed(5).replace(/0+$/,'').replace(/\.$/,'')+' MHz':'—';
+const isToday=ms=>new Date(ms).toDateString()===new Date().toDateString();
+// Every request says it comes from this page: without a login the server
+// then answers a plain 401 (this page's login window opens) instead of
+// making the browser pop its own dialog.
+async function api(u,opt){opt=opt||{};opt.headers=Object.assign({'x-brew-ui':'1'},opt.headers||{});opt.cache='no-store';
+  const r=await fetch(u,opt);const t=await r.text();
+  if(r.status===401){needAuth();throw new Error('Log in first');}
+  if(!r.ok)throw new Error(t||String(r.status));try{return JSON.parse(t)}catch(e){return t}}
+const getJ=u=>api(u);
+const postJ=(u,body)=>api(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+function doLogin(){openLogin(false);}
+let authAsk=null;
+function needAuth(){
+  if($('login').classList.contains('on')||authAsk)return;
+  authAsk=fetch('/api/whoami',{cache:'no-store',headers:{'x-brew-ui':'1'}}).then(r=>r.json()).then(w=>{D.who=w;openLogin(!!w.need_login);}).catch(()=>{}).finally(()=>{authAsk=null;});
+}
+function openLogin(must){
+  closeMenu();$('login').classList.add('on');$('login').classList.toggle('solid',must);document.body.classList.toggle('locked',must);
+  $('login-x').hidden=must;$('lerr').textContent='';$('lgo').disabled=false;setTimeout(()=>($('lu').value?$('lp'):$('lu')).focus(),30);
+}
+function closeLogin(){if(document.body.classList.contains('locked'))return;$('login').classList.remove('on');}
+async function submitLogin(e){
+  e.preventDefault();const b=$('lgo');b.disabled=true;b.textContent='Signing in…';$('lerr').textContent='';
+  try{const r=await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:$('lu').value.trim(),password:$('lp').value})});
+    if(!r.ok)throw new Error(r.status===401?'Wrong username or password.':(await r.text())||'Could not sign in.');
+    $('lp').value='';$('login').classList.remove('on');document.body.classList.remove('locked');
+    await refreshSlow();await refreshFast();if(PG[UI.page][4])show(UI.page);else render(true);
+  }catch(err){$('lerr').innerHTML=ic('alert')+esc(err.message);const c=$('lcard');c.classList.remove('bad');void c.offsetWidth;c.classList.add('bad');$('lp').select();}
+  finally{b.disabled=false;b.textContent='Sign in';}
+}
+async function doLogout(){
+  closeMenu();try{await fetch('/api/logout',{method:'POST'});}catch(e){}
+  // Basic credentials the browser still caches (classic pages) are dropped the old way.
+  const w=await fetch('/api/whoami',{cache:'no-store',headers:{'x-brew-ui':'1'}}).then(r=>r.json()).catch(()=>({}));
+  if(w.username){location.href=location.protocol+'//logout:'+Date.now()+'@'+location.host+location.pathname;return;}
+  location.reload();
+}
+function toggleMenu(e,anon){e.stopPropagation();const m=$('menu'),on=!m.classList.contains('on');m.classList.toggle('anon',!!anon);m.classList.toggle('on',on);
+  (anon?$('themebtn'):$('acctbtn')).setAttribute('aria-expanded',on);drawTheme();}
+function closeMenu(){$('menu').classList.remove('on');$('acctbtn').setAttribute('aria-expanded','false');$('themebtn').setAttribute('aria-expanded','false');}
+// Appearance: follows the system unless the viewer picks light or dark (kept in this browser).
+function curTheme(){return document.documentElement.dataset.theme||'system';}
+function drawTheme(){const t=curTheme();const sun='<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>',
+  moon='<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>',auto='<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg>';
+  $('thm').innerHTML=[['system','System',auto],['light','Light',sun],['dark','Dark',moon]].map(([k,l,i])=>`<button role="radio" aria-checked="${t===k}" aria-pressed="${t===k}" onclick="event.stopPropagation();setTheme('${k}')">${i}${l}</button>`).join('');}
+function setTheme(t){
+  if(t==='system')delete document.documentElement.dataset.theme;else document.documentElement.dataset.theme=t;
+  try{if(t==='system')localStorage.removeItem('brew-theme');else localStorage.setItem('brew-theme',t);}catch(e){}
+  drawTheme();if(PG[UI.page][4])show(UI.page);
+}
+document.addEventListener('click',e=>{if(!e.target.closest('#menu'))closeMenu();});
+
+const D={status:null,conn:null,tele:[],pools:[],nets:null,radios:[],who:{admin:false},names:{},issi:{},gssi:{},access:{},ctl:[],emg:[],ha:null,regs:[]};
+const UI={page:'overview',open:{},filter:{},sel:new Set(),help:{},msg:{}};
+// Messages survive the periodic re-render (kept in UI.msg, drawn by msgDiv).
+function setMsg(id,cls,text){UI.msg[id]=[cls,text];const e=$(id);if(e){e.className='msg '+cls;e.textContent=text;}}
+function msgDiv(id,style){const m=UI.msg[id]||['',''];return `<div class="msg ${m[0]}" id="${id}" role="status"${style?` style="${style}"`:''}>${esc(m[1])}</div>`;}
+let ok=true;
+
+function buildNav(){
+  let h='',g='';
+  for(const [id,t,icn,grp,emb,adm] of PAGES){
+    if(grp!==g){h+=`<div class="grp">${grp}</div>`;g=grp;}
+    h+=`<button class="nv" data-go="${id}">${ic(icn)}<span>${t}</span>${adm?`<span class="lock" title="Admins only">${ic('lock')}<span class="sr">admins only</span></span>`:''}<span class="badge${id==='sms'?' w':''}" id="b-${id}"></span></button>`;
+  }
+  $('nav').innerHTML=h;
+  document.querySelectorAll('.tab').forEach(t=>{const id=t.dataset.tab;const p=id==='more'?['more','More','more']:PG[id];t.innerHTML=ic(p[2])+'<span>'+(id==='stations'?'Stations':p[1])+'</span>';});
+}
+document.addEventListener('click',e=>{
+  const g=e.target.closest('[data-go]');if(g){go(g.dataset.go);return;}
+  const t=e.target.closest('[data-tab]');if(t){if(t.dataset.tab==='more')document.body.classList.toggle('sbopen');else go(t.dataset.tab);return;}
+  if(document.body.classList.contains('sbopen')&&!e.target.closest('#sb'))document.body.classList.remove('sbopen');
+});
+function go(p){if(!PG[p])p='overview';if(location.hash!=='#'+p)location.hash=p;else show(p);}
+window.addEventListener('hashchange',()=>show(location.hash.slice(1)));
+function show(p){
+  if(!PG[p])p='overview';UI.page=p;document.body.classList.remove('sbopen');
+  document.querySelectorAll('.nv').forEach(n=>n.classList.toggle('on',n.dataset.go===p));
+  document.querySelectorAll('.tab').forEach(n=>n.classList.toggle('on',n.dataset.tab===p));
+  $('title').textContent=PG[p][1];
+  document.title=PG[p][1]+' · '+document.querySelector('.bname').textContent;
+  const emb=PG[p][4];
+  // Admin pages of the classic dashboard: without an admin login the frame
+  // would make the browser pop its own dialog, so open the login window.
+  if(PG[p][5]&&!D.who.admin&&D.whoLoaded&&!D.who.need_login)openLogin(false);
+  if(emb&&PG[p][5]&&!D.who.admin){$('content').innerHTML=`<div class="card"><div class="empty">${esc(PG[p][1])} is for admins. <button class="btn pri" onclick="openLogin(false)">Log in</button></div></div>`;return;}
+  if(emb){const fixed=emb==='/map';$('content').innerHTML=`<iframe class="embed${fixed?' fixed':''}" title="${esc(PG[p][1])}" src="${emb}?embed=1${document.documentElement.dataset.theme?'&theme='+document.documentElement.dataset.theme:''}"></iframe>`;if(!fixed)fitFrame();}
+  else render(true);
+  $('content').parentElement.scrollTop=0;
+}
+function fitFrame(){const f=document.querySelector('iframe.embed');if(!f)return;f.onload=()=>{try{const d=f.contentDocument;const fit=()=>{f.style.height=Math.max(window.innerHeight-130,d.documentElement.scrollHeight+20)+'px';};fit();new ResizeObserver(fit).observe(d.body);}catch(e){}};}
+function helpBtn(key){return `<button class="help" aria-expanded="${!!UI.help[key]}" aria-controls="h-${key}" onclick="UI.help['${key}']=!UI.help['${key}'];render(true)" title="What is this?">?<span class="sr">Explain</span></button>`;}
+function helpNote(key,text){return `<div class="note" id="h-${key}" ${UI.help[key]?'':'hidden'}>${ic('info')}<div>${text}</div></div>`;}
+
+/* ---------- data ---------- */
+async function refreshFast(){
+  if(document.body.classList.contains('locked'))return;
+  try{
+    const [st,pools,emg]=await Promise.all([getJ('/api/status'),getJ('/api/pools'),getJ('/api/emergencies')]);
+    D.status=st;D.pools=pools;D.emg=emg;ok=true;
+  }catch(e){ok=false;}
+  $('live').className='pill'+(ok?'':' d');$('live').lastChild.textContent=ok?'Live':'Offline';
+  $('emg').classList.toggle('on',D.emg.length>0);
+  $('emg-list').innerHTML=D.emg.map(e=>`<span class="c">ISSI ${e.issi}${e.destination!=null?' → '+e.destination:''}${e.bts?' · '+esc(e.bts):''}</span>`).join('');
+  render();
+}
+async function refreshSlow(){
+  if(document.body.classList.contains('locked'))return;
+  const tasks=[getJ('/api/connections').then(v=>D.conn=v),getJ('/api/telemetry').then(v=>D.tele=v),getJ('/api/radios').then(v=>D.radios=v),
+    getJ('/api/ha').then(v=>D.ha=v),getJ('/api/whoami').then(v=>{const was=D.who.admin,first=!D.whoLoaded;D.who=v;D.whoLoaded=true;
+      if(was!==v.admin&&PG[UI.page][4])show(UI.page);else if(first&&PG[UI.page][5]&&!v.admin&&!v.need_login)openLogin(false);
+      // Admin-only route: asking it without a login answers 401 and opens the login window,
+      // so an open (read-only) dashboard would get it every 5 s. Ask only once whoami says admin.
+      if(v.admin)return getJ('/api/networks').then(n=>D.nets=n).catch(()=>{});})];
+  if(UI.page==='radios')tasks.push(getJ('/api/registrations').then(v=>D.regs=v));
+  if(UI.page==='accounts'&&D.who.admin)tasks.push(getJ('/api/accounts').then(v=>D.acc=v));
+  tasks.push(getJ('/api/names').then(v=>D.names=v).catch(()=>{}));
+  tasks.push(getJ('/api/issi-names').then(v=>D.issi=v).catch(()=>{}));
+  tasks.push(getJ('/api/gssi-names').then(v=>D.gssi=v).catch(()=>{}));
+  tasks.push(getJ('/api/group-access').then(v=>D.access=v).catch(()=>{}));
+  if(D.who.admin)tasks.push(getJ('/api/control').then(v=>D.ctl=v).catch(()=>{}));
+  await Promise.allSettled(tasks);
+  chrome();render();
+}
+function chrome(){
+  const c=D.conn,st=D.status;
+  const bs=c?c.brew_clients.filter(x=>x.mode==='Basestation').length:0;
+  $('hw-brew').textContent=c?`${bs} station${bs===1?'':'s'}`:'…';
+  $('hw-brew-dot').className='dot'+(ok?(bs?'':' w'):' d');
+  const ha=D.ha;
+  if(ha){$('hw-ha').textContent=ha.enabled?(ha.role[0].toUpperCase()+ha.role.slice(1)+(ha.vip_held?' · VIP held':'')):'Off (single node)';$('hw-ha-dot').className='dot'+(ha.enabled?(ha.role==='active'?'':' w'):' i');}
+  const w=D.who;
+  document.body.classList.toggle('ro',!w.admin);
+  if(w.need_login&&!$('login').classList.contains('on'))openLogin(true);
+  $('loginbtn').hidden=!(w.can_login&&!w.username);$('acctbtn').hidden=!w.username;$('themebtn').hidden=!!w.username;$('rochip').hidden=w.admin||!!w.need_login;
+  if(w.username){$('acct-av').textContent=w.username[0];$('acct-name').textContent=w.username;$('menu-name').textContent=w.username;
+    $('menu-role').textContent=w.admin?'Admin':'Viewer (read only)';$('menu-acc').hidden=!w.admin;}
+  if(st){$('b-calls').textContent=st.active_calls.filter(x=>!legIds().has(x.uuid)).length||'';}
+  $('b-radios').textContent=(c&&c.mobile_stations.length)||'';
+  $('b-routing').textContent=D.pools.filter(p=>p.enabled).length||'';
+}
+
+/* ---------- pools ---------- */
+function legIds(){
+  // Leg calls: group calls on a running pool's legs from the same talker.
+  const out=new Set();if(!D.status)return out;
+  for(const p of D.pools){const l=p.live;if(!l)continue;
+    for(const c of D.status.active_calls){if(c.kind==='group'&&c.source===l.talker&&l.legs.includes(c.destination))out.add(c.uuid);}}
+  return out;
+}
+function poolOf(call){return D.pools.find(p=>p.live&&p.live.gssi===call.destination&&p.live.talker===call.source);}
+
+/* ---------- render ---------- */
+let lastSig='';
+function render(force){
+  const p=UI.page;if(PG[p][4])return;
+  // Keep focus and typing alive: pages with inputs only re-render when forced or nothing is focused inside.
+  const a=document.activeElement;
+  if(!force&&a&&$('content').contains(a)&&(a.tagName==='INPUT'||a.tagName==='SELECT'||a.tagName==='TEXTAREA'))return;
+  const fn=R[p];if(!fn)return;
+  const html=fn();
+  if(force||html!==lastSig){$('content').innerHTML=html;lastSig=html;}
+}
+const R={};
+// Other networks a call or SDS crossed (Multi Network): where it went, where it came from.
+function netChips(x){
+  const to=(x.to_networks||[]).map(n=>`<span class="chip b" title="Sent to network ${esc(n)}">${ic('globe')} → ${esc(n)}</span>`);
+  const from=x.from_network?[`<span class="chip i" title="Came from network ${esc(x.from_network)}">${ic('globe')} ← ${esc(x.from_network)}</span>`]:[];
+  return from.concat(to).join(' ');
+}
+const hasNet=list=>list.some(x=>x.from_network||(x.to_networks||[]).length);
+const callRow=(c,now)=>{
+  const pool=poolOf(c);
+  const grp=c.kind==='group';
+  const em=c.priority>=15;
+  const legs=pool?pool.live.legs.map(g=>tgChip(g)).join(' '):'';
+  const wait=pool&&pool.live.waiting.length?` <span class="mut">waiting: ${pool.live.waiting.join(', ')}</span>`:'';
+  return `<div class="row"><div class="ric${em?' e':grp?'':' p'}">${ic(grp?'radios':'call')}</div><div class="rm">
+   <div class="rt">${grp?'TG '+tgTxt(c.destination):issiTxt(c.source)+' → '+issiTxt(c.destination)} <span class="chip ${em?'d':grp?'a':'b'}">${em?'Emergency':grp?'Group':'Individual'}</span>${pool?`<span class="chip">${ic('routing')} ${esc(pool.name)}</span>`:''}${netChips(c)?' '+netChips(c):''}</div>
+   <div class="rs">${grp?`<span class="talk"><span class="bars"><b></b><b></b><b></b><b></b></span>${issiTxt(c.source)} talking</span>`:''}${pool?`<span class="mut">also on</span> ${legs}${wait}`:''}</div></div>
+   <div class="rr"><b>${dur(now-c.started_at_ms)}</b><br>${c.voice_frames} frames · prio ${c.priority}</div></div>`;
+};
+function stationsList(){
+  const c=D.conn;if(!c)return [];
+  const byStation={};
+  for(const x of c.cells||[]){(byStation[x.station]=byStation[x.station]||{name:x.station,cells:[],online:false,regs:0,addr:'',since:0,gone:0}).cells.push(x);
+    const s=byStation[x.station];if(x.online!==false){s.online=true;s.regs=x.registered_issis;s.addr=x.remote_addr;s.since=x.connected_at_ms;}else s.gone=x.last_seen_ms;}
+  for(const b of c.brew_clients.filter(b=>b.mode==='Basestation')){const s=byStation[b.station]||(byStation[b.station]={name:b.station,cells:[],online:true,regs:b.registered_issis,addr:b.remote_addr,since:b.connected_at_ms,gone:0});s.online=true;s.regs=b.registered_issis;s.since=b.connected_at_ms;s.addr=b.remote_addr;s.ver=b.version;}
+  for(const t of D.tele){const m=Object.values(byStation).find(s=>s.addr&&t.ip&&s.addr.startsWith(t.ip+':')&&!s.tele);if(m&&Object.values(byStation).filter(s=>s.addr&&s.addr.startsWith(t.ip+':')).length===1)m.tele=t;}
+  return Object.values(byStation).sort((a,b)=>(b.online-a.online)||a.name.localeCompare(b.name));
+}
+R.overview=()=>{
+  const st=D.status,c=D.conn,now=Date.now();
+  if(!st)return '<div class="empty">Loading…</div>';
+  const legs=legIds();
+  const calls=st.active_calls.filter(x=>!legs.has(x.uuid));
+  const stations=stationsList();
+  const on=stations.filter(s=>s.online).length,off=stations.length-on;
+  const cells=c?(c.cells||[]).filter(x=>x.online!==false).length:0;
+  const roam=c?c.roaming_log||[]:[];
+  const roamToday=roam.filter(r=>isToday(r.at_ms));
+  const radios=c?c.mobile_stations.length:0;
+  const grpCalls=calls.filter(x=>x.kind==='group').length;
+  const sdsToday=st.recent_sds.filter(s=>isToday(s.at_ms)).length;
+  return `<div class="tiles">
+   <a class="tile" data-go="stations"><div class="k">${ic('bts')}Stations</div><div class="v">${on}</div><div class="s">${cells} cell${cells===1?'':'s'}${off?' · '+off+' offline':''}</div></a>
+   <a class="tile" data-go="radios"><div class="k">${ic('radios')}Radios</div><div class="v">${radios}</div><div class="s">registered now</div></a>
+   <a class="tile${calls.length?' live':''}" data-go="calls"><div class="k">${ic('call')}Active calls</div><div class="v">${calls.length}</div><div class="s">${grpCalls} group · ${calls.length-grpCalls} individual</div></a>
+   <div class="tile"><div class="k">${ic('radios')}Groups</div><div class="v">${st.groups}</div><div class="s">with affiliations</div></div>
+   <a class="tile" data-go="roaming"><div class="k">${ic('roam')}Cell changes</div><div class="v">${roamToday.length}</div><div class="s">today · ${roamToday.filter(r=>r.kind==='handover'||String(r.reselection||'').startsWith('announced')).length} announced</div></a>
+   <a class="tile" data-go="sds"><div class="k">${ic('sds')}SDS</div><div class="v">${sdsToday}</div><div class="s">today · ${st.total_sds} total</div></a>
+  </div>
+  <div class="grid2">
+   <div class="card"><div class="ch"><h2>Live calls</h2><span class="cnt">${calls.length}</span><span class="sp"></span><a data-go="calls" href="#calls">All calls ›</a></div>
+    ${calls.length?calls.map(x=>callRow(x,now)).join(''):'<div class="empty">No active calls</div>'}</div>
+   <div class="card"><div class="ch"><h2>Stations</h2><span class="cnt">${stations.length}</span><span class="sp"></span><a data-go="stations" href="#stations">Cells ›</a></div>
+    ${stations.length?stations.map(s=>`<div class="row"><div class="ric s">${ic('bts')}</div><div class="rm"><div class="rt">${esc(s.name)}</div><div class="rs">${s.cells.length} cell${s.cells.length===1?'':'s'}${s.cells.length?' · '+s.cells.map(x=>x.carrier).join(', '):''}${s.tele&&s.tele.version?' · FlowStation '+esc(s.tele.version):''}</div></div>
+      <div class="rr">${s.online?'<span class="st"><i></i>Online</span>':'<span class="st i"><i></i>Offline</span>'}<br>${s.online?s.regs+' radio'+(s.regs===1?'':'s'):(s.gone?'gone '+ago(s.gone):'')}</div></div>`).join(''):'<div class="empty">No stations connected</div>'}</div>
+  </div>
+  <div class="grid2">
+   <div class="card"><div class="ch"><h2>Recent cell changes</h2><span class="sp"></span><a data-go="roaming" href="#roaming">Roaming log ›</a></div>
+    ${roam.length?roam.slice(0,5).map(r=>`<div class="ev"><time>${tm(r.at_ms)}</time><b class="m">${issiTxt(r.issi)}</b>${place(r.from)}<span class="arrow">→</span>${place(r.to)}<span class="ml">${howOf(r)}</span></div>`).join(''):'<div class="empty">No cell changes yet</div>'}</div>
+   <div class="card"><div class="ch"><h2>Recent SDS</h2><span class="sp"></span><a data-go="sds" href="#sds">All SDS ›</a></div>
+    ${st.recent_sds.length?st.recent_sds.slice(0,5).map(s=>`<div class="ev"><time>${tm(s.at_ms)}</time><b class="m">${issiTxt(s.source)}</b><span class="arrow">→</span><b class="m">${issiTxt(s.destination)}</b>${netChips(s)?' '+netChips(s):''}<span class="ml mut">${s.reports?s.reports+' report'+(s.reports===1?'':'s'):''}</span></div>`).join(''):'<div class="empty">No SDS yet</div>'}</div>
+  </div>`;
+};
+const RESEL={undeclared:['i','undeclared'],unannounced:['w','unannounced'],announced_type_1:['a','announced · type 1'],announced_type_2:['a','announced · type 2'],announced_type_3:['a','announced · type 3']};
+function howOf(r){const t=RESEL[r.reselection];
+  const where={handover:'<span class="chip b">prepared here</span>',within_station:'<span class="chip i">within station</span>'};
+  if(!t)return r.kind==='handover'?'<span class="chip a">announced</span>':r.kind==='within_station'?where.within_station:'<span class="chip w">not announced</span>';
+  return `<span class="chip ${t[0]}">${t[1]}</span>`+(where[r.kind]&&r.kind!=='within_station'?' '+where[r.kind]:(r.kind==='within_station'?' '+where.within_station:''));}
+function place(p){return p.cell?`<span class="chip" title="carrier ${p.carrier??''}">${esc(p.cell)}</span>`:`<span class="chip">${esc(p.station)}</span>`;}
+
+function seg(key,opts){const v=UI.filter[key]||opts[0][0];return `<div class="seg" role="group">${opts.map(([k,l])=>`<button aria-pressed="${v===k}" onclick="UI.filter['${key}']='${k}';render(true)">${l}</button>`).join('')}</div>`;}
+function searchBox(key,ph){return `<label class="search">${ic('search')}<span class="sr">${ph}</span><input class="f" type="search" placeholder="${ph}" value="${esc(UI.filter[key]||'')}" oninput="UI.filter['${key}']=this.value;clearTimeout(window._st);window._st=setTimeout(()=>{render(true);const e=document.querySelector('.search input');if(e){e.focus();e.setSelectionRange(e.value.length,e.value.length)}},250)"></label>`;}
+const match=(q,...v)=>!q||v.some(x=>String(x??'').toLowerCase().includes(q.toLowerCase()));
+
+R.calls=()=>{
+  const st=D.status,now=Date.now();if(!st)return '<div class="empty">Loading…</div>';
+  const legs=legIds();const q=UI.filter.calls||'';const k=UI.filter.callk||'all';
+  const act=st.active_calls.filter(x=>!legs.has(x.uuid));
+  const rec=st.recent_calls.filter(c=>(k==='all'||c.kind===k)&&match(q,c.source,c.destination,c.from_network,(c.to_networks||[]).join(' '),nameOf(c.source),c.kind==='group'?gName(c.destination):nameOf(c.destination),c.kind==='group'&&c.destination>16777215?tgTxt(c.destination):''));
+  const nc=hasNet(rec);
+  return `<div class="card"><div class="ch"><h2>Live calls</h2><span class="cnt">${act.length}</span></div>${act.length?act.map(x=>callRow(x,now)).join(''):'<div class="empty">No active calls</div>'}</div>
+  <div class="bar">${seg('callk',[['all','All'],['group','Group'],['private','Individual']])}${searchBox('calls','ISSI or group…')}<span class="sp"></span><span class="mut" style="font-size:12.5px">${st.total_calls} calls in total</span></div>
+  <div class="card"><div class="ch"><h2>Recent calls</h2><span class="cnt">${rec.length}</span></div><div class="tw"><table><thead><tr><th>Started</th><th>Type</th><th>From</th><th>To</th>${nc?'<th>Network</th>':''}<th>Duration</th><th>Prio</th><th>Voice frames</th></tr></thead><tbody>
+   ${rec.slice(0,300).map(c=>`<tr><td class="m">${tmd(c.started_at_ms)}</td><td>${c.kind==='group'?'<span class="chip a">Group</span>':'<span class="chip b">Individual</span>'}</td><td>${issiCell(c.source)}</td><td>${c.kind==='group'?`<span class="m">${c.destination>16777215?tgTxt(c.destination):c.destination}</span>${gName(c.destination)?`<span class="sub">${esc(gName(c.destination))}</span>`:''}`:issiCell(c.destination)}</td>${nc?`<td>${netChips(c)}</td>`:''}<td class="m">${c.ended_at_ms?dur(c.ended_at_ms-c.started_at_ms):'—'}</td><td class="num">${c.priority}</td><td class="num">${c.voice_frames}</td></tr>`).join('')||'<tr><td colspan="${nc?8:7}" class="mut">No calls yet</td></tr>'}
+  </tbody></table></div></div>`;
+};
+R.sds=()=>{
+  const st=D.status;if(!st)return '<div class="empty">Loading…</div>';
+  const q=UI.filter.sds||'';const list=st.recent_sds.filter(s=>match(q,s.source,s.destination,nameOf(s.source),nameOf(s.destination),s.from_network,(s.to_networks||[]).join(' ')));
+  const nc=hasNet(list);
+  return `<div class="bar">${searchBox('sds','ISSI…')}<span class="sp"></span><span class="mut" style="font-size:12.5px">${st.total_sds} SDS in total</span></div>
+  <div class="card"><div class="ch"><h2>Recent SDS</h2><span class="cnt">${list.length}</span></div><div class="tw"><table><thead><tr><th>Time</th><th>From</th><th>To</th>${nc?'<th>Network</th>':''}<th>Reports</th></tr></thead><tbody>
+  ${list.map(s=>`<tr><td class="m">${tmd(s.at_ms)}</td><td>${issiCell(s.source)}</td><td>${issiCell(s.destination)}</td>${nc?`<td>${netChips(s)}</td>`:''}<td class="num">${s.reports}</td></tr>`).join('')||'<tr><td colspan="${nc?5:4}" class="mut">No SDS yet</td></tr>'}</tbody></table></div></div>`;
+};
+R.radios=()=>{
+  const c=D.conn;if(!c)return '<div class="empty">Loading…</div>';
+  const q=UI.filter.radios||'';
+  const ms=c.mobile_stations.filter(m=>match(q,m.issi,nameOf(m.issi),m.basestation_name,(m.groups||[]).join(' '),(m.groups||[]).map(gName).join(' '),m.cell&&m.cell.name));
+  const regs=(D.regs||[]).filter(r=>match(q,r.issi,r.bts));
+  return `<div class="bar">${searchBox('radios','ISSI, group or station…')}</div>
+  <div class="card"><div class="ch"><h2>Registered radios</h2><span class="cnt">${ms.length}</span></div><div class="tw"><table><thead><tr><th>ISSI</th><th>Station / cell</th><th>Groups</th><th>Via</th><th>Station address</th></tr></thead><tbody>
+  ${ms.sort((a,b)=>a.issi-b.issi).map(m=>`<tr><td>${issiCell(m.issi,true)}</td><td>${m.cell?`<span class="chip">${esc(m.cell.name)}</span>`:`<span class="chip">${esc(m.basestation_name||'—')}</span>`}</td><td>${(m.groups||[]).map(g=>tgChip(g)).join(' ')||'<span class="mut">—</span>'}</td><td>${esc(m.mode)}</td><td class="m mut">${esc(m.basestation_addr||'')}</td></tr>`).join('')||'<tr><td colspan="5" class="mut">No radios registered</td></tr>'}
+  </tbody></table></div></div>
+  <div class="card"><div class="ch"><h2>Registration log</h2><span class="cnt">${regs.length}</span></div><div class="tw"><table><thead><tr><th>Time</th><th>ISSI</th><th>Event</th><th>Station</th></tr></thead><tbody>
+  ${regs.slice(0,300).map(r=>`<tr><td class="m">${tmd(r.at_ms)}</td><td>${issiCell(r.issi)}</td><td>${r.kind==='register'?'<span class="chip a">register</span>':r.kind==='timeout'?'<span class="chip w">timeout</span>':`<span class="chip i">${esc(r.kind)}</span>`}</td><td>${esc(r.bts||'')}${r.cell?' <span class="chip">'+esc(r.cell)+'</span>':''}</td></tr>`).join('')||'<tr><td colspan="4" class="mut">No registrations yet</td></tr>'}
+  </tbody></table></div></div>`;
+};
+// Name of an ISSI from the directory, if any.
+const nameOf=issi=>(D.issi||{})[String(issi)]||'';
+const gName=g=>(D.gssi||{})[String(g)]||'';
+// A group of another network shows as "network:GSSI" (inside the server it
+// is an alias above the 24 GSSI bits, see netlink.rs).
+const netOfSlot=s=>((D.nets&&D.nets.networks)||[]).find(n=>n.slot===s);
+const tgTxt=g=>{if(g>16777215){const n=netOfSlot(Math.floor(g/16777216));return `${esc(n?n.name:'net '+Math.floor(g/16777216))}:${g%16777216}`;}const n=gName(g);return n?`${g} · ${esc(n)}`:String(g);};
+const tgChip=(g,cls)=>`<span class="tg${cls||''}"${gName(g)?` title="${esc(gName(g))}"`:''}>${tgTxt(g)}</span>`;
+// "2320972 · OE4SXM" for running text, number and name stacked for tables.
+const issiTxt=issi=>{const n=nameOf(issi);return n?`${issi} · ${esc(n)}`:String(issi);};
+const issiCell=(issi,bold)=>{const n=nameOf(issi);return `${bold?'<b class="m">':'<span class="m">'}${issi}${bold?'</b>':'</span>'}${n?`<span class="sub">${esc(n)}</span>`:''}`;};
+// Info text of a login (Accounts page), if any.
+const infoOf=login=>(D.names||{})[login]||'';
+// "Bost FlowStation/v0.5.6-55a08812" -> "Bost FlowStation v0.5.6-55a08812".
+function software(a){if(!a)return '<span class="mut">—</span>';const m=/^(.+?)\/(\S+)(.*)$/.exec(a);return m?`${esc(m[1])} <span class="m">${esc(m[2])}</span>${esc(m[3])}`:esc(a);}
+R.stations=()=>{
+  const c=D.conn;if(!c)return '<div class="empty">Loading…</div>';
+  const f=UI.filter.cellf||'all';
+  const cells=(c.cells||[]).filter(x=>f==='all'||(f==='on')===(x.online!==false));
+  const dups=c.duplicate_carriers||[];
+  const caps=x=>(x.capabilities||[]).map(k=>`<span class="chip">${esc(k)}</span>`).join(' ')||'<span class="mut">—</span>';
+  return `<div class="bar">${seg('cellf',[['all','All'],['on','Online'],['off','Offline']])}</div>
+  ${dups.length?`<div class="card"><div class="note">${ic('alert')}<div><b>Duplicate carriers:</b> ${dups.map(d=>esc(JSON.stringify(d))).join(', ')}. The newest announcement serves.</div></div></div>`:''}
+  <div class="card"><div class="ch"><h2>Cells</h2><span class="cnt">${cells.length}</span>${helpBtn('cells')}</div><div class="tw"><table><thead><tr><th>Cell</th><th>Status</th><th>Carrier</th><th>Downlink</th><th>LA</th><th>MCC / MNC</th><th>Neighbours</th><th>Radios</th></tr></thead><tbody>
+  ${cells.map(x=>{const key='c'+x.name;const open=UI.open[key];const offc=x.online===false;
+   const ci=infoOf(String(x.name).split('/')[0]);
+   return `<tr class="click${offc?' off':''}" onclick="UI.open['${esc(key)}']=!UI.open['${esc(key)}'];render(true)" aria-expanded="${!!open}"><td><b>${esc(x.name)}</b> ${x.cell===0&&!offc?'<span class="chip i">primary</span>':''}${x.duplicate?' <span class="chip w">duplicate</span>':''}${ci?`<span class="sub">${esc(ci)}</span>`:''}</td>
+   <td>${offc?'<span class="st i"><i></i>Offline</span>':'<span class="st"><i></i>Online</span>'}</td><td class="m">${x.carrier}</td><td class="num">${mhz(x.downlink_hz)}</td><td>${x.location_area}</td><td class="num">${x.mcc} / ${x.mnc}</td>
+   <td>${x.neighbours?(x.neighbours.map(n=>`<span class="chip">${esc(n)}</span>`).join(' ')||'<span class="mut">none</span>'):'<span class="mut">—</span>'}</td><td class="num">${offc?'—':x.registered_issis}</td></tr>
+   ${open?`<tr class="exp"><td colspan="8"><div class="kv"><div><span class="l">Station address</span>${offc?'—':`<span class="m">${esc(x.remote_addr||'—')}</span>`}</div><div><span class="l">${offc?'Gone':'Connected'}</span>${offc?(x.last_seen_ms?ago(x.last_seen_ms)+' ago':'—'):ago(x.connected_at_ms)}</div>
+    <div><span class="l">Extensions</span>${caps(x)}</div><div><span class="l">Access level / MS power</span>${x.rxlev_access_min_dbm!=null?x.rxlev_access_min_dbm+' dBm':'—'} · ${x.ms_txpwr_max_dbm!=null?x.ms_txpwr_max_dbm+' dBm':'—'}</div></div></td></tr>`:''}`;}).join('')||'<tr><td colspan="8" class="mut">No cells announced</td></tr>'}
+  </tbody></table></div>${helpNote('cells','Cells the stations announce (FlowStation with the <code>bts-info</code> extension), named <i>login/cell</i>: the Brew login of the station and the cell number in it (0 = primary). On the air a cell is identified by MCC, MNC, carrier and band plan. Click a row for details. A station that went away stays listed as offline until it connects again (stations with a login only).')}</div>
+  <div class="card"><div class="ch"><h2>Brew connections</h2><span class="cnt">${c.brew_clients.length}</span></div><div class="tw"><table><thead><tr><th>Station</th><th>Mode</th><th>Software</th><th>Remote address</th><th>Connected</th><th>Radios</th><th>Cells</th></tr></thead><tbody>
+  ${c.brew_clients.map(b=>`<tr><td><b>${esc(b.station)}</b>${infoOf(b.station)?`<span class="sub">${esc(infoOf(b.station))}</span>`:''}</td><td>${esc(b.mode)}</td><td>${software(b.agent)}<span class="sub">Brew v${b.version}</span></td><td class="m">${esc(b.remote_addr||'—')}</td><td>${ago(b.connected_at_ms)}</td><td class="num">${b.registered_issis}</td><td>${(b.cells||[]).map(x=>`<span class="chip">${x.carrier}</span>`).join(' ')||'<span class="mut">—</span>'}</td></tr>`).join('')||'<tr><td colspan="7" class="mut">No Brew connections</td></tr>'}
+  </tbody></table></div></div>
+  ${c.sip&&c.sip.enabled?'':''}`;
+};
+R.roaming=()=>{
+  const c=D.conn;if(!c)return '<div class="empty">Loading…</div>';
+  const all=c.roaming_log||[];const f=UI.filter.roamf||'all';const q=UI.filter.roam||'';
+  const ann=r=>r.kind==='handover'||String(r.reselection||'').startsWith('announced');
+  const list=all.filter(r=>(f==='all'||(f==='ann'&&ann(r))||(f==='unann'&&!ann(r)&&r.kind!=='within_station')||(f==='within'&&r.kind==='within_station'))&&match(q,r.issi,nameOf(r.issi)));
+  const today=all.filter(r=>isToday(r.at_ms));
+  const t=n=>today.filter(r=>r.reselection==='announced_type_'+n).length;
+  return `<div class="bar">${seg('roamf',[['all','All'],['ann','Announced'],['unann','Unannounced'],['within','Within station']])}${searchBox('roam','Filter ISSI…')}<span class="sp"></span><span class="mut hide-s" style="font-size:12.5px">Last ${all.length} of at most 200 changes, in memory</span></div>
+  <div class="tiles">
+   <div class="tile"><div class="k">Today</div><div class="v">${today.length}</div><div class="s">cell changes</div></div>
+   <div class="tile"><div class="k">Announced</div><div class="v">${today.filter(ann).length}</div><div class="s">type 1 · ${t(1)} / type 2 · ${t(2)} / type 3 · ${t(3)}</div></div>
+   <div class="tile"><div class="k">Unannounced</div><div class="v">${today.filter(r=>!ann(r)&&r.kind!=='within_station').length}</div><div class="s">left without telling the cell</div></div>
+   <div class="tile"><div class="k">Within station</div><div class="v">${today.filter(r=>r.kind==='within_station').length}</div><div class="s">multi-cell stations</div></div>
+  </div>
+  <div class="card"><div class="ch"><h2>Cell change log</h2><span class="cnt">${list.length}</span>${helpBtn('roam')}</div><div class="tw"><table><thead><tr><th>Time</th><th>ISSI</th><th>From</th><th></th><th>To</th><th>How</th></tr></thead><tbody>
+  ${list.map(r=>`<tr><td class="m">${tmd(r.at_ms)}</td><td>${issiCell(r.issi,true)}</td><td>${place(r.from)}</td><td class="arrow">→</td><td>${place(r.to)}</td><td>${howOf(r)}</td></tr>`).join('')||'<tr><td colspan="6" class="mut">No cell changes yet</td></tr>'}
+  </tbody></table></div>${helpNote('roam','The last cell changes of the radios (cell reselection, TS 100 392-2 clause 18.3.4.7). When the station the radio left reports it (FlowStation with the <code>ms-reselection</code> extension), the category is shown: <i>undeclared</i> = no call running, <i>unannounced</i> = left a call without telling the cell, <i>announced type 1/2/3</i> = told the cell first (U-PREPARE) and got D-NEW-CELL; <i>prepared here</i> = the target was prepared through this server; <i>within station</i> = another cell of a multi-cell station. A radio only registers when it enters another location area, so moves within one location area show only once the station reports the cell.')}</div>`;
+};
+R.telemetry=()=>{
+  const t=D.tele||[];
+  const lvl=l=>l==='ok'?'':l==='degraded'?' w':' d';
+  return t.length?`<div class="grid2" style="grid-template-columns:repeat(auto-fill,minmax(min(420px,100%),1fr))">${t.map(s=>{const h=s.health||{};
+  const nm=infoOf(s.id)||(s.site_name&&s.site_name!==s.id?s.site_name:'');
+  return `<div class="card tlm"><div class="ch"><h2>${esc(s.id)}</h2>${nm?`<span class="mut" style="font-size:13px">${esc(nm)}</span>`:''}<span class="sp"></span><span class="st${lvl(h.overall)}"><i></i>${esc(h.overall||'unknown')}</span></div>
+   <div class="kv tight" style="padding:12px 18px"><div><span class="l">Version</span>${esc(s.build||s.version||'—')}</div><div><span class="l">Address</span><span class="m">${esc(s.ip||'—')}</span></div><div><span class="l">Connected</span>${ago(s.connected_at_ms)}</div><div><span class="l">Backhaul</span>${s.backhaul_connected==null?'—':s.backhaul_connected?'connected':'down'}</div>
+    <div><span class="l">Radios</span>${s.registration_count}</div><div><span class="l">Calls</span>${Object.keys(s.active_calls||{}).length}</div><div><span class="l">TX EVM</span>${s.evm_pct!=null?s.evm_pct.toFixed(1)+' %':'—'}</div><div><span class="l">Emergencies</span>${(s.emergencies||[]).length||'none'}</div></div>
+   ${(h.domains||[]).length?`<div class="chips" style="padding:0 18px 12px;display:flex;gap:6px;flex-wrap:wrap">${h.domains.map(d=>`<span class="chip ${d.level==='ok'?'a':d.level==='degraded'?'w':'d'}" title="${esc(d.detail)}">${esc(d.domain)}: ${esc(d.detail)}</span>`).join('')}</div>`:''}
+   <div class="tw"><table><thead><tr><th>Cell</th><th>Carrier</th><th>LA</th><th>RF</th><th>Radios</th></tr></thead><tbody>${(s.cells||[]).map(x=>`<tr><td>${x.id}${x.primary?' <span class="chip i">primary</span>':''}</td><td class="m">${x.main_carrier}${x.secondary_carrier?' + '+x.secondary_carrier:''}</td><td>${x.location_area}</td><td><span class="st${x.rf_state==='online'?'':' w'}" title="${esc(x.rf_detail||'')}"><i></i>${esc(x.rf_state||'—')}</span></td><td class="num">${x.registered_radios}</td></tr>`).join('')||'<tr><td colspan="5" class="mut">No cell report yet</td></tr>'}</tbody></table></div></div>`;}).join('')}</div>`
+  :'<div class="card"><div class="empty">No station telemetry connections. Stations report here with FlowStation <code>[telemetry]</code>.</div></div>';
+};
+R.control=()=>{
+  if(!D.who.admin)return `<div class="card"><div class="empty">Station control is for admins. ${D.who.can_login?'<button class="btn" onclick="doLogin()">Log in</button>':''}</div></div>`;
+  const ids=D.ctl||[];
+  if(!ids.length)return '<div class="card"><div class="empty">No station control connections. Stations connect here with FlowStation <code>[command]</code>.</div></div>';
+  return ids.map(id=>{const s=id.replace(/[^a-zA-Z0-9_-]/g,'_');return `<div class="card"><div class="ch"><h2>${esc(id)}</h2><span class="st"><i></i>Connected</span></div>
+   <div style="padding:14px 18px;display:flex;flex-direction:column;gap:10px">
+    <div class="bar"><input class="f" id="${s}_kick" placeholder="ISSI" inputmode="numeric" style="width:120px"><button class="btn" onclick="ctl('${esc(id)}','${s}',{action:'KickMs',issi:+v('${s}_kick')})">Kick radio</button>
+     <input class="f" id="${s}_clr" placeholder="ISSI (0 = all)" inputmode="numeric" style="width:130px"><button class="btn" onclick="ctl('${esc(id)}','${s}',{action:'ClearEmergency',issi:+v('${s}_clr')})">Clear emergency</button></div>
+    <div class="bar"><input class="f" id="${s}_sds" placeholder="Live SDS text" style="flex:1;min-width:160px"><input class="f" id="${s}_sdsi" placeholder="from ISSI" inputmode="numeric" style="width:110px"><input class="f" id="${s}_sdsr" placeholder="repeat" value="0" inputmode="numeric" style="width:80px">
+     <button class="btn" onclick="ctl('${esc(id)}','${s}',{action:'AddLiveSds',text:v('${s}_sds'),protocol_id:0,source_issi:+v('${s}_sdsi'),repeat_count:+v('${s}_sdsr')})">Add live SDS</button><button class="btn" onclick="ctl('${esc(id)}','${s}',{action:'ClearLiveSds'})">Clear live SDS</button></div>
+    <div class="bar"><input class="f" id="${s}_al" placeholder="ISSI" inputmode="numeric" style="width:120px"><button class="btn" onclick="ctl('${esc(id)}','${s}',{action:'AmbienceListen',issi:+v('${s}_al'),enable:true})" title="The target radio keys its microphone (with indication on the radio). Needs station support.">Ambience listen</button><button class="btn" onclick="ctl('${esc(id)}','${s}',{action:'AmbienceListen',issi:+v('${s}_al'),enable:false})">Stop</button>
+     <span class="sp"></span><button class="btn danger" onclick="if(confirm('Restart the service on ${esc(id)}?'))ctl('${esc(id)}','${s}','RestartService')">Restart service</button><button class="btn danger" onclick="if(confirm('Shut the service down on ${esc(id)}? It does not come back by itself.'))ctl('${esc(id)}','${s}','ShutdownService')">Shut down</button></div>
+    ${msgDiv(s+'_res','padding:0')}<div class="mut" style="font-size:12px">DGNA for several radios at once: <a data-go="routing" href="#routing">Routing</a>.</div></div></div>`;}).join('');
+};
+const v=id=>($(id)||{}).value||'';
+async function ctl(id,s,cmd){const body=typeof cmd==='string'?{action:cmd}:cmd;setMsg(s+'_res','mut','Sending…');
+  try{const r=await postJ('/api/control/'+encodeURIComponent(id),body);setMsg(s+'_res','ok','Sent'+(r&&r.response?': '+JSON.stringify(r.response):''));}catch(e){setMsg(s+'_res','err',e.message);}}
+
+/* ---------- routing ---------- */
+R.routing=()=>{
+  const adm=D.who.admin;
+  const pools=D.pools;
+  const poolRows=pools.map((p,i)=>{const l=p.live;const mem=[...p.groups.map(g=>({t:tgChip(g,(l&&l.gssi===g)?' src':''),g})),...(p.remote||[]).map(r=>({t:`<span class="tg net" title="Group of the network ${esc(r.network)}">${ic('globe')} ${esc(r.network)}:${r.gssi}</span>`}))];
+   const groups=mem.map((m,j)=>`${!p.both_ways&&j===0?m.t.replace('class="tg','class="tg src'):m.t}${j===0&&!p.both_ways?' <span class="arrow">→</span>':''}`).join(' ');
+   const state=l?`<span class="talk"><span class="bars"><b></b><b></b><b></b><b></b></span>${issiTxt(l.talker)} talking on ${tgTxt(l.gssi)}</span> · heard on ${l.legs.length} group${l.legs.length===1?'':'s'}${l.waiting.length?` · ${l.waiting.join(', ')} join${l.waiting.length===1?'s':''} after ${l.waiting.length===1?'its':'their'} own over`:''}`:(p.enabled?'Idle':'Switched off');
+   return `<div class="row pool${p.enabled?'':' offp'}"><button class="tog" role="switch" aria-checked="${p.enabled}" aria-label="Pool ${esc(p.name)} on" ${adm?'':'disabled'} onclick="togglePool(${i})"></button>
+    <div class="rm"><div class="rt">${esc(p.name)} <span class="chip ${p.enabled?'a':'i'}">${p.enabled?'on':'off'}</span><span class="chip">${p.both_ways?'⇄ both ways':'→ one way'}</span></div>
+    <div class="flow">${p.both_ways?groups.replace(/<\/span> <span class="tg/,'</span> <span class="arrow">⇄</span> <span class="tg'):groups}</div><div class="rs" style="margin-top:6px">${state}</div></div>
+    ${adm?`<button class="btn" onclick="editPool(${i})">Edit</button><button class="btn danger" onclick="delPool(${i})">Delete</button>`:''}</div>`;}).join('');
+  const q=UI.filter.dg||'';
+  const radios=D.radios.filter(r=>match(q,r.issi,nameOf(r.issi),r.station,r.cell,r.groups.join(' '),r.catalog.map(g=>g.gssi+' '+(g.mnemonic||'')).join(' '),r.groups.map(gName).join(' ')));
+  for(const id of [...UI.sel])if(!D.radios.some(r=>r.issi===id&&r.radio))UI.sel.delete(id);
+  const sel=UI.sel.size;
+  const allSel=radios.filter(r=>r.radio).length>0&&radios.filter(r=>r.radio).every(r=>UI.sel.has(r.issi));
+  const dg=r=>{if(!r.dgna)return '<span class="mut">—</span>';const d=r.dgna;const age=r.dgna_at_ms?' · '+ago(r.dgna_at_ms)+' ago':'';
+    return `<span class="st${d.accepted?'':' w'}"><i></i>${d.accepted?(d.attach?'assigned ':'removed '):'rejected '}${tgTxt(d.gssi)}</span><span class="mut" style="font-size:12px">${age}</span>${d.accepted||!d.detail?'':`<div class="mut" style="font-size:12px">${esc(d.detail.replace(/^Rejected:\s*/,''))}</div>`}`;};
+  const groupsOf=r=>{const cat=new Map(r.catalog.map(g=>[g.gssi,g]));const all=[...new Set([...r.groups,...r.catalog.filter(g=>g.is_attached).map(g=>g.gssi)])].sort((a,b)=>a-b);
+    return all.map(g=>{const c=cat.get(g);const nm=c&&c.mnemonic?c.mnemonic:gName(g);return `<span class="tg" title="${esc(nm)}${c&&c.is_dynamic?' (DGNA)':''}">${g}${nm?' · '+esc(nm):''}${c&&c.is_dynamic?' ★':''}</span>`;}).join(' ')||'<span class="mut">—</span>';};
+  const f=UI.dgf||(UI.dgf={gssi:'',name:'',assign:true,mode:0});
+  return `<div class="card"><div class="ch"><h2>Talkgroup pools</h2><span class="cnt">${pools.length}</span>${helpBtn('pools')}<span class="sp"></span>${adm?`<button class="btn pri" onclick="editPool(-1)">${ic('plus')}New pool</button>`:''}</div>
+   ${poolRows||'<div class="empty">No pools yet. A pool plays the calls of one group on other groups too.</div>'}
+   ${helpNote('pools','A pool switches groups together inside this server. A call on a group of the pool is played 1:1 on the other groups, as an ordinary group call on each group\'s own GSSI, so the radios see nothing unusual. <i>Both ways</i>: every group of the pool reaches all others. <i>One way</i>: only the first group is copied, to the rest. A group that has a call of its own waits until that over has ended and then joins. Changes apply at once and are saved to the config file, no restart. Federation peers do not get the copies.')}
+   ${msgDiv('pool-msg')}</div>
+  <div class="card"><div class="ch"><h2>Assign radios to a group (DGNA)</h2>${helpBtn('dgna')}<span class="sp"></span>${searchBox('dg','ISSI, group or station…')}</div>
+   ${helpNote('dgna','Dynamic group number assignment (SS-DGNA, ETSI EN 300 392-12-22): the station tells the selected radios to add or remove a group, with an optional name the radio shows. Each command goes to the station the radio is registered on, over its control connection (FlowStation <code>[command]</code>). The answer of each radio shows under <i>Last DGNA</i>. ★ = group assigned by DGNA. Apps and other terminals cannot be reached.')}
+   <div class="tw"><table><thead><tr><th style="width:44px"><input type="checkbox" class="chk" aria-label="Select all" ${allSel?'checked':''} ${adm?'':'disabled'} onchange="selAll(this.checked)"></th><th>ISSI</th><th>Station / cell</th><th>Groups now</th><th>Last DGNA</th></tr></thead><tbody>
+   ${radios.map(r=>`<tr${r.radio?'':' class="off"'}><td><input type="checkbox" class="chk" aria-label="Select ${r.issi}" ${UI.sel.has(r.issi)?'checked':''} ${adm&&r.radio?'':'disabled'} onchange="selOne(${r.issi},this.checked)"></td><td>${issiCell(r.issi,true)}</td><td><span class="chip">${esc(r.cell||r.station)}</span></td><td>${groupsOf(r)}</td><td>${r.radio?dg(r):'<span class="mut">not a radio, DGNA n/a</span>'}</td></tr>`).join('')||'<tr><td colspan="5" class="mut">No radios registered</td></tr>'}
+   </tbody></table></div>
+   ${adm?`<div class="selbar"><b>${sel} selected</b><span class="arrow">→</span>
+    <input class="f" id="dg-gssi" placeholder="GSSI" inputmode="numeric" style="width:110px" value="${esc(f.gssi)}" oninput="UI.dgf.gssi=this.value">
+    <input class="f" id="dg-name" placeholder="Name (optional)" maxlength="15" style="width:160px" value="${esc(f.name)}" oninput="UI.dgf.name=this.value">
+    <div class="seg" role="group" aria-label="Assign or remove"><button aria-pressed="${f.assign}" onclick="UI.dgf.assign=true;render(true)">Assign</button><button aria-pressed="${!f.assign}" onclick="UI.dgf.assign=false;render(true)">Remove</button></div>
+    <label class="mut" style="font-size:12.5px">Attachment <select class="f" id="dg-mode" style="max-width:220px" onchange="UI.dgf.mode=+this.value">${['0 · attached permanently','1 · attach on next ITSI attach','2 · not allowed on next ITSI attach','3 · attach on next location update','4 · not attached, radio may request','5 · not attached, radio may not request'].map((t,i)=>`<option value="${i}" ${f.mode===i?'selected':''}>${t}</option>`).join('')}</select></label>
+    <span class="sp"></span><button class="btn" onclick="UI.sel.clear();render(true)" ${sel?'':'disabled'}>Clear</button><button class="btn pri" onclick="sendDgna()" ${sel?'':'disabled'}>Send DGNA to ${sel} radio${sel===1?'':'s'}</button></div>
+    ${msgDiv('dg-msg')}`:'<div class="empty">Log in as an admin to send DGNA.</div>'}
+  </div>`;
+};
+function selAll(on){D.radios.filter(r=>r.radio&&match(UI.filter.dg||'',r.issi,r.station,r.cell,r.groups.join(' '))).forEach(r=>on?UI.sel.add(r.issi):UI.sel.delete(r.issi));render(true);}
+function selOne(i,on){on?UI.sel.add(i):UI.sel.delete(i);render(true);}
+async function sendDgna(){
+  const f=UI.dgf,gssi=+f.gssi;
+  if(!(gssi>=1&&gssi<=16777215)){setMsg('dg-msg','err','Enter a GSSI (1 to 16777215).');$('dg-gssi').focus();return;}
+  setMsg('dg-msg','mut','Sending…');
+  try{const res=await postJ('/api/dgna',{issis:[...UI.sel],gssi,name:f.name||null,assign:f.assign,attachment_mode:f.mode});
+    const bad=res.filter(r=>!r.sent);
+    setMsg('dg-msg',bad.length?'err':'ok',bad.length?`Sent to ${res.length-bad.length} of ${res.length}. Not sent: `+bad.map(b=>b.issi+' ('+b.error+')').join(', '):`Sent to ${res.length} radio${res.length===1?'':'s'}. Their answers show under Last DGNA.`);
+    await refreshSlow();
+  }catch(e){setMsg('dg-msg','err',e.message);}
+}
+async function savePools(list,okText){
+  try{await postJ('/api/pools/save',list);D.pools=await getJ('/api/pools');setMsg('pool-msg','ok',okText);render(true);return true;}
+  catch(e){setMsg('pool-msg','err',e.message);render(true);return false;}
+}
+const plain=p=>({name:p.name,enabled:p.enabled,both_ways:p.both_ways,groups:p.groups,remote:(p.remote||[]).map(r=>({network:r.network,gssi:r.gssi}))});
+function togglePool(i){const l=D.pools.map(plain);l[i].enabled=!l[i].enabled;savePools(l,`${l[i].name} switched ${l[i].enabled?'on':'off'}.`);}
+function delPool(i){const p=D.pools[i];if(!confirm(`Delete pool "${p.name}"?`))return;const l=D.pools.map(plain);l.splice(i,1);savePools(l,`${p.name} deleted.`);}
+function editPool(i){
+  const p=i>=0?plain(D.pools[i]):{name:'',enabled:true,both_ways:true,groups:[],remote:[]};
+  $('sheet').innerHTML=`<div class="ch"><h3 id="sheet-title">${i>=0?'Edit pool':'New pool'}</h3></div><div class="sb">
+   <div><label class="l" for="pe-name">Name</label><input class="f" id="pe-name" maxlength="40" value="${esc(p.name)}" placeholder="e.g. District North"></div>
+   <div><label class="l" for="pe-groups">Groups (GSSI), separated by commas or spaces</label><input class="f" id="pe-groups" value="${p.groups.join(', ')}" placeholder="2321, 2323, 2324, 264" autocomplete="off"></div>
+   ${(D.nets&&D.nets.networks.length)||p.remote.length?`<div><label class="l" for="pe-remote">Groups of other networks (Multi Network), as network:GSSI</label><input class="f" id="pe-remote" value="${esc(p.remote.map(r=>r.network+':'+r.gssi).join(', '))}" placeholder="${esc(((D.nets&&D.nets.networks[0])||{name:'TetraPack'}).name)}:909" autocomplete="off"><div class="mut" style="font-size:12px;margin-top:4px">Makes the pool a bridge: a call on one of its groups is heard on the other network's groups and back, the talker's ISSI is passed on 1:1. ${D.nets?'Networks: '+D.nets.networks.map(n=>esc(n.name)).join(', '):''}</div></div>`:''}
+   <div><span class="l" style="display:block;font-size:12px;font-weight:600;color:var(--text2)">Direction</span><div class="seg" role="radiogroup" id="pe-dir" style="margin-top:5px"><button role="radio" aria-pressed="${p.both_ways}" aria-checked="${p.both_ways}" onclick="setDir(true)">⇄ Both ways</button><button role="radio" aria-pressed="${!p.both_ways}" aria-checked="${!p.both_ways}" onclick="setDir(false)">→ One way, from the first group</button></div></div>
+   <label style="display:flex;gap:10px;align-items:center"><button class="tog" role="switch" id="pe-on" aria-checked="${p.enabled}" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true')"></button> Switched on</label>
+   <div class="msg" id="sheet-msg" style="padding:0"></div></div>
+   <div class="acts"><button class="btn" onclick="closeSheet()">Cancel</button><button class="btn pri" onclick="savePool(${i})">Save</button></div>`;
+  $('scrim').classList.add('on');setTimeout(()=>$('pe-name').focus(),30);
+}
+function setDir(b){document.querySelectorAll('#pe-dir button').forEach((x,j)=>{const on=(j===0)===b;x.setAttribute('aria-pressed',on);x.setAttribute('aria-checked',on);});}
+function closeSheet(){$('scrim').classList.remove('on');}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeSheet();});
+async function savePool(i){
+  const groups=$('pe-groups').value.split(/[\s,;]+/).filter(Boolean).map(Number);
+  if(groups.some(g=>!Number.isInteger(g))){$('sheet-msg').className='msg err';$('sheet-msg').textContent='Groups must be numbers.';return;}
+  const remote=[];
+  for(const t of ($('pe-remote')?$('pe-remote').value:'').split(/[,;]+/).map(x=>x.trim()).filter(Boolean)){const k=t.lastIndexOf(':'),g=+t.slice(k+1);
+    if(k<1||!Number.isInteger(g)){$('sheet-msg').className='msg err';$('sheet-msg').textContent=`"${t}" is not network:GSSI.`;return;}remote.push({network:t.slice(0,k).trim(),gssi:g});}
+  const p={name:$('pe-name').value.trim(),groups,remote,both_ways:document.querySelector('#pe-dir button').getAttribute('aria-pressed')==='true',enabled:$('pe-on').getAttribute('aria-checked')==='true'};
+  const l=D.pools.map(plain);if(i>=0)l[i]=p;else l.push(p);
+  const m=$('sheet-msg');m.className='msg mut';m.textContent='Saving…';
+  try{await postJ('/api/pools/save',l);closeSheet();D.pools=await getJ('/api/pools');setMsg('pool-msg','ok',`${p.name} saved.`);render(true);}
+  catch(e){m.className='msg err';m.textContent=e.message;}
+}
+
+/* ---------- multi network ---------- */
+R.multinet=()=>{
+  if(!D.who.admin)return `<div class="card"><div class="empty">Multi Network is for admins. <button class="btn" onclick="openLogin(false)">Log in</button></div></div>`;
+  const M=D.nets;if(!M)return `<div class="card"><div class="empty">Loading…</div></div>`;
+  const mni=(a,b)=>a||b?`${a}/${b}`:'<span class="mut">not set</span>';
+  const rows=M.networks.map((n,i)=>{const st=!M.enabled?'<span class="st i"><i></i>Multi Network off</span>':!n.enabled?'<span class="st i"><i></i>switched off</span>':n.connected?`<span class="st"><i></i>connected · ${ago(n.since_ms)}</span>`:`<span class="st w"><i></i>not connected</span>${n.last_error?`<div class="mut" style="font-size:12px">${esc(n.last_error)}</div>`:''}`;
+    return `<tr${n.enabled?'':' class="off"'}><td><button class="tog" role="switch" aria-checked="${n.enabled}" aria-label="Network ${esc(n.name)} on" onclick="toggleNet(${i})"></button></td>
+     <td><b>${esc(n.name)}</b><div class="mut" style="font-size:12px">MNI ${mni(n.mcc,n.mnc)}</div></td><td>${st}</td>
+     <td><code>${esc(n.remote_host)}${esc(n.path)}</code>${n.tls?' <span class="chip">TLS</span>':''}<div class="mut" style="font-size:12px">login ${esc(n.username)||'—'} · as “${esc(n.user_agent||M.default_user_agent)}”</div></td>
+     <td>${n.bridge_issi||'<span class="mut">—</span>'}${n.register_talkers&&n.connected?`<div class="mut" style="font-size:12px">${n.exported.length} radio${n.exported.length===1?'':'s'} registered there${n.register_all?' (all)':''}${n.checks?' · ISSIs checked':''}</div>`:''}${n.visitors.length?`<div class="mut" style="font-size:12px">${n.visitors.length} visitor${n.visitors.length===1?'':'s'} here</div>`:''}</td><td>${n.bridged.map(g=>`<span class="tg">${g}</span>`).join(' ')||'<span class="mut">none</span>'}</td>
+     <td style="white-space:nowrap"><button class="btn" onclick="editNet(${i})">Edit</button><button class="btn danger" onclick="delNet(${i})">Delete</button></td></tr>`;}).join('');
+  return `<div class="card"><div class="ch"><h2>This server</h2>${helpBtn('mnself')}<span class="sp"></span><label style="display:flex;gap:8px;align-items:center;font-size:13px"><button class="tog" role="switch" aria-checked="${M.enabled}" aria-label="Multi Network on" onclick="toggleMn()"></button>Multi Network ${M.enabled?'on':'off'}</label><button class="btn" onclick="editSelf()">Edit</button></div>
+   <div class="row"><div class="rm"><div class="rt">${esc(M.name)||'<span class="mut">no name</span>'}</div><div class="rs">MNI (MCC/MNC) ${mni(M.mcc,M.mnc)}</div></div></div>
+   ${helpNote('mnself','The switch closes (off) or opens (on) all links to other networks at once; their settings and the pools stay. The network of this server: the stations connected here belong to it. The MNI is for the overview and for the next steps of Multi Network (radios of other networks on a station).')}</div>
+  <div class="card"><div class="ch"><h2>Other networks</h2><span class="cnt">${M.networks.length}</span>${helpBtn('mnnets')}<span class="sp"></span><button class="btn pri" onclick="editNet(-1)">${ic('plus')}New network</button></div>
+   ${helpNote('mnnets','This server connects to each network itself, as one Basestation with the login that network gave you, and introduces itself with the connection name you choose (empty: brew-server and its version). The login stays on this server; stations never get it. What crosses is set by the talkgroup pools on the <a data-go="routing" href="#routing">Routing</a> page: put a group of a network into a pool as <code>network:GSSI</code> (e.g. TG 9 here and TetraPack:909 there) and the pool becomes a bridge; the talker\'s ISSI is passed on 1:1. The bridge ISSI is registered in that network and listens to the bridged groups so its server sends their calls here. Changes apply at once, only a changed network reconnects, no restart.')}
+   ${M.networks.length?`<div class="tw"><table><thead><tr><th style="width:52px">On</th><th>Network</th><th>Link</th><th>Server</th><th>Bridge ISSI</th><th>Bridged groups</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty">No other networks yet.</div>'}
+   ${msgDiv('net-msg')}</div>${visitorCard(M)}${conflictCard(M)}`;
+};
+// Radios of other networks on this server's stations (extension mni).
+function visitorCard(M){
+  const l=M.networks.flatMap(n=>n.visitors.map(v=>({...v,net:n.name})));
+  if(!l.length)return '';
+  return `<div class="card"><div class="ch"><h2>Visitors</h2><span class="cnt">${l.length}</span>${helpBtn('mnvis')}</div>
+   ${helpNote('mnvis','Radios of another network on a station of this server. The station says which network a radio comes from (stations with Multi Network, extension mni); this server registers it in its home network with its groups, so its home network\'s group calls reach it here and its calls on those groups go there. A radio with the same ISSI in this network is not affected.')}
+   <div class="tw"><table><thead><tr><th>Network</th><th>ISSI</th><th>Station</th><th>Groups there</th><th>Since</th></tr></thead><tbody>${l.map(v=>`<tr><td>${esc(v.net)}</td><td class="m">${v.issi}</td><td>${esc(v.station)}</td><td>${v.groups.map(g=>`<span class="tg">${g}</span>`).join(' ')||'<span class="mut">none</span>'}</td><td class="m">${tmd(v.since_ms)}</td></tr>`).join('')}</tbody></table></div></div>`;
+}
+// ISSI collisions the links saw (newest first), with a never-export button.
+function conflictCard(M){
+  const l=M.networks.flatMap((n,i)=>n.conflicts.map(c=>({...c,i,net:n.name,never:n.never_export.includes(c.issi)}))).sort((a,b)=>b.at_ms-a.at_ms);
+  if(!l.length)return '';
+  return `<div class="card"><div class="ch"><h2>ISSI conflicts</h2><span class="cnt">${l.length}</span>${helpBtn('mnconf')}</div>
+   ${helpNote('mnconf','An ISSI of this server that the other network has as well. A brew-server there is asked before a radio is registered (taken: not registered). Other servers cannot be asked: a radio there talking with an ISSI this server has registered there shows up here. Put such an ISSI on the never-export list of that network.')}
+   <div class="tw"><table><thead><tr><th>Time</th><th>Network</th><th>ISSI</th><th>What</th><th></th></tr></thead><tbody>${l.slice(0,100).map(c=>`<tr><td class="m">${tmd(c.at_ms)}</td><td>${esc(c.net)}</td><td>${issiCell(c.issi)}</td><td>${esc(c.what)}</td><td>${c.never?'<span class="mut">never exported</span>':`<button class="btn" onclick="neverNet(${c.i},${c.issi})">Never export</button>`}</td></tr>`).join('')}</tbody></table></div></div>`;
+}
+function neverNet(i,issi){const c=mnPlain();const n=c.networks[i];if(!n.never_export.includes(issi))n.never_export.push(issi);saveNets(c,`${issi} is never registered in ${n.name} now.`);}
+const netPlain=n=>({name:n.name,enabled:n.enabled,mcc:n.mcc,mnc:n.mnc,remote_host:n.remote_host,path:n.path,username:n.username,password:'',user_agent:n.user_agent,bridge_issi:n.bridge_issi,register_talkers:n.register_talkers!==false,register_all:!!n.register_all,export_stations:[...(n.export_stations||[])],never_export:[...(n.never_export||[])],forward_unknown:!!n.forward_unknown,reconnect_interval_seconds:n.reconnect_interval_seconds,tls:n.tls,tls_server_name:n.tls_server_name,tls_ca_path:n.tls_ca_path,tls_pinned_cert_path:n.tls_pinned_cert_path});
+const mnPlain=()=>({enabled:D.nets.enabled,name:D.nets.name,mcc:D.nets.mcc,mnc:D.nets.mnc,networks:D.nets.networks.map(netPlain)});
+async function saveNets(cfg,okText,sheet){
+  const m=sheet?$('sheet-msg'):null;if(m){m.className='msg mut';m.textContent='Saving…';}
+  try{await postJ('/api/networks/save',cfg);if(sheet)closeSheet();D.nets=await getJ('/api/networks');setMsg('net-msg','ok',okText);render(true);return true;}
+  catch(e){if(m){m.className='msg err';m.textContent=e.message;}else{setMsg('net-msg','err',e.message);render(true);}return false;}
+}
+function toggleMn(){const c=mnPlain();c.enabled=!c.enabled;if(!c.enabled&&!confirm('Switch Multi Network off? All links to other networks close; settings and pools stay.'))return;saveNets(c,`Multi Network switched ${c.enabled?'on':'off'}.`);}
+function toggleNet(i){const c=mnPlain();c.networks[i].enabled=!c.networks[i].enabled;saveNets(c,`${c.networks[i].name} switched ${c.networks[i].enabled?'on':'off'}.`);}
+function delNet(i){const c=mnPlain();const n=c.networks[i];if(!confirm(`Delete network "${n.name}"? Remove its groups from the pools first.`))return;c.networks.splice(i,1);saveNets(c,`${n.name} deleted.`);}
+const fld=(id,label,val,extra)=>`<div><label class="l" for="${id}">${label}</label><input class="f" id="${id}" value="${esc(val)}" ${extra||''}></div>`;
+function editSelf(){const M=D.nets;
+  $('sheet').innerHTML=`<div class="ch"><h3 id="sheet-title">This server</h3></div><div class="sb">
+   ${fld('ms-name','Network name',M.name,'maxlength="40" placeholder="e.g. TMO-Austria"')}
+   <div style="display:flex;gap:10px">${fld('ms-mcc','MCC',M.mcc||'','inputmode="numeric" placeholder="901"')}${fld('ms-mnc','MNC',M.mnc||'','inputmode="numeric" placeholder="9999"')}</div>
+   <div class="msg" id="sheet-msg" style="padding:0"></div></div>
+   <div class="acts"><button class="btn" onclick="closeSheet()">Cancel</button><button class="btn pri" onclick="saveSelf()">Save</button></div>`;
+  $('scrim').classList.add('on');setTimeout(()=>$('ms-name').focus(),30);}
+function saveSelf(){const c=mnPlain();c.name=v('ms-name').trim();c.mcc=+v('ms-mcc')||0;c.mnc=+v('ms-mnc')||0;saveNets(c,'Saved.',true);}
+function editNet(i){
+  const n=i>=0?netPlain(D.nets.networks[i]):{name:'',enabled:true,mcc:0,mnc:0,remote_host:'',path:'/brew',username:'',password:'',user_agent:'',bridge_issi:0,register_talkers:true,register_all:false,export_stations:[],never_export:[],forward_unknown:false,reconnect_interval_seconds:15,tls:false,tls_server_name:'',tls_ca_path:'/etc/ssl/certs/ca-certificates.crt',tls_pinned_cert_path:''};
+  const hasPw=i>=0&&D.nets.networks[i].has_password;
+  const hp=splitHost(n.remote_host);
+  $('sheet').innerHTML=`<div class="ch"><h3 id="sheet-title">${i>=0?'Edit network':'New network'}</h3></div><div class="sb">
+   ${fld('ne-name','Name (pools refer to it)',n.name,'maxlength="40" placeholder="e.g. TetraPack"'+(i>=0&&D.pools.some(p=>(p.remote||[]).some(r=>r.network===n.name))?' readonly title="Used by a pool"':''))}
+   <div style="display:flex;gap:10px">${fld('ne-mcc','MCC',n.mcc||'','inputmode="numeric" placeholder="901"')}${fld('ne-mnc','MNC',n.mnc||'','inputmode="numeric" placeholder="9000"')}</div>
+   <div style="display:flex;gap:10px"><div style="flex:3">${fld('ne-host','Server (host)',hp.host,'placeholder="brew.example.net" autocomplete="off"')}</div><div style="flex:1">${fld('ne-port','Port',hp.port,'inputmode="numeric" placeholder="443 / 9000"')}</div></div>
+   ${fld('ne-path','Path',n.path,'placeholder="/brew"')}
+   <div style="display:flex;gap:10px">${fld('ne-user','Login (Basestation ID there)',n.username,'autocomplete="off"')}${fld('ne-pw','Password',hasPw?'':'','type="password" autocomplete="new-password" placeholder="'+(hasPw?'unchanged':'')+'"')}</div>
+   ${fld('ne-ua','Connection name (how this server introduces itself there)',n.user_agent,'maxlength="80" placeholder="'+esc(D.nets.default_user_agent)+'"')}
+   ${fld('ne-issi','Bridge ISSI in that network (0 = none)',n.bridge_issi,'inputmode="numeric"')}
+   <label style="display:flex;gap:10px;align-items:center"><button class="tog" role="switch" id="ne-reg" aria-checked="${n.register_talkers}" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true')"></button> Register radios there (those in a bridged group here, like a base station)</label>
+   <label style="display:flex;gap:10px;align-items:center"><button class="tog" role="switch" id="ne-all" aria-checked="${n.register_all}" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true')"></button> Register all: also every radio of stations with Multi Network (mni) or listed below</label>
+   ${fld('ne-exp','Also export the radios of these stations, and these apps (station or app logins, or app ISSIs; comma separated)',n.export_stations.join(', '),'autocomplete="off"')}
+   ${fld('ne-never','Never register these ISSIs there (comma separated)',n.never_export.join(', '),'autocomplete="off" inputmode="numeric"')}
+   <label style="display:flex;gap:10px;align-items:center"><button class="tog" role="switch" id="ne-fwd" aria-checked="${n.forward_unknown}" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true')"></button> Forward unknown targets: an individual call or SDS nobody here takes goes to this network</label>
+   <label style="display:flex;gap:10px;align-items:center"><button class="tog" role="switch" id="ne-tls" aria-checked="${n.tls}" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true')"></button> TLS (wss://)</label>
+   ${fld('ne-sni','TLS server name (empty: host)',n.tls_server_name)}
+   ${fld('ne-pin','Pinned certificate file (self-signed server, empty: off)',n.tls_pinned_cert_path)}
+   <label style="display:flex;gap:10px;align-items:center"><button class="tog" role="switch" id="ne-on" aria-checked="${n.enabled}" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true')"></button> Connect</label>
+   <div class="msg" id="sheet-msg" style="padding:0"></div></div>
+   <div class="acts"><button class="btn" onclick="closeSheet()">Cancel</button><button class="btn pri" onclick="saveNet(${i})">Save</button></div>`;
+  $('scrim').classList.add('on');setTimeout(()=>$('ne-name').focus(),30);
+}
+// "host:port", "[v6]:port" or a bare host -> {host, port}.
+function splitHost(h){h=h||'';const m=h.match(/^\[([^\]]*)\](?::(\d*))?$/);if(m)return {host:m[1],port:m[2]||''};
+  const k=h.lastIndexOf(':');if(k>0&&h.indexOf(':')===k)return {host:h.slice(0,k),port:h.slice(k+1)};return {host:h,port:''};}
+function saveNet(i){
+  const host=v('ne-host').trim().replace(/^(wss?|https?):\/\//,'').replace(/\/.*$/,''),port=v('ne-port').trim(),m=$('sheet-msg');
+  if(host&&!(/^\d+$/.test(port)&&+port>=1&&+port<=65535)){m.className='msg err';m.textContent='Enter the port (1 to 65535), e.g. 443 with TLS or 9000.';$('ne-port').focus();return;}
+  const remote_host=host?(host.includes(':')?'['+host+']':host)+':'+port:'';
+  const c=mnPlain();const old=i>=0?c.networks[i]:{reconnect_interval_seconds:15,tls_ca_path:'/etc/ssl/certs/ca-certificates.crt'};
+  const n=Object.assign({},old,{name:v('ne-name').trim(),mcc:+v('ne-mcc')||0,mnc:+v('ne-mnc')||0,remote_host,path:v('ne-path').trim()||'/brew',
+    username:v('ne-user').trim(),password:v('ne-pw'),user_agent:v('ne-ua').trim(),bridge_issi:+v('ne-issi')||0,register_talkers:$('ne-reg').getAttribute('aria-checked')==='true',register_all:$('ne-all').getAttribute('aria-checked')==='true',
+    export_stations:v('ne-exp').split(',').map(x=>x.trim()).filter(Boolean),never_export:v('ne-never').split(/[\s,]+/).filter(Boolean).map(Number),forward_unknown:$('ne-fwd').getAttribute('aria-checked')==='true',
+    tls:$('ne-tls').getAttribute('aria-checked')==='true',tls_server_name:v('ne-sni').trim(),tls_pinned_cert_path:v('ne-pin').trim(),
+    enabled:$('ne-on').getAttribute('aria-checked')==='true'});
+  if(i>=0)c.networks[i]=n;else c.networks.push(n);
+  saveNets(c,`${n.name} saved.`,true);
+}
+
+/* ---------- accounts ---------- */
+const svcChip=(name,s)=>!s?'':`<span class="chip ${!s.enabled?'':s.open?'w':'a'}">${name}: ${!s.enabled?'switched off':s.open?'open, no login needed':'login required'}</span>`;
+const yn=b=>b?'<span class="yes yn" title="yes">✓<span class="hide-s"> yes</span><span class="sr">yes</span></span>':'<span class="no yn" title="no">—<span class="hide-s"> no</span><span class="sr">no</span></span>';
+R.accounts=()=>{
+  if(!D.who.admin)return `<div class="card"><div class="empty">Accounts are for admins. <button class="btn" onclick="openLogin(false)">Log in</button></div></div>`;
+  const a=D.acc;
+  if(!a)return '<div class="card"><div class="empty">Loading…</div></div>';
+  const q=UI.filter.acc||'';
+  const byInfo=(UI.filter.accv||'login')==='info';
+  const rows=a.accounts.filter(x=>match(q,x.username,x.info));
+  return `<div class="card"><div class="ch"><h2>Station and terminal logins</h2><span class="mut">${a.accounts.length}</span>${helpBtn('acc')}<span class="sp"></span>
+    ${seg('accv',[['login','Login'],['info','Info']])}
+    <div class="search">${ic('search')}<input class="f" placeholder="Login or info…" value="${esc(q)}" oninput="UI.filter.acc=this.value;render(true);const i=document.querySelector('.search input');i.focus();i.setSelectionRange(i.value.length,i.value.length)" aria-label="Filter logins"></div>
+    <button class="btn pri" onclick="editAcc(-1)">${ic('plus')}New login</button></div>
+   ${helpNote('acc','The logins Basestations and terminals (apps, consoles) use to connect to this server. <b>Brew</b> carries calls and SDS; the login is the station\'s or terminal\'s number (1 to 7 digits). <b>Telemetry</b> and <b>control</b> are the FlowStation links for status reports and commands (DGNA, kick, restart). One login can be on all three. Changes apply to the next connection at once, without a restart, and are written to the config file. Connections that are already up stay until they reconnect. Careful: while the telemetry or control list is empty, that link needs no login; the first login you add there turns the login on, and stations without one are refused from then on.')}
+   <div class="svc">${svcChip('Brew',a.brew)}${svcChip('Telemetry',a.telemetry)}${svcChip('Control',a.control)}</div>
+   <div class="tw acc"><table><thead><tr><th>${byInfo?'Info':'Login'}</th><th>Brew</th><th>Telemetry</th><th>Control</th><th class="hide-s">Position</th><th></th></tr></thead><tbody>
+   ${rows.map(x=>{const i=a.accounts.indexOf(x);const first=byInfo&&x.info?`<b>${esc(x.info)}</b>`:`<b class="m">${esc(x.username)}</b>`;
+     return `<tr><td>${first}${byInfo?(x.info?`<span class="sub m">${esc(x.username)}</span>`:'<span class="sub">no info</span>'):''}</td><td>${yn(x.brew)}</td><td>${yn(x.telemetry)}</td><td>${yn(x.control)}</td><td class="hide-s">${x.lat!=null?`<span class="m" style="font-size:12px">${x.lat.toFixed(4)}, ${x.lon.toFixed(4)}</span>`:'<span class="no">—</span>'}</td>
+     <td style="text-align:right;white-space:nowrap"><button class="btn" onclick="editAcc(${i})">Edit</button> <button class="btn danger hide-s" onclick="delAcc(${i})">Delete</button></td></tr>`;}).join('')||'<tr><td colspan="6" class="mut">No logins</td></tr>'}
+   </tbody></table></div>${msgDiv('acc-msg','padding:12px 18px')}</div>`;
+};
+function editAcc(i){
+  const x=i>=0?D.acc.accounts[i]:{username:'',brew:true,telemetry:true,control:true,info:'',lat:null,lon:null};
+  const sw=(id,on,label,hint)=>`<label style="display:flex;gap:12px;align-items:center"><button type="button" class="tog" role="switch" id="${id}" aria-checked="${on}" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true')"></button><span><b style="font-size:13.5px">${label}</b><br><span class="mut" style="font-size:12px">${hint}</span></span></label>`;
+  $('sheet').innerHTML=`<div class="ch"><h3 id="sheet-title">${i>=0?'Edit login '+esc(x.username):'New login'}</h3></div><div class="sb">
+   <div><label class="l" for="ac-user">Username</label><input class="f" id="ac-user" value="${esc(x.username)}" ${i>=0?'disabled':''} placeholder="e.g. 1000003" autocomplete="off" spellcheck="false"></div>
+   <div><label class="l" for="ac-pw">Password</label><div style="display:flex;gap:8px"><input class="f" id="ac-pw" type="text" autocomplete="new-password" spellcheck="false" placeholder="${i>=0?'unchanged':'password'}" style="flex:1"><button type="button" class="btn" onclick="$('ac-pw').value=genPw()">Generate</button></div></div>
+   <div><label class="l" for="ac-info">Info (optional)</label><input class="f" id="ac-info" maxlength="60" value="${esc(x.info||'')}" placeholder="e.g. Relay Main Square · Sysop OE4XYZ"></div>
+   <div><label class="l" for="ac-pos">Position (optional): latitude, longitude</label><div style="display:flex;gap:8px"><input class="f" id="ac-pos" value="${x.lat!=null?x.lat+', '+x.lon:''}" placeholder="48.2082, 16.3738" autocomplete="off" spellcheck="false" style="flex:1"><button type="button" class="btn" onclick="hereFix()" title="Use the position of this device">${ic('pin')}Here</button></div><div class="mut" style="font-size:12px;margin-top:4px">Shown on the map. Paste it from a map app, or take this device's position.</div></div>
+   ${sw('ac-b',x.brew,'Brew','Calls and SDS. Username = number, 1 to 7 digits')}
+   ${sw('ac-t',x.telemetry,'Telemetry','FlowStation status reports')}
+   ${sw('ac-c',x.control,'Control','Commands to the station: DGNA, kick, restart')}
+   <div class="mut" style="font-size:12px">Applies to the next connection at once, no restart.</div>
+   <div class="msg" id="sheet-msg" style="padding:0"></div></div>
+   <div class="acts">${i>=0?`<button class="btn danger" style="margin-right:auto" onclick="closeSheet();delAcc(${i})">${ic('trash')}Delete</button>`:''}<button class="btn" onclick="closeSheet()">Cancel</button><button class="btn pri" onclick="saveAcc(${i})">Save</button></div>`;
+  $('scrim').classList.add('on');setTimeout(()=>(i>=0?$('ac-pw'):$('ac-user')).focus(),30);
+}
+function hereFix(){
+  const m=$('sheet-msg');
+  if(!navigator.geolocation){m.className='msg err';m.textContent='This browser cannot give a position (it needs HTTPS).';return;}
+  m.className='msg mut';m.textContent='Getting the position…';
+  navigator.geolocation.getCurrentPosition(p=>{$('ac-pos').value=p.coords.latitude.toFixed(5)+', '+p.coords.longitude.toFixed(5);m.textContent='';},
+    e=>{m.className='msg err';m.textContent='No position: '+(e.code===1?'permission denied':e.message)+'. Over plain HTTP browsers refuse; paste it instead.';},{enableHighAccuracy:true,timeout:15000});
+}
+function genPw(){const c='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';const a=new Uint32Array(16);crypto.getRandomValues(a);return [...a].map(n=>c[n%c.length]).join('');}
+const on=id=>$(id).getAttribute('aria-checked')==='true';
+async function saveAcc(i){
+  const m=$('sheet-msg');
+  const pos=$('ac-pos').value.trim();let lat=null,lon=null;
+  if(pos){const n=pos.split(/[\s,;]+/).filter(Boolean).map(Number);if(n.length!==2||n.some(v=>!isFinite(v))){m.className='msg err';m.textContent='Position: two numbers, latitude and longitude, e.g. 48.2082, 16.3738.';return;}[lat,lon]=n;}
+  const body={username:$('ac-user').value.trim(),password:$('ac-pw').value,brew:on('ac-b'),telemetry:on('ac-t'),control:on('ac-c'),info:$('ac-info').value.trim(),lat,lon};m.className='msg mut';m.textContent='Saving…';
+  try{D.acc=await postJ('/api/accounts',body);closeSheet();setMsg('acc-msg','ok',`${body.username} saved. It works for the next connection.`);render(true);}
+  catch(e){m.className='msg err';m.textContent=e.message;}
+}
+async function delAcc(i){
+  const x=D.acc.accounts[i];if(!confirm(`Delete login "${x.username}" from Brew, telemetry and control?`))return;
+  try{D.acc=await api('/api/accounts/'+encodeURIComponent(x.username),{method:'DELETE'});setMsg('acc-msg','ok',`${x.username} deleted.`);}catch(e){setMsg('acc-msg','err',e.message);}
+  render(true);
+}
+
+/* ---------- directory: ISSI and GSSI names ---------- */
+const DIR={issi:{api:'/api/issi-names',what:'ISSI',who:'radio',ex:'2320972',exn:'OE4SXM Sebastian',ex2:'2321100, Relay North',file:'issi-directory.csv'},
+  gssi:{api:'/api/gssi-names',what:'GSSI',who:'group',ex:'2321',exn:'District North',ex2:'2322, District South',file:'gssi-directory.csv'}};
+const dirK=()=>UI.filter.dirk==='gssi'?'gssi':'issi';
+const dirNames=()=>D[dirK()]||{};
+R.issis=()=>{
+  const adm=D.who.admin;const K=dirK(),d=DIR[K];const q=UI.filter.issi||'';const f=UI.filter.issif||'all';
+  const names=dirNames();const ms=(D.conn&&D.conn.mobile_stations)||[];
+  let seen=new Map();
+  if(K==='issi')seen=new Map(ms.map(m=>[String(m.issi),m]));
+  else{for(const m of ms)for(const g of (m.groups||[])){const k=String(g);seen.set(k,(seen.get(k)||0)+1);}
+    for(const c of ((D.status&&D.status.active_calls)||[]))if(c.kind==='group'&&!seen.has(String(c.destination)))seen.set(String(c.destination),0);}
+  const acc=K==='gssi'?(D.access||{}):{};
+  const keys=[...new Set([...Object.keys(names),...seen.keys(),...Object.keys(acc)])].sort((a,b)=>a-b);
+  const rows=keys.filter(k=>(f==='all'||(f==='named'&&names[k])||(f==='unnamed'&&!names[k])||(f==='limited'&&acc[k]))&&match(q,k,names[k],...((acc[k]||{}).issis||[])));
+  const accCell=k=>{const a=acc[k];if(!a)return '<span class="mut">Open</span>';const n=a.issis.length;
+    const join=!n?'':a.mode==='block'?`<span class="chip w" title="${a.issis.join(', ')}">${n} blocked</span>`:`<span class="chip a" title="${a.issis.join(', ')}">Only ${n} ISSI${n===1?'':'s'}</span>`;
+    const rx=!a.rx_only?'':a.rx_only_issis.length?`<span class="chip i" title="${a.rx_only_issis.join(', ')}">${a.rx_only_issis.length} RX only</span>`:'<span class="chip i">RX only</span>';
+    return [join,rx].filter(Boolean).join(' ')||'<span class="mut">Open</span>';};
+  const where=K==='issi'?(m=>m?`<span class="st"><i></i>${esc(m.cell?m.cell.name:(m.basestation_name||'registered'))}</span>`:'<span class="st i"><i></i>not registered</span>')
+    :(n=>n===undefined?'<span class="st i"><i></i>no radios</span>':`<span class="st"><i></i>${n?n+' radio'+(n===1?'':'s'):'call running'}</span>`);
+  const help=K==='issi'?'Names for ISSIs, for example the call sign and first name of a radio\'s user. They show next to the ISSI on Overview, Calls, SDS, Radios, Roaming and Routing. Radios registered right now are listed too, so you can name them. Changes apply at once, without a restart, and are written to the config file (<code>[issi_names]</code>).'
+    :'Names for groups (GSSI), for example the area or the purpose of a talkgroup. They show next to the group on Overview, Calls, Radios and Routing (a name a radio reports for its group comes first). Groups radios are on right now are listed too, so you can name them.<br><br><b>Access</b> decides who may use a group: <i>Open</i> (everyone), <i>Only these</i> (an allow list: only the listed ISSIs) or <i>Block these</i> (everyone but the listed ISSIs). <b>RX only</b> makes radios listeners: all of them with an empty list, or the listed ones; who may talk is then who is admitted and not listen-only. The server records an affiliation only for an admitted radio and drops a group call from a radio that may not talk (emergency calls always pass). A Basestation that supports it (FlowStation with <code>group-access</code>) gets the lists and refuses the attachment or the request to talk on the air itself; on other Basestations the radio can still attach and talk locally, but not across the network. Changes apply at once, without a restart, and are written to the config file (<code>[gssi_names]</code>, <code>[group_access]</code>).';
+  return `<div class="bar">${seg('dirk',[['issi','Radios (ISSI)'],['gssi','Groups (GSSI)']])}${seg('issif',[['all','All'],['named','With name'],['unnamed','Without name']].concat(K==='gssi'?[['limited','Limited']]:[]))}${searchBox('issi',d.what+' or name…')}<span class="sp"></span>
+    ${adm?`<button class="btn" onclick="exportNames()">Export</button><button class="btn" onclick="importNames()">Import list</button><button class="btn pri" onclick="editName('')">${ic('plus')}${K==='gssi'?'Add group':'Add name'}</button>`:''}</div>
+  <div class="card"><div class="ch"><h2>${K==='issi'?'Radios':'Groups'}</h2><span class="cnt">${Object.keys(names).length} names</span>${helpBtn('dir'+K)}</div>
+   ${helpNote('dir'+K,help)}
+   <div class="tw"><table><thead><tr><th>${d.what}</th><th>Name</th>${K==='gssi'?'<th>Access</th>':''}<th class="hide-s">Now</th>${adm?'<th></th>':''}</tr></thead><tbody>
+   ${rows.slice(0,1000).map(k=>`<tr><td><b class="m">${k}</b></td><td>${names[k]?esc(names[k]):'<span class="mut">—</span>'}</td>${K==='gssi'?`<td>${accCell(k)}</td>`:''}<td class="hide-s">${where(seen.get(k))}</td>
+     ${adm?`<td style="text-align:right;white-space:nowrap">${names[k]?`<button class="btn" onclick="editName('${k}')">Edit</button> <button class="btn danger" onclick="delName('${k}')" aria-label="Delete name">${ic('trash')}<span class="hide-s">Delete</span></button>`:acc[k]?`<button class="btn" onclick="editName('${k}')">Edit</button>`:`<button class="btn" onclick="editName('${k}')">${ic('plus')}Name</button>`}</td>`:''}</tr>`).join('')||`<tr><td colspan="5" class="mut">${keys.length?'Nothing matches':'No names yet'}</td></tr>`}
+   </tbody></table></div>${rows.length>1000?'<div class="msg mut" style="padding:10px 18px">First 1000 shown, use the search.</div>':''}${msgDiv('issi-msg','padding:10px 18px')}</div>`;
+};
+function editName(k){
+  const K=dirK(),d=DIR[K];const n=dirNames()[k]||'';const a=K==='gssi'?(D.access||{})[k]:null;
+  const am=a&&a.issis.length?a.mode:'open';
+  $('sheet').innerHTML=`<div class="ch"><h3 id="sheet-title">${K==='gssi'?(k?'Group '+k:'Add group'):(k?(n?'Edit name':'Name for '+k):'Add name')}</h3></div><div class="sb">
+   <div><label class="l" for="in-issi">${d.what}</label><input class="f" id="in-issi" value="${k}" ${k?'disabled':''} inputmode="numeric" placeholder="e.g. ${d.ex}"></div>
+   <div><label class="l" for="in-name">Name${K==='gssi'?' (optional)':''}</label><input class="f" id="in-name" maxlength="60" value="${esc(n)}" placeholder="e.g. ${esc(d.exn)}"></div>
+   ${K==='gssi'?`<div><span class="l" style="display:block;font-size:12px;font-weight:600;color:var(--text2)">Access</span><div class="seg" role="radiogroup" id="in-acc" style="margin-top:5px">${[['open','Open'],['allow','Only these'],['block','Block these']].map(([v,l])=>`<button role="radio" data-v="${v}" aria-pressed="${am===v}" aria-checked="${am===v}" onclick="setAcc('${v}')">${l}</button>`).join('')}</div></div>
+   <div id="in-acc-box" ${am==='open'?'hidden':''}><label class="l" for="in-acc-list" id="in-acc-l">${am==='block'?'ISSIs that may not use the group':'ISSIs that may use the group (no one else)'}</label>
+   <textarea class="f" id="in-acc-list" rows="4" style="width:100%;height:auto;padding:10px;font:13px var(--mono,ui-monospace,monospace)" placeholder="2320972, 2321100">${a?a.issis.join(', '):''}</textarea>
+   <div class="mut" style="font-size:12px;margin-top:4px">Separated by commas, spaces or new lines. An empty list opens the group.</div></div>
+   <label style="display:flex;gap:12px;align-items:center"><button type="button" class="tog" role="switch" id="in-rx" aria-checked="${!!(a&&a.rx_only)}" onclick="const on=this.getAttribute('aria-checked')!=='true';this.setAttribute('aria-checked',on);$('in-rx-box').hidden=!on"></button><span><b style="font-size:13.5px">RX only</b><br><span class="mut" style="font-size:12px">Listen only: these radios may not talk on the group</span></span></label>
+   <div id="in-rx-box" ${a&&a.rx_only?'':'hidden'}><label class="l" for="in-rx-list">Listen-only ISSIs (empty = everyone)</label>
+   <textarea class="f" id="in-rx-list" rows="3" style="width:100%;height:auto;padding:10px;font:13px var(--mono,ui-monospace,monospace)" placeholder="empty = nobody may talk">${a?a.rx_only_issis.join(', '):''}</textarea></div>`:''}
+   <div class="msg" id="sheet-msg" style="padding:0"></div></div>
+   <div class="acts"><button class="btn" onclick="closeSheet()">Cancel</button><button class="btn pri" onclick="saveName()">Save</button></div>`;
+  $('scrim').classList.add('on');setTimeout(()=>(k?$('in-name'):$('in-issi')).focus(),30);
+}
+function setAcc(v){document.querySelectorAll('#in-acc button').forEach(x=>{const on=x.dataset.v===v;x.setAttribute('aria-pressed',on);x.setAttribute('aria-checked',on);});
+  $('in-acc-box').hidden=v==='open';$('in-acc-l').textContent=v==='block'?'ISSIs that may not use the group':'ISSIs that may use the group (no one else)';}
+async function saveName(){
+  const K=dirK();const m=$('sheet-msg');const issi=$('in-issi').value.trim(),name=$('in-name').value.trim();
+  let acc=null;
+  if(K==='gssi'){const b=document.querySelector('#in-acc button[aria-pressed="true"]');const v=b?b.dataset.v:'open';
+    const rx=$('in-rx').getAttribute('aria-checked')==='true';
+    acc={gssi:issi,mode:v==='block'?'block':'allow',issis:v==='open'?'':$('in-acc-list').value,rx_only:rx,rx_only_issis:rx?$('in-rx-list').value:''};
+    if(v!=='open'&&!acc.issis.trim()){m.className='msg err';m.textContent='Enter at least one ISSI, or choose Open.';return;}}
+  const had=dirNames()[issi]||'';
+  if(!name&&!(K==='gssi'&&(had||acc.issis.trim()||acc.rx_only||(D.access||{})[issi]))){m.className='msg err';m.textContent='Enter a name (or delete it in the list).';return;}
+  m.className='msg mut';m.textContent='Saving…';
+  try{
+    if(name||had)D[K]=await postJ(DIR[K].api+'/set',{issi,name});
+    if(acc)D.access=await postJ('/api/group-access/set',acc);
+    closeSheet();setMsg('issi-msg','ok',`${issi} saved.`);render(true);
+  }catch(e){m.className='msg err';m.textContent=e.message;}
+}
+async function delName(k){
+  const K=dirK();if(!confirm(`Delete the name of ${k}?`))return;
+  try{D[K]=await postJ(DIR[K].api+'/set',{issi:k,name:''});setMsg('issi-msg','ok',`Name of ${k} deleted.`);}catch(e){setMsg('issi-msg','err',e.message);}
+  render(true);
+}
+function importNames(){
+  const d=DIR[dirK()];
+  $('sheet').innerHTML=`<div class="ch"><h3 id="sheet-title">Import list</h3></div><div class="sb">
+   <div><label class="l" for="in-list">One ${d.who} per line: ${d.what}, then the name (comma, semicolon, tab or space between). A CSV export from a spreadsheet works.</label>
+   <textarea class="f" id="in-list" rows="9" style="width:100%;height:auto;padding:10px;font:13px var(--mono,ui-monospace,monospace)" placeholder="${d.ex}, ${esc(d.exn)}&#10;${esc(d.ex2)}"></textarea></div>
+   <label style="display:flex;gap:12px;align-items:center"><button type="button" class="tog" role="switch" id="in-replace" aria-checked="false" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true')"></button><span><b style="font-size:13.5px">Replace the whole list</b><br><span class="mut" style="font-size:12px">Off: adds the names and overwrites the ones listed</span></span></label>
+   <div class="msg" id="sheet-msg" style="padding:0"></div></div>
+   <div class="acts"><button class="btn" onclick="closeSheet()">Cancel</button><button class="btn pri" onclick="doImport()">Import</button></div>`;
+  $('scrim').classList.add('on');setTimeout(()=>$('in-list').focus(),30);
+}
+async function doImport(){
+  const K=dirK();const m=$('sheet-msg');const replace=$('in-replace').getAttribute('aria-checked')==='true';
+  if(replace&&!confirm(`Replace all ${DIR[K].what} names with this list?`))return;
+  m.className='msg mut';m.textContent='Importing…';
+  try{const before=Object.keys(D[K]||{}).length;D[K]=await postJ(DIR[K].api+'/import',{text:$('in-list').value,replace});closeSheet();
+    setMsg('issi-msg','ok',`Imported. The list has ${Object.keys(D[K]).length} names (before ${before}).`);render(true);}
+  catch(e){m.className='msg err';m.textContent=e.message;}
+}
+function exportNames(){
+  const K=dirK(),d=DIR[K];
+  const rows=Object.entries(D[K]||{}).sort((a,b)=>a[0]-b[0]).map(([k,v])=>k+','+(/[",]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v));
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([d.what+',Name\n'+rows.join('\n')+'\n'],{type:'text/csv'}));a.download=d.file;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+
+/* ---------- configuration ---------- */
+R.config=()=>{
+  if(!D.who.admin)return `<div class="card"><div class="empty">The configuration is for admins. <button class="btn" onclick="openLogin(false)">Log in</button></div></div>`;
+  if(UI.raw==null){if(!UI.rawLoading)loadRaw();return '<div class="card"><div class="empty">Loading…</div></div>';}
+  const secs=[...UI.raw.matchAll(/^\s*(\[\[?[^\]\n]+\]\]?)/gm)].map(m=>m[1]);
+  return `<div class="card"><div class="ch"><h2>Full configuration</h2><span class="mut">brew-server.toml</span>${helpBtn('cfg')}<span class="sp"></span>
+    <select class="f" onchange="jumpSec(this.value);this.value=''" aria-label="Jump to section"><option value="">Jump to section…</option>${[...new Set(secs)].map(x=>`<option>${esc(x)}</option>`).join('')}</select>
+    <button class="btn" onclick="if(!UI.rawDirty||confirm('Throw away your changes and load the file again?'))loadRaw()">Reload</button>
+    <button class="btn pri" onclick="saveRaw()">Save and apply</button></div>
+   ${helpNote('cfg','Every setting of the server. <b>Save and apply</b> checks the text first; a mistake is shown and nothing is saved. Then the server restarts within a few seconds to apply it: running calls drop and stations reconnect by themselves, and you sign in again. Logins (Accounts), talkgroup pools (Routing) and the ISSI blacklist change without a restart on their own pages. With high availability on, apply the file from the High Availability page.')}
+   ${msgDiv('cfg-msg','padding:10px 18px')}
+   <textarea class="cfg" id="cfg" spellcheck="false" autocapitalize="off" aria-label="Configuration file" oninput="UI.raw=this.value;UI.rawDirty=true">${esc(UI.raw)}</textarea></div>`;
+};
+async function loadRaw(){
+  UI.rawLoading=true;
+  try{UI.raw=await getJ('/api/config/raw');UI.rawDirty=false;setMsg('cfg-msg','','');}catch(e){UI.raw=null;setMsg('cfg-msg','err',e.message);}
+  UI.rawLoading=false;render(true);
+}
+function jumpSec(sec){
+  const t=$('cfg');if(!t||!sec)return;const i=t.value.search(new RegExp('^\\s*'+sec.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'m'));if(i<0)return;
+  t.focus();t.setSelectionRange(i,i);const line=t.value.slice(0,i).split('\n').length-1;t.scrollTop=Math.max(0,line*parseFloat(getComputedStyle(t).lineHeight)-20);
+}
+async function saveRaw(){
+  const text=$('cfg')?$('cfg').value:UI.raw;
+  if(!confirm('Save and apply? The server restarts to apply it; running calls drop.'))return;
+  setMsg('cfg-msg','mut','Checking and saving…');
+  try{const r=await api('/api/config/raw',{method:'PUT',body:text});UI.rawDirty=false;
+    setMsg('cfg-msg','ok',(r&&r.note?r.note[0].toUpperCase()+r.note.slice(1):'Saved')+'.');
+    if(!(D.ha&&D.ha.enabled))waitRestart();
+  }catch(e){setMsg('cfg-msg','err',e.message);}
+}
+async function waitRestart(){
+  // The process restarts a moment after the file changed: wait until it is gone and back.
+  let down=false;
+  for(let n=0;n<60;n++){await new Promise(r=>setTimeout(r,1000));
+    const up=await fetch('/healthz',{cache:'no-store'}).then(r=>r.ok).catch(()=>false);
+    if(!up){down=true;setMsg('cfg-msg','mut','Restarting…');continue;}
+    if(down||n>=8){setMsg('cfg-msg','ok','Applied: the server is back with the new configuration.');UI.raw=null;
+      const w=await fetch('/api/whoami',{cache:'no-store',headers:{'x-brew-ui':'1'}}).then(r=>r.json()).catch(()=>null);
+      if(w){D.who=w;if(w.need_login||(!w.username&&!w.admin))openLogin(!!w.need_login);}
+      render(true);return;}
+  }
+}
+
+buildNav();
+show(location.hash.slice(1)||'overview');
+refreshFast();refreshSlow();
+setInterval(refreshFast,2000);setInterval(refreshSlow,5000);
+setInterval(()=>{if(UI.page==='overview'||UI.page==='calls')render();},1000);
+</script>
+</body></html>"##;
+
+#[cfg(test)]
+mod tests {
+    use super::PAGE_HTML;
+
+    /// The polls must not ask admin-only routes for a visitor who is not signed in: their 401
+    /// opens the login window, so an open (read-only) dashboard would show it every 5 s.
+    #[test]
+    fn polls_ask_admin_routes_only_for_admins() {
+        let start = PAGE_HTML.find("async function refreshSlow(){").expect("refreshSlow");
+        let body = &PAGE_HTML[start..];
+        let body = &body[..body.find("\n}\n").expect("end of refreshSlow")];
+        for route in ["'/api/networks'", "'/api/accounts'", "'/api/control'", "'/api/config/"] {
+            for line in body.lines().filter(|l| l.contains(&format!("getJ({route}"))) {
+                assert!(line.contains(".admin"), "{route} polled without an admin check: {line}");
+            }
+        }
+    }
+}

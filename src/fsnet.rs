@@ -22,7 +22,9 @@ pub struct ListenerConfig {
     pub name: &'static str,
     pub listen: SocketAddr,
     pub subprotocol: &'static str,
-    pub users: HashMap<String, String>,
+    /// Username -> password, shared with the dashboard so logins added there
+    /// apply to the next connection without a restart.
+    pub users: crate::state::Users,
     pub tls: TlsConfig,
 }
 
@@ -85,7 +87,11 @@ where
     let peer = Some(peer);
     let (mut parts, _body) = request.into_parts();
 
-    let identity = match verify_basic(&state.cfg.users, &parts.headers) {
+    let verified = match state.cfg.users.read() {
+        Ok(users) => verify_basic(&users, &parts.headers),
+        Err(_) => Err(()),
+    };
+    let identity = match verified {
         Ok(identity) => identity,
         Err(()) => return basic_challenge(state.cfg.name),
     };

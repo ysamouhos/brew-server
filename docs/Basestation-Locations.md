@@ -71,7 +71,8 @@ lat = 37.9917
 lon = 23.7640
 ```
 
-Also editable under Settings. A `0` / `0` entry is treated as not configured
+Also editable under Settings and on the dashboard's Accounts page (info and
+position per login). A `0` / `0` entry is treated as not configured
 and is not plotted.
 
 ## Troubleshooting: positions not relayed
