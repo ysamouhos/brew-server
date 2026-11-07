@@ -628,13 +628,16 @@ static SETTINGS_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| 
 <p class=map-note style="color:#8fa2b8;font-size:12px">Keyed by the same numeric username the Basestation authenticates with under <code>[auth.users]</code>, so it's matched automatically to whichever live connection logs in as that identity. Shown on the <a class=backlink href="/map">MS Map</a> alongside mobile-station positions.</p>
 </section>
 
-<section class=panel><h2>Full configuration (raw TOML)</h2>
+<section class=panel id=raw-panel><h2>Full configuration (raw TOML)</h2>
 <p class=map-note style="color:#8fa2b8;font-size:12px">Every setting lives here, including ones with no form above (listen addresses, TLS, dashboard/auth/telemetry/control users, storage, call-routing flags). Loads the live config; Save validates it before writing anything.</p>
 <textarea id=raw style="width:100%;min-height:420px;background:#0d1826;color:#e7edf5;border:1px solid #203047;border-radius:8px;padding:12px;font-family:ui-monospace,monospace;font-size:12px"></textarea>
 <div class=ctl-row><button onclick="loadRaw()">Reload from server</button><button onclick="saveRaw()">Save</button><span id=raw-result class=ctl-result></span></div>
 </section>
 </main><script>
 const $=id=>document.getElementById(id);
+// Inside the new dashboard (a frame of its Settings page) the configuration is edited on its
+// own Configuration page, so the raw editor here is not shown twice.
+if(window.self!==window.top){{$('raw-panel').style.display='none';}}
 const esc=s=>String(s??'').replace(/[&<>]/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;'}}[c]));
 const yn=b=>b?'<span class="pill health-ok">yes</span>':'<span class="pill health-unknown">no</span>';
 function banner(ok,msg){{const b=$('save-banner');b.style.display='block';b.style.background=ok?'#173822':'#3a1414';b.style.borderColor=ok?'#245c37':'#f2545b';b.style.color=ok?'#52d273':'#ffb4b8';b.textContent=msg;setTimeout(()=>{{b.style.display='none'}},6000);}}
@@ -1829,6 +1832,15 @@ setInterval(load,2000);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// In the new dashboard's frame the classic raw TOML editor is hidden: the configuration is
+    /// edited on the Configuration page there. Opened on its own (classic dashboard) it stays.
+    #[test]
+    fn settings_hides_the_raw_editor_inside_the_new_dashboard() {
+        let h = SETTINGS_HTML.as_str();
+        assert!(h.contains("<section class=panel id=raw-panel><h2>Full configuration (raw TOML)"));
+        assert!(h.contains("if(window.self!==window.top){$('raw-panel').style.display='none';}"));
+    }
 
     #[test]
     fn connections_page_shows_the_connections_before_the_cells() {
