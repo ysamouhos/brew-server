@@ -963,6 +963,30 @@ async fn handle_event(state: &Arc<AppState>, id: &str, data: &[u8]) {
         _ => Vec::new(),
     };
     drop(t);
+    // `[allowlist] kick_unknown`: a radio that is not admitted to the network
+    // has still registered on the cell (the Basestation's own checks are
+    // local); it is already silent here, so this only clears it off the cell.
+    if let Some(issi) = registered.filter(|&issi| state.config.allowlist.kick_unknown && state.allowlist_refuses(issi)) {
+        warn!(issi, bts = %id, "registration of an ISSI not on the allowlist: kicking it off the Basestation");
+        let state = state.clone();
+        let bts = id.to_string();
+        tokio::spawn(async move {
+            let delay = state.config.allowlist.kick_delay_ms;
+            if delay > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            }
+            // Added to the list in the meantime: leave it alone.
+            if !state.allowlist_refuses(issi) {
+                return;
+            }
+            match crate::control::send_command(&state, &bts, crate::control::ControlCommand::KickMs { issi }).await {
+                Ok(Some(crate::control::ControlResponse::KickMsResponse { success: false, .. })) =>
+                    warn!(issi, bts = %bts, "allowlist: Basestation refused the kick"),
+                Ok(_) => {}
+                Err(e) => warn!(issi, bts = %bts, error = ?e, "allowlist: could not kick the radio"),
+            }
+        });
+    }
     for (issi, old) in roamed {
         info!(issi, from = %old, to = %id, "subscriber roamed to other BS, kicking old registration");
         let state = state.clone();

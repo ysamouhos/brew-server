@@ -52,6 +52,9 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/api/config/bts-locations/{username}", axum::routing::post(upsert_bts_location).delete(delete_bts_location))
         .route("/api/config/blacklist", get(blacklist_get))
         .route("/api/config/blacklist/{issi}", axum::routing::post(blacklist_add).delete(blacklist_remove))
+        .route("/api/config/allowlist", get(allowlist_get))
+        .route("/api/config/allowlist/enabled", axum::routing::put(allowlist_set_enabled))
+        .route("/api/config/allowlist/{issi}", axum::routing::post(allowlist_add).delete(allowlist_remove))
         .route("/api/sms-center/{id}", axum::routing::delete(sms_center_delete))
         .route("/api/ha/active", axum::routing::post(ha_make_active))
         .route("/api/ha/standby", axum::routing::post(ha_make_standby))
@@ -527,6 +530,11 @@ static SETTINGS_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| 
 
 <section class=panel><h2>ISSI Blacklist</h2><p class=muted>A blacklisted ISSI cannot transmit to groups, make or receive private calls, or send or receive SDS through this server. Dispatch ambience listening (SS-AL) to it and LIP position traffic still work. It can still register. Changes apply immediately, without a restart.</p><table><thead><tr><th>ISSI</th><th></th></tr></thead><tbody id=blk-list></tbody></table>
 <div class=ctl-row><input id=blk-issi placeholder="ISSI to block, e.g. 4013" type=number min=1><button onclick="blockIssi()">Block</button></div></section>
+<section class=panel><h2>ISSI Allowlist</h2><p class=muted>The closed-network counterpart of the blacklist: while enforced, only the ISSIs listed here may transmit to groups, make or receive private calls, or send or receive SDS through this server. Any other radio is barred the same way a blacklisted one is (SS-AL, LIP positions and emergency calls still pass, and it can still register). The blacklist still applies on top. Enforced here for the whole network, whichever Basestation the radio registers on. Changes apply immediately, without a restart.</p>
+<p id=al-state class=muted></p>
+<div class=ctl-row><label><input id=al-enabled type=checkbox onchange="setAllowlistEnabled(this.checked)"> enforce the allowlist</label></div>
+<table><thead><tr><th>ISSI</th><th></th></tr></thead><tbody id=al-list></tbody></table>
+<div class=ctl-row><input id=al-issi placeholder="ISSI to admit, e.g. 4013" type=number min=1><button onclick="allowIssi()">Admit</button></div></section>
 <section class=panel><h2>Basestation Locations (static fallback)</h2><p class=muted>Positions reported by Basestations over telemetry, or relayed by other servers, take precedence. This table lists the configured entries.</p><table><thead><tr><th>Username (auth)</th><th>Name</th><th>Latitude</th><th>Longitude</th><th></th></tr></thead><tbody id=bts-locs></tbody></table>
 <div class=ctl-row><input id=bl-user placeholder="Brew username, e.g. 1000001"><input id=bl-name placeholder="Basestation name"><input id=bl-lat placeholder="latitude" type=number step=any><input id=bl-lon placeholder="longitude" type=number step=any><button onclick="saveBtsLoc()">Add / Update</button></div>
 <p class=map-note style="color:#8fa2b8;font-size:12px">Keyed by the same numeric username the Basestation authenticates with under <code>[auth.users]</code>, so it's matched automatically to whichever live connection logs in as that identity. Shown on the <a class=backlink href="/map">MS Map</a> alongside mobile-station positions.</p>
@@ -614,6 +622,22 @@ async function blkApi(method,issi){{
 }}
 function blockIssi(){{const v=parseInt($('blk-issi').value,10); if(!v)return; $('blk-issi').value=''; blkApi('POST',v);}}
 function unblockIssi(i){{blkApi('DELETE',i);}}
+async function loadAl(){{
+  const d=await(await fetch('/api/config/allowlist')).json();
+  $('al-enabled').checked=d.enabled;
+  $('al-state').textContent=d.enabled?(d.issis.length?`Enforced: ${{d.issis.length}} ISSI${{d.issis.length==1?'':'s'}} admitted, every other radio is barred.`:'Enforced with an EMPTY list: every radio is barred until one is admitted.'):'Not enforced: the list is kept but every radio may communicate.';
+  $('al-list').innerHTML=d.issis.map(i=>`<tr><td>${{i}}</td><td><button onclick="disallowIssi(${{i}})">Remove</button></td></tr>`).join('')||'<tr><td colspan=2 class=muted>No ISSI is on the allowlist</td></tr>';
+}}
+async function alApi(method,url,body){{
+  const r=await fetch(url,{{method,headers:body?{{'Content-Type':'application/json'}}:{{}},body:body?JSON.stringify(body):undefined}});
+  const t=await r.text();
+  if(!r.ok){{banner(false,'Failed: '+t);loadAl();return;}}
+  banner(true,'Applied immediately.');
+  loadAl();
+}}
+function allowIssi(){{const v=parseInt($('al-issi').value,10); if(!v)return; $('al-issi').value=''; alApi('POST',`/api/config/allowlist/${{v}}`);}}
+function disallowIssi(i){{alApi('DELETE',`/api/config/allowlist/${{i}}`);}}
+function setAllowlistEnabled(enabled){{alApi('PUT','/api/config/allowlist/enabled',{{enabled}});}}
 async function loadBtsLocs(){{
   const d=(await(await fetch('/api/bts-locations?config_only=1')).json());
   $('bts-locs').innerHTML=d.map(b=>`<tr><td>${{esc(b.username)}}</td><td>${{esc(b.name)}}</td><td>${{b.lat}}</td><td>${{b.lon}}</td><td><button onclick="delBtsLoc('${{esc(b.username)}}')">Delete</button></td></tr>`).join('')||'<tr><td colspan=5 class=muted>No Basestation locations configured</td></tr>';
@@ -633,7 +657,7 @@ async function saveRaw(){{
   if(!r.ok){{banner(false,'Failed: '+t);return;}}
   banner(true,'Saved. Restarting to apply…');
 }}
-loadSip();loadRaw();loadBtsLocs();loadBlk();
+loadSip();loadRaw();loadBtsLocs();loadBlk();loadAl();
 </script></body></html>"#, style = STYLE, ver = VERSION));
 
 pub async fn calls_page() -> Html<&'static str> { Html(CALLS_HTML.as_str()) }
@@ -1021,6 +1045,40 @@ async fn set_blacklisted(state: &Arc<AppState>, issi: u32, blocked: bool) -> Res
         Ok(()) => Json(serde_json::json!({ "saved": true, "note": "applied immediately; saved to the config file without a restart" })).into_response(),
         Err(crate::blacklist::ApplyError::Invalid) => (StatusCode::BAD_REQUEST, "ISSI must be 1-16777215").into_response(),
         Err(crate::blacklist::ApplyError::Save(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("applied, but saving the config file failed: {e}")).into_response(),
+    }
+}
+
+/// The ISSI allowlist as enforced now: `{"enabled": bool, "issis": [...]}`.
+pub async fn allowlist_get(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let (enabled, issis) = state.allowlist_snapshot();
+    Json(serde_json::json!({ "enabled": enabled, "issis": issis }))
+}
+
+/// Admits an ISSI. Applied to the running server at once and written to the
+/// config file without a restart (a restart would drop every call).
+pub async fn allowlist_add(State(state): State<Arc<AppState>>, Path(issi): Path<u32>) -> Response {
+    allowlist_result(crate::allowlist::apply_issi(&state, issi, true, "the dashboard").await)
+}
+
+pub async fn allowlist_remove(State(state): State<Arc<AppState>>, Path(issi): Path<u32>) -> Response {
+    allowlist_result(crate::allowlist::apply_issi(&state, issi, false, "the dashboard").await)
+}
+
+#[derive(serde::Deserialize)]
+pub struct AllowlistEnabled {
+    pub enabled: bool,
+}
+
+/// Turns enforcement of the allowlist on or off, live.
+pub async fn allowlist_set_enabled(State(state): State<Arc<AppState>>, Json(body): Json<AllowlistEnabled>) -> Response {
+    allowlist_result(crate::allowlist::apply_enabled(&state, body.enabled, "the dashboard").await)
+}
+
+fn allowlist_result(result: Result<(), crate::allowlist::ApplyError>) -> Response {
+    match result {
+        Ok(()) => Json(serde_json::json!({ "saved": true, "note": "applied immediately; saved to the config file without a restart" })).into_response(),
+        Err(crate::allowlist::ApplyError::Invalid) => (StatusCode::BAD_REQUEST, "ISSI must be 1-16777215").into_response(),
+        Err(crate::allowlist::ApplyError::Save(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("applied, but saving the config file failed: {e}")).into_response(),
     }
 }
 

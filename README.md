@@ -45,6 +45,7 @@ dashboard's `/healthz` (port 9003) answers on both, with the node's role.
 - [Roaming](docs/Roaming.md) -- kick stale registrations on old Basestations
 - [Late entry](docs/Late-Entry.md) -- join running group calls mid-over
 - [ISSI blacklist](docs/ISSI-Blacklist.md)
+- [ISSI allowlist](docs/ISSI-Allowlist.md) -- run a closed network: only listed ISSIs may communicate
 - [Basestation locations](docs/Basestation-Locations.md)
 
 ## High availability
@@ -56,3 +57,4 @@ one LAN. See [docs/High-Availability.md](docs/High-Availability.md).
 
 - Joaquin EA5GVK
 - Sebastian OE14SXM
+- David Harcus MM7FDM

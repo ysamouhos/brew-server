@@ -328,11 +328,75 @@ pub struct AppState {
     /// edited live from the dashboard, which also writes the config file
     /// without restarting (`config` itself is a startup snapshot).
     pub blocked: std::sync::RwLock<HashSet<u32>>,
+    /// The ISSI allowlist as enforced right now (`[allowlist]`), edited live
+    /// like `blocked`. `enabled` false: kept, not enforced.
+    pub allowlist: std::sync::RwLock<Allowlist>,
+}
+
+/// The live `[allowlist]`: which ISSIs are admitted, and whether that is
+/// enforced at all.
+#[derive(Debug, Clone, Default)]
+pub struct Allowlist {
+    pub enabled: bool,
+    pub issis: HashSet<u32>,
+}
+
+impl Allowlist {
+    /// Whether the allowlist, on its own, bars `issi`.
+    pub fn refuses(&self, issi: u32) -> bool {
+        self.enabled && !self.issis.contains(&issi)
+    }
 }
 
 impl AppState {
+    /// Whether `issi` is barred from communicating through this server, by the
+    /// blacklist or by an enforced allowlist it is not on. Every routing check
+    /// asks this one question; `bar_reason` says which list it was.
     pub fn is_blocked(&self, issi: u32) -> bool {
+        self.is_blacklisted(issi) || self.allowlist_refuses(issi)
+    }
+
+    /// Whether `issi` is on the blacklist (regardless of the allowlist).
+    pub fn is_blacklisted(&self, issi: u32) -> bool {
         self.blocked.read().is_ok_and(|b| b.contains(&issi))
+    }
+
+    /// Whether the allowlist is enforced and `issi` is not on it.
+    pub fn allowlist_refuses(&self, issi: u32) -> bool {
+        self.allowlist.read().is_ok_and(|a| a.refuses(issi))
+    }
+
+    /// Why `issi` is barred, for the log: "blacklisted" or "not on the
+    /// allowlist"; `None` when it is not barred.
+    pub fn bar_reason(&self, issi: u32) -> Option<&'static str> {
+        if self.is_blacklisted(issi) {
+            Some("blacklisted")
+        } else if self.allowlist_refuses(issi) {
+            Some("not on the allowlist")
+        } else {
+            None
+        }
+    }
+
+    /// Sorted copy of the allowlist, and whether it is enforced.
+    pub fn allowlist_snapshot(&self) -> (bool, Vec<u32>) {
+        let (enabled, mut v) = self.allowlist.read()
+            .map(|a| (a.enabled, a.issis.iter().copied().collect::<Vec<u32>>()))
+            .unwrap_or_default();
+        v.sort_unstable();
+        (enabled, v)
+    }
+
+    /// Adds (`true`) or removes an ISSI from the allowlist; whether the set changed.
+    pub fn set_allowed(&self, issi: u32, allowed: bool) -> bool {
+        let Ok(mut a) = self.allowlist.write() else { return false };
+        if allowed { a.issis.insert(issi) } else { a.issis.remove(&issi) }
+    }
+
+    /// Turns enforcement of the allowlist on or off; whether that changed anything.
+    pub fn set_allowlist_enabled(&self, enabled: bool) -> bool {
+        let Ok(mut a) = self.allowlist.write() else { return false };
+        std::mem::replace(&mut a.enabled, enabled) != enabled
     }
 
     /// Sorted copy of the blacklist.
@@ -348,11 +412,15 @@ impl AppState {
         if blocked { set.insert(issi) } else { set.remove(&issi) }
     }
 
-    /// The startup config with the live blacklist applied: what is saved when
-    /// a settings edit rewrites the file, so it never reverts blacklist edits.
+    /// The startup config with the live blacklist and allowlist applied: what
+    /// is saved when a settings edit rewrites the file, so it never reverts
+    /// edits made to either list.
     pub fn config_snapshot(&self) -> Config {
         let mut cfg = self.config.clone();
         cfg.blacklist.issis = self.blocked_list();
+        let (enabled, issis) = self.allowlist_snapshot();
+        cfg.allowlist.enabled = enabled;
+        cfg.allowlist.issis = issis;
         cfg
     }
 }
@@ -401,6 +469,7 @@ impl AppState {
         let (aprs_tx, aprs_rx) = mpsc::unbounded_channel();
         let sms_center = crate::sms_center::SmsCenter::open(config.sms_center.clone());
         let blocked: HashSet<u32> = config.blacklist.issis.iter().copied().collect();
+        let allowlist = Allowlist { enabled: config.allowlist.enabled, issis: config.allowlist.issis.iter().copied().collect() };
         let config_hash = crate::ha::config_hash(&config);
         let ha = crate::ha::HaHandle::new(&config.ha, config_hash, crate::ha::config_sections(&config, false));
         (
@@ -417,6 +486,7 @@ impl AppState {
                 ha,
                 store,
                 blocked: std::sync::RwLock::new(blocked),
+                allowlist: std::sync::RwLock::new(allowlist),
             },
             aprs_rx,
         )

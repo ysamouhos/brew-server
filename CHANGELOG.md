@@ -2,6 +2,24 @@
 
 All notable changes to brew-server, newest first.
 
+Unreleased:
+
+- **ISSI allowlist.** A new `[allowlist]` section and a Settings panel for
+  running a closed network: with `enabled = true` only the listed ISSIs may
+  communicate through the server, and any other radio is barred exactly as a
+  blacklisted one is (no group transmissions, private calls or SDS; SS-AL, LIP
+  positions and emergency calls still pass, and it can still register so
+  dispatch can see it). Checked at the server for the whole network, whichever
+  Basestation the radio registers on; the blacklist still applies on top. The
+  list is kept but not enforced with `enabled = false` (the default), so it can
+  be built up before the network is closed; an enforced empty list is called
+  out at startup and on the Settings page. Edits apply live and are written to
+  the config file without a restart. Optional `kick_unknown` also kicks an
+  unlisted radio off its Basestation over the control channel. Log lines for a
+  dropped transmission now name the list that barred it. See
+  [docs/ISSI-Allowlist.md](docs/ISSI-Allowlist.md). Contributed by David
+  Harcus MM7FDM.
+
 Version 1.18.0 adds:
 
 - **Late entry for group calls.** A Basestation that affiliates to a group
