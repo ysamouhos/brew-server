@@ -4,6 +4,13 @@ All notable changes to brew-server, newest first.
 
 Version 1.20.0 adds:
 
+- **Timeslots on the Telemetry page again.** The new dashboard's station cards
+  list the station's calls (group or individual, from, to, cell, carrier and
+  timeslot, priority) and draw the four timeslots of every carrier in use, busy
+  or available, as the classic Basestation Telemetry panel did.
+- **One configuration editor.** The Settings page of the new dashboard no
+  longer shows the classic raw TOML editor; the configuration is edited on the
+  Configuration page. The classic dashboard's Settings page keeps it.
 - **Multi Network: bridges to other Brew networks.** Links, bridge pools, individual (duplex) calls and SDS across networks, visitors (radios of other networks on a station, `mni`) and radios of this network migrated onto a cell of a linked network are tested on air (FlowStation, Motorola MTP6650, TetraPack, 2026-11-07). `[multi_network]` lists other networks
   this server connects to itself, each over one outbound connection in plain
   Basestation mode (nothing new needed on the far server). The connection name

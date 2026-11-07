@@ -161,6 +161,7 @@ tr.click:hover td{background:color-mix(in srgb,var(--text) 2.5%,transparent)}
 tr.off td{color:var(--text3)}
 .chip{display:inline-flex;align-items:center;gap:5px;font:600 11.5px var(--sans);padding:2px 8px;border-radius:6px;background:var(--bg3);border:1px solid var(--border);color:var(--text2);white-space:nowrap;margin:1px 0}
 .chip.a{color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);border-color:color-mix(in srgb,var(--accent) 28%,transparent)}
+.tsg{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;color:var(--text2)}.tsg .l{min-width:86px}.tss{width:38px;height:24px;border-radius:5px;border:1px solid var(--border);display:inline-flex;align-items:center;justify-content:center;font:600 11px var(--sans);color:var(--text3);background:var(--bg3)}.tss.b{color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,transparent);border-color:color-mix(in srgb,var(--accent) 35%,transparent)}
 .chip.b{color:var(--accent2);background:color-mix(in srgb,var(--accent2) 12%,transparent);border-color:color-mix(in srgb,var(--accent2) 28%,transparent)}
 .chip.w{color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent);border-color:color-mix(in srgb,var(--warn) 30%,transparent)}
 .chip.d{color:var(--danger);background:color-mix(in srgb,var(--danger) 12%,transparent);border-color:color-mix(in srgb,var(--danger) 30%,transparent)}
@@ -774,6 +775,19 @@ R.roaming=()=>{
   ${list.map(r=>`<tr><td class="m">${tmd(r.at_ms)}</td><td>${issiCell(r.issi,true)}</td><td>${place(r.from)}</td><td class="arrow">→</td><td>${place(r.to)}</td><td>${howOf(r)}</td></tr>`).join('')||'<tr><td colspan="6" class="mut">No cell changes yet</td></tr>'}
   </tbody></table></div>${helpNote('roam','The last cell changes of the radios (cell reselection, TS 100 392-2 clause 18.3.4.7). When the station the radio left reports it (FlowStation with the <code>ms-reselection</code> extension), the category is shown: <i>undeclared</i> = no call running, <i>unannounced</i> = left a call without telling the cell, <i>announced type 1/2/3</i> = told the cell first (U-PREPARE) and got D-NEW-CELL; <i>prepared here</i> = the target was prepared through this server; <i>within station</i> = another cell of a multi-cell station. A radio only registers when it enters another location area, so moves within one location area show only once the station reports the cell.')}</div>`;
 };
+// A station's calls from its telemetry: who talks to whom on which carrier and timeslot, and a
+// grid of the four timeslots (TS1-TS4) of every carrier in use, busy or available.
+function tlmCalls(s){
+  const calls=Object.values(s.active_calls||{});if(!calls.length)return '';
+  const cellOf={};(s.cells||[]).forEach(x=>{cellOf[x.main_carrier]=x.id;if(x.secondary_carrier)cellOf[x.secondary_carrier]=x.id;});
+  const multi=(s.cells||[]).length>1;
+  const used=new Map();calls.forEach(c=>{if(!used.has(c.carrier_num))used.set(c.carrier_num,new Map());used.get(c.carrier_num).set(c.ts,c);});
+  const grid=[...used.keys()].sort((a,b)=>a-b).map(cn=>{const b=used.get(cn);
+    return `<div class="tsg"><span class="l">Carrier ${cn}</span>${[1,2,3,4].map(ts=>{const c=b.get(ts);
+      return c?`<span class="tss b" title="Carrier ${cn} TS${ts}: ${esc(String(c.source_issi))} → ${c.is_group?'group':'radio'} ${esc(String(c.gssi_or_called))}">TS${ts}</span>`:`<span class="tss" title="Carrier ${cn} TS${ts}: available">TS${ts}</span>`;}).join('')}</div>`;}).join('');
+  return `<div class="tw"><table><thead><tr><th>Call</th><th>From</th><th>To</th>${multi?'<th>Cell</th>':''}<th>Carrier / TS</th><th>Pri</th></tr></thead><tbody>${calls.map(c=>`<tr><td>${c.is_group?'Group':'Individual'}</td><td class="m">${esc(String(c.source_issi))}</td><td class="m">${esc(String(c.gssi_or_called))}</td>${multi?`<td>${cellOf[c.carrier_num]??'—'}</td>`:''}<td class="m">${c.carrier_num} / TS${c.ts}</td><td class="num">${c.priority}</td></tr>`).join('')}</tbody></table></div>
+   <div style="padding:4px 18px 14px">${grid}<div class="tsg" style="gap:12px;margin-top:8px"><span><span class="tss b" style="width:12px;height:12px"></span> busy</span><span><span class="tss" style="width:12px;height:12px"></span> available</span></div></div>`;
+}
 R.telemetry=()=>{
   const t=D.tele||[];
   const lvl=l=>l==='ok'?'':l==='degraded'?' w':' d';
@@ -783,7 +797,7 @@ R.telemetry=()=>{
    <div class="kv tight" style="padding:12px 18px"><div><span class="l">Version</span>${esc(s.build||s.version||'—')}</div><div><span class="l">Address</span><span class="m">${esc(s.ip||'—')}</span></div><div><span class="l">Connected</span>${ago(s.connected_at_ms)}</div><div><span class="l">Backhaul</span>${s.backhaul_connected==null?'—':s.backhaul_connected?'connected':'down'}</div>
     <div><span class="l">Radios</span>${s.registration_count}</div><div><span class="l">Calls</span>${Object.keys(s.active_calls||{}).length}</div><div><span class="l">TX EVM</span>${s.evm_pct!=null?s.evm_pct.toFixed(1)+' %':'—'}</div><div><span class="l">Emergencies</span>${(s.emergencies||[]).length||'none'}</div></div>
    ${(h.domains||[]).length?`<div class="chips" style="padding:0 18px 12px;display:flex;gap:6px;flex-wrap:wrap">${h.domains.map(d=>`<span class="chip ${d.level==='ok'?'a':d.level==='degraded'?'w':'d'}" title="${esc(d.detail)}">${esc(d.domain)}: ${esc(d.detail)}</span>`).join('')}</div>`:''}
-   <div class="tw"><table><thead><tr><th>Cell</th><th>Carrier</th><th>LA</th><th>RF</th><th>Radios</th></tr></thead><tbody>${(s.cells||[]).map(x=>`<tr><td>${x.id}${x.primary?' <span class="chip i">primary</span>':''}</td><td class="m">${x.main_carrier}${x.secondary_carrier?' + '+x.secondary_carrier:''}</td><td>${x.location_area}</td><td><span class="st${x.rf_state==='online'?'':' w'}" title="${esc(x.rf_detail||'')}"><i></i>${esc(x.rf_state||'—')}</span></td><td class="num">${x.registered_radios}</td></tr>`).join('')||'<tr><td colspan="5" class="mut">No cell report yet</td></tr>'}</tbody></table></div></div>`;}).join('')}</div>`
+   <div class="tw"><table><thead><tr><th>Cell</th><th>Carrier</th><th>LA</th><th>RF</th><th>Radios</th></tr></thead><tbody>${(s.cells||[]).map(x=>`<tr><td>${x.id}${x.primary?' <span class="chip i">primary</span>':''}</td><td class="m">${x.main_carrier}${x.secondary_carrier?' + '+x.secondary_carrier:''}</td><td>${x.location_area}</td><td><span class="st${x.rf_state==='online'?'':' w'}" title="${esc(x.rf_detail||'')}"><i></i>${esc(x.rf_state||'—')}</span></td><td class="num">${x.registered_radios}</td></tr>`).join('')||'<tr><td colspan="5" class="mut">No cell report yet</td></tr>'}</tbody></table></div>${tlmCalls(s)}</div>`;}).join('')}</div>`
   :'<div class="card"><div class="empty">No station telemetry connections. Stations report here with FlowStation <code>[telemetry]</code>.</div></div>';
 };
 R.control=()=>{
@@ -1211,6 +1225,19 @@ mod tests {
             for line in body.lines().filter(|l| l.contains(&format!("getJ({route}"))) {
                 assert!(line.contains(".admin"), "{route} polled without an admin check: {line}");
             }
+        }
+    }
+
+    /// A station's telemetry card lists its calls with carrier and timeslot and draws the four
+    /// timeslots of every carrier in use, as the classic Basestation Telemetry panel did.
+    #[test]
+    fn telemetry_shows_calls_and_timeslots() {
+        let start = PAGE_HTML.find("R.telemetry=()=>{").expect("R.telemetry");
+        let body = &PAGE_HTML[start..start + PAGE_HTML[start..].find("\n};\n").expect("end")];
+        assert!(body.contains("${tlmCalls(s)}"), "calls on the card");
+        let f = &PAGE_HTML[PAGE_HTML.find("function tlmCalls(s){").expect("tlmCalls")..start];
+        for needle in ["Carrier / TS", "[1,2,3,4]", "c.carrier_num", "c.ts", "available"] {
+            assert!(f.contains(needle), "{needle}");
         }
     }
 }
