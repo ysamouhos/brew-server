@@ -2,6 +2,205 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.20.0 adds:
+
+- **Multi Network: bridges to other Brew networks.** Links, bridge pools, individual (duplex) calls and SDS across networks, visitors (radios of other networks on a station, `mni`) and radios of this network migrated onto a cell of a linked network are tested on air (FlowStation, Motorola MTP6650, TetraPack, 2026-11-07). `[multi_network]` lists other networks
+  this server connects to itself, each over one outbound connection in plain
+  Basestation mode (nothing new needed on the far server). The connection name
+  (`user_agent`) is free text, e.g. `TMO-Austria Infra 1.0`. Credentials stay
+  on this server. Talkgroup pools can hold groups of those networks
+  (`[[talkgroup_pools.remote]]`, `network:GSSI` in the editor): a call is then
+  heard across networks with the GSSI translated (TG 9 here, TG 909 there) and
+  the talker ISSI passed on 1:1. A bridge ISSI is registered there and
+  affiliated to the bridged groups; radios in a bridged group are registered there and affiliated to the group there while they are in it here, like a Basestation does (`register_talkers`, default on). "Register all" (`register_all`) exports every radio of stations with the `mni` capability or listed in `export_stations`. Before registering, a brew-server there is asked whether the ISSI is free (new extension `issi-check`, `SERVICE_ISSI_CHECK` 0x24); for other servers there is a `never_export` list, and a radio there talking with an exported ISSI is reported ("ISSI conflicts" on the Multi Network page). Radios of other networks on a station (visitors, new extension `mni`, `SERVICE_NETWORKS` 0x20 to `SERVICE_CALL_NETWORK` 0x23) are registered in their home network, kept apart from this server's radios, and take part in their home network's group calls. A visitor that then names this server's network (it migrated here, e.g. after its radio was switched from ITSI attach to migration) is deregistered from the network it was registered at, so it is not reachable there and here at once. This server's own group calls are not broadcast (`route_without_affiliations`, the no-affiliation fallback) to a station whose cells all broadcast another network's MNI; it gets a group only where a radio of this network that migrated there is in it, so a group call of a station or terminal without the extension stays in this network. A group call from here that the other network ends at once (TetraPack answers some overs with GROUP_IDLE) keeps its call identifiers until its own end has gone over, so the voice and the end still reach that network and the call no longer hangs there. A radio of this network that migrated onto a cell of a linked network and attaches groups there without an MNI is in that network's groups (TS 100 392-2 clause 14.2.3, the station says so with `SERVICE_GROUP_NETWORK`): it is registered and affiliated there and hears that network's calls on them, instead of being affiliated to this server's group of the same number. An individual call or SDS whose party is here (a visitor that "forward unknown targets" would have sent to its network, or one of this server's radios registered in the visitor's network) is delivered here instead of round the link, where the far server refused it ("party not available"). `export_stations` can also name an app (Terminal) by its login or its ISSI, so "register all" registers it there and radios of that network reach it outside bridged groups. Individual calls and SDS cross networks: to a TSI of another network (the station names it), to and from visitors, and from another network to radios registered there; optional `forward_unknown` per network for targets nobody here takes (loop guard 5 s). Answers in a running call cross as well; call identifiers are translated on each link. Nothing else crosses. New dashboard page
+  **Multi Network** (admins): main switch, this server's network and MNI, the other
+  networks with link state, edited live without a restart. See
+  [docs/Multi-Network.md](docs/Multi-Network.md).
+- **Destination network on the dashboard.** Calls and SDS that leave this
+  server over a Multi Network link show the network they went to ("→ TP"),
+  and those that came in over one the network they came from ("← TP"): live
+  calls, Recent calls and Recent SDS, with a Network column when there is
+  one to show. In memory only (the history file format is unchanged).
+- **Open dashboard fixed.** With `[dashboard.ui] open = true` a visitor who is not
+  signed in got the login window every 5 s again (the new page asked the admin-only
+  network list on every refresh). It is now asked only for admins.
+
+- **Server name.** `[dashboard] servername` (default `"Tetra Network Monitor"`)
+  sets the main dashboard heading and the browser tab title of every
+  dashboard page. It belongs in the `[dashboard]` section:
+
+  ```toml
+  [dashboard]
+  servername = "Tetra Network Monitor"
+  ```
+
+- **Carrier registry.** A Basestation that is offered the `bts-info`
+  extension (`X-Brew-Extensions` header on the WebSocket upgrade) announces
+  its cells (MCC, MNC, carrier, band plan, location area, capabilities) with
+  the new `SERVICE_BTS_INFO` message. The server keeps a table of which
+  Basestation serves which carrier; duplicate carriers are logged and marked
+  on the dashboard (the newest announcement serves).
+- **Cells on the Connections page.** Cells are named `<login>/<cell>`; a
+  "Cells" panel lists carrier, downlink frequency, location area, MCC/MNC,
+  neighbours, capabilities, address and ISSIs per cell. A station with a login
+  that went away stays listed as offline until it connects again.
+- **Cell directory.** `SERVICE_BTS_INFO` may carry what each cell broadcasts
+  (maximum MS power, minimum access level, BS service details, neighbour
+  list). With the new `cell-directory` extension the server sends a
+  Basestation that asks for it the cells of all other Basestations, online
+  and offline, with those values (`SERVICE_CELL_DIRECTORY`, 0x1D), so it can
+  name its neighbours, check that both sides list each other and pick a
+  neighbour from the list (FlowStation: Roaming page).
+- **Handover target by downlink.** When no cell has the exact carrier key of
+  a handover request, the target is the cell on the same downlink (network,
+  carrier, band, offset): duplex spacing and reverse operation only set the
+  uplink, and a neighbour listed without an extension carries the serving
+  cell's band plan.
+- **Announced handover relay.** Basestations with the `handover-v1`
+  capability can prepare an announced cell change on the target Basestation
+  through the server (`SERVICE_HO_PREPARE`, `SERVICE_HO_FORWARD_REG`,
+  `SERVICE_HO_RESULT`). The target is found by carrier and, when given, its
+  location area; when there is none the serving cell is told why (unknown,
+  gone, own carrier, timeout). The roaming kick skips radios with a handover
+  in flight. Timeout:
+
+  ```toml
+  [handover]
+  timeout_ms = 2000
+  ```
+
+- **Cell of each radio.** With the `ms-cell` extension a Basestation reports
+  the cell a radio registered on (`SERVICE_MS_CELL`). Shown in the subscriber
+  tables (Connections page and main dashboard, `/api/ms-cells`) and in the
+  registration log.
+- **Cell Change Log.** The Connections page lists every cell change of a
+  radio with from / to cell and how (announced, not announced, within
+  station); with the `ms-reselection` extension the Basestation the radio
+  left reports the reselection type (undeclared, unannounced, announced
+  type 1 / 2 / 3, `SERVICE_MS_RESELECTION`). Kept in memory, 200 entries.
+- **Unannounced cell change.** When a radio registers on another Basestation
+  without a prepared handover, the Basestation it left gets
+  `SERVICE_MS_MOVED` if it asked for it (`ms-moved` capability and
+  extension), and an over the radio was talking in there ends, so it can talk
+  on from the new Basestation (which must speak `handover-v1`). See
+  [docs/Handover.md](docs/Handover.md).
+- **Individual calls follow the radio.** When a radio in an individual call
+  with a Brew party registers on another Basestation with the `call-restore`
+  capability, the call moves there; the old Basestation gets `CALL_RELEASE`
+  (cause 14) and lets its leg go, the new one asks for the call when the
+  radio restores it (`SERVICE_CALL_RESTORE`). Not restored within 8 s: the
+  other party gets `CALL_RELEASE` (cause 19) -- at once when the new
+  Basestation reports a plain roaming registration
+  (`SERVICE_CALL_NOT_RESTORED`) or the radio sets up a new call. See
+  [docs/Handover.md](docs/Handover.md).
+- **Calls between two radios survive a station change.** With the new
+  `call-handoff` extension (`SERVICE_CALL_HANDOFF`, 0x1E) a local call
+  between two radios of one Basestation is handed to the network when one
+  radio restores it on another Basestation, and a call between radios on two
+  Basestations becomes local again when one radio comes to the other's
+  Basestation. See [docs/Handover.md](docs/Handover.md).
+- **Redesigned dashboard.** A new dashboard in the style of the FlowStation
+  one: sidebar with Monitor, Network, Integrations and System, light and dark
+  following the system, a tab bar on phones, status shown with text and not
+  by colour alone, help behind "?" buttons. Overview, Calls, SDS, Radios,
+  Stations & Cells, Routing, Roaming, Telemetry, Control, Accounts,
+  Configuration and HA are native pages; Map, SIP, SMS Center, Telemetry SDS and Settings open the classic
+  pages inside it. It is the default. `[dashboard] legacy_ui = true` serves
+  the classic dashboard at `/` instead; both stay reachable under `/classic`
+  and `/ui`.
+
+  ```toml
+  [dashboard]
+  legacy_ui = false
+  ```
+
+- **DGNA to several radios.** The Routing page assigns a group (with an
+  optional name of up to 15 characters) to many radios at once, or takes it
+  away again, each through the control link of the Basestation the radio is
+  registered on (`POST /api/dgna`, admins). The radios' answers come back
+  over telemetry and show per radio (`GET /api/radios`).
+- **Talkgroup pools.** `[[talkgroup_pools]]` connects talkgroups inside the
+  server: a call on one group is played 1:1 on the others, voice and over end
+  included, both ways or only from the first group. A group that already has
+  a call is joined when that over ends. Pools are switched on and off,
+  edited, added and deleted on the Routing page and apply without a restart
+  (`GET /api/pools`, `POST /api/pools/save`). See
+  [docs/Routing.md](docs/Routing.md).
+- **Login window.** The new dashboard signs in with its own login window
+  (Log in button top right, account menu with Log out) and a session cookie
+  (`POST /api/login`, `POST /api/logout`; sessions end after 12 hours idle
+  and on a restart). A closed dashboard shows only the login window until
+  someone signs in. HTTP Basic auth keeps working everywhere, so the classic
+  pages and scripts are unchanged.
+- **Accounts page.** Adds, changes and deletes the logins Basestations and
+  terminals connect with, on Brew (`[auth.users]`), telemetry
+  (`[telemetry.users]`) and control (`[control.users]`) at once or each on
+  its own. Applies to the next connection without a restart and is written
+  to the config file (`GET`/`POST /api/accounts`,
+  `DELETE /api/accounts/{username}`, admins).
+- **Configuration page.** The whole config file in an editor with a section
+  jump. Save checks the file (a mistake is shown with its line and nothing is
+  saved) and applies it with the usual restart.
+- **Info and position per login.** The Accounts page keeps an info text per
+  login (sysop, relay callsign, site) and an optional position, stored as the
+  login's `[bts_locations]` entry (`name`, `lat`, `lon`; an entry without a
+  position keeps `0` / `0` and is not plotted). A Login / Info switch shows
+  the info in place of the number; Telemetry and Stations show it next to
+  the login (`GET /api/names`).
+- **Directory of ISSI and GSSI names.** Names for radios (`[issi_names]`,
+  ISSI = name) and for groups (`[gssi_names]`, GSSI = name), shown next to
+  the number on the dashboard pages. The new Directory page (Radios / Groups)
+  adds, changes and removes names, imports a pasted list (`ISSI,name` per
+  line, `;`, tab or space work too) and exports CSV. Applied without a
+  restart and written to the config file (`GET /api/issi-names`,
+  `GET /api/gssi-names`, admins: `POST /api/issi-names/set`,
+  `POST /api/issi-names/import` and the same under `/api/gssi-names/`).
+- **Who may use a group.** Per group an allow list (only the listed ISSIs)
+  or a block list (everyone but the listed ISSIs); no list = open. The
+  server records an affiliation only for an admitted radio and drops a group
+  call from any other (emergency calls always pass), so it neither talks on
+  the group across the network nor pulls the group's calls to its station;
+  pool copies skip groups that do not admit the talker. Set on the Directory
+  page (Groups, Access: Open / Only these / Block these), applied without a
+  restart (affiliations the group no longer admits are dropped) and written
+  to the config file:
+
+  RX only (switch plus an optional list) makes radios listeners: every radio
+  when the list is empty, otherwise only the listed ones. A listener may
+  attach and hear the group but gets no floor.
+
+  ```toml
+  [group_access."2321"]
+  mode = "allow"            # or "block"
+  issis = [2320972, 2321100]
+  rx_only = true            # optional
+  rx_only_issis = [2321100] # optional, empty = everyone listens only
+  ```
+
+  With the new `group-access` extension a Basestation that asks for it gets
+  the lists (`SERVICE_GROUP_ACCESS`, 0x1F, after its announcement and on
+  every change) and refuses the attachment and the request to talk on the
+  air itself (FlowStation). A Basestation without it still lets the radio
+  attach and talk locally: base Brew has no message to refuse that.
+- **Software version.** The Stations page shows the version a Basestation or
+  terminal sends in its User-Agent (FlowStation sends its release).
+- **Appearance.** System, Light or Dark in the account menu (the sun button
+  when signed out); the classic pages shown inside the dashboard follow it.
+- **Admin pages open the login window.** Settings, Configuration and the
+  other admin pages open the new login window instead of the browser's login
+  prompt.
+- **Phone layout.** The map no longer scrolls by itself, Telemetry and other
+  pages are more compact, the pool groups field opens the full keyboard, the
+  tab bar sits lower, the menu opened from More lies above it, and the
+  classic dashboard link is in the account menu.
+- **HA page.** Changes applied live (blacklist, pools, logins, ISSI and GSSI names, group access) no longer show
+  as pending changes.
+- **Backward compatible.** Without `[[talkgroup_pools]]` call routing is
+  unchanged. All new messages are sent only to Basestations
+  that were offered the matching extension; TetraPack, Brandmeister and older
+  Basestations see no change. The messages are specified for other
+  implementations in [docs/Brew-Extensions.md](docs/Brew-Extensions.md).
+
 Version 1.18.1 adds:
 
 - **ISSI allowlist.** A new `[allowlist]` section and a Settings panel for

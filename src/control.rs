@@ -167,7 +167,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         name: "control",
         listen: state.service_bind(state.config.control.listen),
         subprotocol: "bluestation-control-v1",
-        users: state.config.control.users.clone(),
+        users: state.logins.control.clone(),
         tls: state.config.control.tls.clone(),
     };
     fsnet::serve(cfg, move |socket, identity, _peer| {

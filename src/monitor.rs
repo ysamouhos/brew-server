@@ -12,9 +12,53 @@ pub struct SdsRecord { pub uuid: Uuid, pub source: u32, pub destination: u32, pu
 #[derive(Debug, Clone, Serialize)]
 pub struct LiveEvent { pub event: String, pub at_ms: u64, pub data: serde_json::Value }
 #[derive(Debug, Clone, Serialize)]
-pub struct Snapshot { pub connected_basestations: usize, pub subscribers: usize, pub groups: usize, pub active_calls: Vec<CallRecord>, pub recent_calls: Vec<CallRecord>, pub recent_sds: Vec<SdsRecord>, pub total_calls: u64, pub total_sds: u64, pub voice_frames: u64 }
+pub struct Snapshot { pub connected_basestations: usize, pub subscribers: usize, pub groups: usize, pub active_calls: Vec<Tagged<CallRecord>>, pub recent_calls: Vec<Tagged<CallRecord>>, pub recent_sds: Vec<Tagged<SdsRecord>>, pub total_calls: u64, pub total_sds: u64, pub voice_frames: u64 }
 
-#[derive(Default)] struct Inner { active: HashMap<Uuid, CallRecord>, calls: VecDeque<CallRecord>, sds: VecDeque<SdsRecord>, total_calls: u64, total_sds: u64, voice_frames: u64 }
+/// Other Brew networks (Multi Network) a call or SDS crossed: the one it came
+/// from over a link, and the ones it was sent to.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct NetTag {
+    #[serde(rename = "from_network", skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    #[serde(rename = "to_networks", skip_serializing_if = "Vec::is_empty")]
+    pub to: Vec<String>,
+}
+
+/// A history record as the dashboard gets it, with its networks. The
+/// networks are kept in memory only: the history file stays readable by
+/// older versions (bincode has no optional fields).
+#[derive(Debug, Clone, Serialize)]
+pub struct Tagged<T> {
+    #[serde(flatten)]
+    pub rec: T,
+    #[serde(flatten)]
+    pub nets: NetTag,
+}
+
+impl<T> std::ops::Deref for Tagged<T> {
+    type Target = T;
+    fn deref(&self) -> &T { &self.rec }
+}
+
+/// How many network tags are kept at most (active calls plus both history
+/// lists hold far fewer).
+const MAX_TAGS: usize = 1000;
+
+#[derive(Default)] struct Inner { active: HashMap<Uuid, CallRecord>, calls: VecDeque<CallRecord>, sds: VecDeque<SdsRecord>, total_calls: u64, total_sds: u64, voice_frames: u64, nets: HashMap<Uuid, NetTag> }
+
+impl Inner {
+    fn tagged<T: Clone>(&self, uuid: Uuid, rec: &T) -> Tagged<T> {
+        Tagged { rec: rec.clone(), nets: self.nets.get(&uuid).cloned().unwrap_or_default() }
+    }
+
+    /// Drops the tags of records no longer shown.
+    fn prune_tags(&mut self) {
+        if self.nets.len() <= MAX_TAGS { return; }
+        let keep: std::collections::HashSet<Uuid> = self.active.keys().copied()
+            .chain(self.calls.iter().map(|c| c.uuid)).chain(self.sds.iter().map(|s| s.uuid)).collect();
+        self.nets.retain(|u, _| keep.contains(u));
+    }
+}
 
 pub struct Monitor { inner: RwLock<Inner>, tx: broadcast::Sender<LiveEvent>, store: Option<std::sync::Arc<crate::store::Store>> }
 impl Monitor {
@@ -59,7 +103,18 @@ impl Monitor {
     pub async fn voice_frame(&self, uuid: Uuid) { let mut i=self.inner.write().await; i.voice_frames+=1; if let Some(r)=i.active.get_mut(&uuid){r.voice_frames+=1;} }
     pub async fn sds(&self, uuid: Uuid, source: u32, destination: u32) { let r=SdsRecord{uuid,source,destination,at_ms:now_ms(),reports:0}; let mut i=self.inner.write().await; i.total_sds+=1; i.sds.push_front(r.clone()); while i.sds.len()>200{i.sds.pop_back();} drop(i); self.persist(&crate::store::StoredRecord::Sds(r.clone())); self.emit("sds",serde_json::json!(r)); }
     pub async fn sds_report(&self, uuid: Uuid) { let mut i=self.inner.write().await; if let Some(r)=i.sds.iter_mut().find(|r|r.uuid==uuid){r.reports+=1;} drop(i); self.persist(&crate::store::StoredRecord::SdsReport { uuid }); }
-    pub async fn snapshot(&self, clients: usize, subscribers: usize, groups: usize) -> Snapshot { let i=self.inner.read().await; Snapshot{connected_basestations:clients,subscribers,groups,active_calls:i.active.values().cloned().collect(),recent_calls:i.calls.iter().take(50).cloned().collect(),recent_sds:i.sds.iter().take(50).cloned().collect(),total_calls:i.total_calls,total_sds:i.total_sds,voice_frames:i.voice_frames} }
+    /// Notes that call or SDS `uuid` came from network `from` and/or went to
+    /// networks `to` (added to what is known of it already).
+    pub async fn note_networks(&self, uuid: Uuid, from: Option<String>, to: Vec<String>) {
+        if from.is_none() && to.is_empty() { return; }
+        let mut i = self.inner.write().await;
+        let tag = i.nets.entry(uuid).or_default();
+        if tag.from.is_none() { tag.from = from; }
+        for n in to { if !tag.to.contains(&n) { tag.to.push(n); } }
+        tag.to.sort();
+        i.prune_tags();
+    }
+    pub async fn snapshot(&self, clients: usize, subscribers: usize, groups: usize) -> Snapshot { let i=self.inner.read().await; Snapshot{connected_basestations:clients,subscribers,groups,active_calls:i.active.values().map(|c|i.tagged(c.uuid,c)).collect(),recent_calls:i.calls.iter().take(50).map(|c|i.tagged(c.uuid,c)).collect(),recent_sds:i.sds.iter().take(50).map(|s|i.tagged(s.uuid,s)).collect(),total_calls:i.total_calls,total_sds:i.total_sds,voice_frames:i.voice_frames} }
 }
 
 /// Folds one persisted record into the in-memory history (startup replay and
@@ -81,6 +136,34 @@ fn apply_record(inner: &mut Inner, rec: crate::store::StoredRecord) {
             if let Some(r) = inner.sds.iter_mut().find(|r| r.uuid == uuid) { r.reports += 1; }
         }
         crate::store::StoredRecord::SdsTelemetry(_) => {}
+    }
+}
+
+#[cfg(test)]
+mod network_tag_tests {
+    use super::*;
+
+    /// Without a network nothing new is in the JSON; tags merge, and the
+    /// stored record stays as before (no network in the history file).
+    #[tokio::test]
+    async fn network_tags_show_only_where_set() {
+        let m = Monitor::new();
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        m.call_started(a, "private", 1, 2, 0).await;
+        m.call_started(b, "private", 3, 4, 0).await;
+        m.note_networks(b, Some("Heim".into()), vec!["TP".into()]).await;
+        m.note_networks(b, Some("Other".into()), vec!["Heim".into(), "TP".into()]).await;
+        let snap = m.snapshot(0, 0, 0).await;
+        let json = serde_json::to_value(&snap).unwrap();
+        let row = |u: Uuid| json["active_calls"].as_array().unwrap().iter().find(|c| c["uuid"] == serde_json::json!(u)).unwrap().clone();
+        assert!(row(a).get("from_network").is_none() && row(a).get("to_networks").is_none());
+        assert_eq!(row(b)["from_network"], serde_json::json!("Heim"), "the first source stays");
+        assert_eq!(row(b)["to_networks"], serde_json::json!(["Heim", "TP"]));
+        m.call_ended(b).await;
+        let snap = m.snapshot(0, 0, 0).await;
+        assert_eq!(snap.recent_calls[0].nets.to, vec!["Heim".to_string(), "TP".to_string()], "kept in the call log");
+        let stored = bincode::serialize(&crate::store::StoredRecord::Call(snap.recent_calls[0].rec.clone())).unwrap();
+        assert!(!stored.windows(4).any(|w| w == b"Heim"), "networks are not written to the history file");
     }
 }
 

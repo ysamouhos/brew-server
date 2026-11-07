@@ -1,18 +1,31 @@
 mod allowlist;
 mod aprs;
 mod blacklist;
+mod call_restore;
+mod carriers;
 mod config;
 mod control;
+mod accounts;
 mod dashboard;
+mod dashboard_auth;
+mod dashboard_ui;
+mod group_access;
+mod issi_names;
 mod emergency;
 mod federation;
 mod fedroute;
 mod fsnet;
+mod handover;
 mod ha;
 mod ha_repl;
 mod monitor;
+mod netlink;
+mod visitors;
+mod pools;
 mod position;
 mod protocol;
+mod roaming_log;
+mod routing_api;
 mod router;
 mod server;
 mod sip;
@@ -36,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
 
     let path = std::env::args().nth(1).unwrap_or_else(|| "brew-server.toml".to_owned());
     let config = Config::load(&path)?;
+    dashboard::set_server_name(&config.dashboard.servername);
     let (state, aprs_rx) = AppState::new(config, std::path::PathBuf::from(&path));
     let state = Arc::new(state);
     allowlist::log_startup(&state);
@@ -76,6 +90,7 @@ async fn services(
     }
 
     tokio::spawn(federation::run(state.clone()));
+    tokio::spawn(netlink::run(state.clone()));
     tokio::spawn(aprs::run(state.clone(), aprs_rx));
     tokio::spawn(sms_center::run(state.clone()));
     tokio::spawn(emergency::run(state.clone()));

@@ -60,6 +60,9 @@ pub const CAUSE_CALLED_PARTY_NOT_REACHABLE: u8 = 3;
 /// "SwMI requested disconnection": the network ended the call, here because
 /// a participant's connection dropped.
 pub const CAUSE_SWMI_REQUESTED_DISCONNECTION: u8 = 14;
+/// "Call restoration of the other user failed": a radio that left its
+/// Basestation mid-call did not restore the call on the new one in time.
+pub const CAUSE_CALL_RESTORATION_OF_THE_OTHER_USER_FAILED: u8 = 19;
 
 pub const FRAME_TRAFFIC_CHANNEL: u8 = 0;
 pub const FRAME_SDS_TRANSFER: u8 = 1;
@@ -88,6 +91,97 @@ pub const SERVICE_BLACKLIST_CMD: u8 = 0x12;
 /// `CLASS_SERVICE` type this server pushes to dispatch consoles: the blacklist,
 /// `{"blacklist":[N,...],"can_edit":bool}`, or `{"error":"..."}` for a refused edit.
 pub const SERVICE_BLACKLIST: u8 = 0x13;
+
+/// `CLASS_SERVICE` type a Basestation sends after connecting, and again when
+/// its cell config changes: the cells it serves, for the carrier registry
+/// (see `carriers`). Only sent to a server that offered the `bts-info`
+/// extension on the WebSocket upgrade.
+pub const SERVICE_BTS_INFO: u8 = 0x14;
+
+/// `CLASS_SERVICE` type a serving Basestation sends when a radio announced a
+/// cell change (U-PREPARE) without a registration: the server relays it to
+/// the Basestation serving the target carrier (see `handover`).
+pub const SERVICE_HO_PREPARE: u8 = 0x15;
+
+/// As `SERVICE_HO_PREPARE`, but the U-PREPARE carried a registration (MM
+/// SDU) for the target cell, which the target Basestation processes.
+pub const SERVICE_HO_FORWARD_REG: u8 = 0x16;
+
+/// `CLASS_SERVICE` type answering `SERVICE_HO_PREPARE` / `SERVICE_HO_FORWARD_REG`:
+/// from the target Basestation via the server to the serving one, or from the
+/// server itself when there is no target or it did not answer in time.
+pub const SERVICE_HO_RESULT: u8 = 0x17;
+
+/// `CLASS_SERVICE` type a Basestation sends after registering an ISSI: the
+/// cell (carrier) the radio is on, for stations that serve several cells on
+/// one connection (see `carriers`). Only sent to a server that offered the
+/// `ms-cell` extension.
+pub const SERVICE_MS_CELL: u8 = 0x18;
+
+/// `CLASS_SERVICE` type the server sends to the Basestation an ISSI was
+/// registered on when it registers on another Basestation without a handover
+/// prepared here (`{"issi":N}`): the radio has left. Only sent to a
+/// Basestation that announced the `ms-moved` capability (see `handover`).
+pub const SERVICE_MS_MOVED: u8 = 0x19;
+
+/// `CLASS_SERVICE` type a Basestation sends when a radio left it, naming the
+/// category of cell reselection (`{"issi":N,"type":"announced_type_3"}`, see
+/// `roaming_log::Reselection`). Only sent to a server that offered the
+/// `ms-reselection` extension.
+pub const SERVICE_MS_RESELECTION: u8 = 0x1A;
+
+/// `CLASS_SERVICE` type for restoring an individual call on another
+/// Basestation: the Basestation a radio restores the call on asks
+/// (`{"issi":N,"peer":N}`) and the server answers with the call
+/// (`uuid`, `duplex`, `priority`, `floor`) or without `uuid` when it has
+/// none (see `call_restore`). Only used with a Basestation that announced the
+/// `call-restore` capability.
+pub const SERVICE_CALL_RESTORE: u8 = 0x1B;
+
+/// `CLASS_SERVICE` type a Basestation sends when a radio registered on it
+/// with a plain roaming location update (`{"issi":N}`): by TS 100 392-2
+/// clause 16.4 a) a radio with a circuit mode call registers with "service
+/// restoration roaming" instead, so it has no call to restore (see
+/// `call_restore`). Only used with a Basestation that announced the
+/// `call-restore` capability.
+pub const SERVICE_CALL_NOT_RESTORED: u8 = 0x1C;
+
+/// `CLASS_SERVICE` type for a call between two radios of one Basestation when
+/// one of them goes to another Basestation: the server asks the Basestation
+/// holding it (`{"issi":N,"peer":N}`) and that one answers with the call it
+/// bridged to Brew (`uuid`, `calling`, `duplex`, `priority`, `floor`) or
+/// without `uuid` (see `call_restore`). Only used with a Basestation that
+/// announced the `call-handoff` capability.
+pub const SERVICE_CALL_HANDOFF: u8 = 0x1E;
+
+/// `CLASS_SERVICE` type the server sends to a Basestation with the cells of the
+/// other Basestations it knows, online and offline, with what they broadcast
+/// (`{"cells":[...]}`), so the Basestation can show and pick its neighbours.
+/// Only sent to a Basestation that announced the `cell-directory` capability
+/// (see `carriers::directory_updates`).
+pub const SERVICE_CELL_DIRECTORY: u8 = 0x1D;
+
+/// `CLASS_SERVICE` type the server sends to a Basestation with who may use
+/// which group (`{"groups":[{"gssi":N,"mode":"allow"|"block","issis":[..],
+/// "rx_only":bool,"rx_only_issis":[..]}]}`), so it refuses a group
+/// attachment or a request to talk itself. Only sent to a Basestation that
+/// announced the `group-access` capability (see `group_access::updates`).
+pub const SERVICE_GROUP_ACCESS: u8 = 0x1F;
+
+/// `CLASS_SERVICE` types of the `mni` extension (Multi Network, see
+/// `visitors` and docs/Brew-Extensions.md 12b): this server's network and the
+/// linked ones (server -> station), the network of a radio, of groups, and
+/// of a call (both ways).
+pub const SERVICE_NETWORKS: u8 = 0x20;
+pub const SERVICE_MS_NETWORK: u8 = 0x21;
+pub const SERVICE_GROUP_NETWORK: u8 = 0x22;
+pub const SERVICE_CALL_NETWORK: u8 = 0x23;
+
+/// `CLASS_SERVICE` type a server's Multi Network link sends (as a
+/// Basestation) to a server that offered `issi-check`, asking whether ISSIs
+/// are in use there before registering them (`{"query":[..]}`); the server
+/// answers with the same type (`{"taken":[..],"free":[..]}`). See `netlink`.
+pub const SERVICE_ISSI_CHECK: u8 = 0x24;
 
 /// Builds a `CLASS_SERVICE` message: class, type, NUL-terminated JSON.
 pub fn build_service(service_type: u8, json: &str) -> Vec<u8> {
@@ -150,6 +244,9 @@ pub struct CircularCall {
     /// TETRA basic service byte. Relayed untouched; the router reads it only
     /// to recognise an ambience-listening call setup (see `router`).
     pub service: u8,
+    /// Duplex (true) or simplex call, as set up; read only to restore the
+    /// call on another Basestation (see `call_restore`).
+    pub duplex: bool,
     pub mnemonic: Option<String>,
 }
 
@@ -469,6 +566,7 @@ fn parse_call_control(data: &[u8], version: ConnVersion) -> Result<(BrewMessage,
                 number: ascii_field(&payload[8..40]),
                 priority: payload[40],
                 service: payload[41],
+                duplex: payload[43] != 0,
                 mnemonic,
             })
         }
@@ -484,6 +582,7 @@ fn parse_call_control(data: &[u8], version: ConnVersion) -> Result<(BrewMessage,
                 number: ascii_field(&payload[8..40]),
                 priority: payload[40],
                 service: payload[41],
+                duplex: payload[43] != 0,
                 mnemonic: None,
             })
         }
