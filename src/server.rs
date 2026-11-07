@@ -609,8 +609,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn silent_inbound_peer_is_dropped_but_basestation_is_not() {
+    async fn a_silent_connection_is_dropped_and_one_that_answers_pings_is_kept() {
         use super::{brew_discovery, get, AppState, Arc, SocketAddr};
+        use futures_util::StreamExt;
         use std::time::Duration;
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -627,11 +628,18 @@ mod tests {
             axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await
         });
 
-        // Neither client is ever read from, so neither answers a ping.
+        // Every connection is pinged (since 1.17.0), whatever its mode. The
+        // peer is never read from, so it never answers a ping; the Basestation
+        // is read in the background, which is what makes tungstenite answer
+        // them, as a live stack does.
         let mut peer_request = format!("ws://{addr}/brew").into_client_request().unwrap();
         peer_request.headers_mut().insert("X-Brew-Mode", "Peer".parse().unwrap());
         let (_peer, _) = tokio_tungstenite::connect_async(peer_request).await.unwrap();
-        let (_basestation, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/brew")).await.unwrap();
+        let (basestation, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/brew")).await.unwrap();
+        tokio::spawn(async move {
+            let (_tx, mut rx) = basestation.split();
+            while rx.next().await.is_some() {}
+        });
 
         let modes = || async {
             state.inner.read().await.clients.values().map(|c| c.mode).collect::<Vec<_>>()
@@ -645,7 +653,8 @@ mod tests {
         wait_for(2, Duration::from_secs(2)).await;
         assert_eq!(modes().await.len(), 2, "both connections registered");
         wait_for(1, Duration::from_secs(6)).await;
-        // Margin: had the Basestation been pinged too, it would go at the same time.
+        // Margin: a Basestation that was being timed out regardless of its
+        // pongs would go at the same time as the peer.
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(modes().await, vec![ClientMode::Basestation]);
     }
