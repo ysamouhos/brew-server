@@ -2,7 +2,7 @@
 
 All notable changes to brew-server, newest first.
 
-Unreleased:
+Version 1.18.1 adds:
 
 - **ISSI allowlist.** A new `[allowlist]` section and a Settings panel for
   running a closed network: with `enabled = true` only the listed ISSIs may
