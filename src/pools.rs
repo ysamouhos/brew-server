@@ -101,6 +101,9 @@ pub fn validate(pools: &[TalkgroupPoolConfig]) -> Result<(), String> {
         if name.chars().count() > MAX_NAME { return Err(format!("pool name '{name}' is longer than {MAX_NAME} characters")); }
         if !names.insert(name.to_lowercase()) { return Err(format!("two pools are named '{name}'")); }
         if p.groups.len() + p.remote.len() < 2 { return Err(format!("pool '{name}' needs at least two groups")); }
+        if p.linked && (p.groups.len() != 1 || p.remote.len() != 1 || !p.both_ways) {
+            return Err(format!("linked talkgroup '{name}' links one group of this server both ways to one group of another network"));
+        }
         let mut seen = HashSet::new();
         for &g in &p.groups {
             if g == 0 || g > 0xFF_FFFF { return Err(format!("pool '{name}': {g} is not a valid GSSI (1 to 16777215)")); }
@@ -475,7 +478,7 @@ mod tests {
     use super::*;
 
     fn pool(name: &str, both: bool, groups: &[u32]) -> TalkgroupPoolConfig {
-        TalkgroupPoolConfig { name: name.into(), enabled: true, both_ways: both, groups: groups.to_vec(), remote: Vec::new() }
+        TalkgroupPoolConfig { name: name.into(), enabled: true, both_ways: both, groups: groups.to_vec(), remote: Vec::new(), linked: false }
     }
 
     fn none() -> HashMap<String, u8> { HashMap::new() }
@@ -510,5 +513,31 @@ mod tests {
         assert!(validate(&[pool("A", true, &[1, 1])]).is_err());
         assert!(validate(&[pool("A", true, &[1, 0x100_0000])]).is_err());
         assert!(validate(&[pool("A", true, &[1, 2]), pool("a", true, &[3, 4])]).is_err());
+    }
+
+    fn link(own: &[u32], remote: &[(&str, u32)], both: bool) -> TalkgroupPoolConfig {
+        let mut p = pool("TG 91 link", both, own);
+        p.remote = remote.iter().map(|&(n, g)| crate::config::RemotePoolGroup { network: n.into(), gssi: g }).collect();
+        p.linked = true;
+        p
+    }
+
+    #[test]
+    fn linked_talkgroup_is_one_own_group_both_ways_to_one_remote_group() {
+        assert!(validate(&[link(&[91], &[("Brandmeister", 91)], true)]).is_ok());
+        assert!(validate(&[link(&[91], &[("Brandmeister", 91)], false)]).is_err());
+        assert!(validate(&[link(&[91, 92], &[("Brandmeister", 91)], true)]).is_err());
+        assert!(validate(&[link(&[91], &[("Brandmeister", 91), ("TetraPack", 91)], true)]).is_err());
+        assert!(validate(&[link(&[], &[("Brandmeister", 91), ("TetraPack", 91)], true)]).is_err());
+    }
+
+    #[test]
+    fn linked_flag_is_written_only_for_links() {
+        let plain = toml::to_string(&pool("A", true, &[1, 2])).unwrap();
+        assert!(!plain.contains("linked"));
+        let l = toml::to_string(&link(&[91], &[("Brandmeister", 91)], true)).unwrap();
+        assert!(l.contains("linked = true"));
+        let back: TalkgroupPoolConfig = toml::from_str(&l).unwrap();
+        assert!(back.linked);
     }
 }

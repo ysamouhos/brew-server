@@ -576,7 +576,7 @@ async function refreshSlow(){
 }
 function chrome(){
   const c=D.conn,st=D.status;
-  const bs=c?c.brew_clients.filter(x=>x.mode==='Basestation').length:0;
+  const bs=c?new Set(c.brew_clients.filter(x=>x.mode==='Basestation').map(x=>x.station)).size:0;
   $('hw-brew').textContent=c?`${bs} station${bs===1?'':'s'}`:'…';
   $('hw-brew-dot').className='dot'+(ok?(bs?'':' w'):' d');
   const ha=D.ha;
@@ -667,7 +667,8 @@ function stationsList(){
   const byStation={};
   for(const x of c.cells||[]){(byStation[x.station]=byStation[x.station]||{name:x.station,cells:[],online:false,regs:0,addr:'',since:0,gone:0}).cells.push(x);
     const s=byStation[x.station];if(x.online!==false){s.online=true;s.regs=x.registered_issis;s.addr=x.remote_addr;s.since=x.connected_at_ms;}else s.gone=x.last_seen_ms;}
-  for(const b of c.brew_clients.filter(b=>b.mode==='Basestation')){const s=byStation[b.station]||(byStation[b.station]={name:b.station,cells:[],online:true,regs:b.registered_issis,addr:b.remote_addr,since:b.connected_at_ms,gone:0});s.online=true;s.regs=b.registered_issis;s.since=b.connected_at_ms;s.addr=b.remote_addr;s.ver=b.version;}
+  // A station with cells in several networks has one connection per network: add up its radios.
+  for(const b of c.brew_clients.filter(b=>b.mode==='Basestation')){const s=byStation[b.station]||(byStation[b.station]={name:b.station,cells:[],online:true,regs:b.registered_issis,addr:b.remote_addr,since:b.connected_at_ms,gone:0});s.online=true;s.regs=(s.conns?s.regs:0)+b.registered_issis;s.conns=(s.conns||0)+1;s.since=b.connected_at_ms;s.addr=s.addr||b.remote_addr;s.ver=b.version;}
   for(const t of D.tele){const m=Object.values(byStation).find(s=>s.addr&&t.ip&&s.addr.startsWith(t.ip+':')&&!s.tele);if(m&&Object.values(byStation).filter(s=>s.addr&&s.addr.startsWith(t.ip+':')).length===1)m.tele=t;}
   return Object.values(byStation).sort((a,b)=>(b.online-a.online)||a.name.localeCompare(b.name));
 }
@@ -695,8 +696,9 @@ R.overview=()=>{
   <div class="grid2">
    <div class="card"><div class="ch"><h2>Live calls</h2><span class="cnt">${calls.length}</span><span class="sp"></span><a data-go="calls" href="#calls">All calls ›</a></div>
     ${calls.length?calls.map(x=>callRow(x,now)).join(''):'<div class="empty">No active calls</div>'}</div>
-   <div class="card"><div class="ch"><h2>Stations</h2><span class="cnt">${stations.length}</span><span class="sp"></span><a data-go="stations" href="#stations">Cells ›</a></div>
-    ${stations.length?stations.map(s=>`<div class="row"><div class="ric s">${ic('bts')}</div><div class="rm"><div class="rt">${esc(s.name)}</div><div class="rs">${s.cells.length} cell${s.cells.length===1?'':'s'}${s.cells.length?' · '+s.cells.map(x=>x.carrier).join(', '):''}${s.tele&&s.tele.version?' · FlowStation '+esc(s.tele.version):''}</div></div>
+   <div class="card"><div class="ch"><h2>Stations</h2><span class="cnt">${stations.length}</span>${helpBtn('ovst')}<span class="sp"></span><a data-go="stations" href="#stations">Cells ›</a></div>
+    ${helpNote('ovst',CELL_ID_HELP+' Cells are counted only for stations with the <code>bts-info</code> extension; a station without it is counted as a station, its cells are unknown. Apps and other terminals are not stations and have no cells.')}
+    ${stations.length?stations.map(s=>`<div class="row"><div class="ric s">${ic('bts')}</div><div class="rm"><div class="rt">${esc(s.name)}</div><div class="rs">${s.cells.length?s.cells.length+' cell'+(s.cells.length===1?'':'s')+' · '+s.cells.map(x=>esc(x.name)+' ('+x.carrier+')').join(', '):'cells unknown (no <code>bts-info</code>)'}${s.tele&&s.tele.version?' · FlowStation '+esc(s.tele.version):''}</div></div>
       <div class="rr">${s.online?'<span class="st"><i></i>Online</span>':'<span class="st i"><i></i>Offline</span>'}<br>${s.online?s.regs+' radio'+(s.regs===1?'':'s'):(s.gone?'gone '+ago(s.gone):'')}</div></div>`).join(''):'<div class="empty">No stations connected</div>'}</div>
   </div>
   <div class="grid2">
@@ -743,11 +745,11 @@ R.radios=()=>{
   const ms=c.mobile_stations.filter(m=>match(q,m.issi,nameOf(m.issi),m.basestation_name,(m.groups||[]).join(' '),(m.groups||[]).map(gName).join(' '),m.cell&&m.cell.name));
   const regs=(D.regs||[]).filter(r=>match(q,r.issi,r.bts));
   return `<div class="bar">${searchBox('radios','ISSI, group or station…')}</div>
-  <div class="card"><div class="ch"><h2>Registered radios</h2><span class="cnt">${ms.length}</span></div><div class="tw"><table><thead><tr><th>ISSI</th><th>Station / cell</th><th>Groups</th><th>Via</th><th>Station address</th></tr></thead><tbody>
-  ${ms.sort((a,b)=>a.issi-b.issi).map(m=>`<tr><td>${issiCell(m.issi,true)}</td><td>${m.cell?`<span class="chip">${esc(m.cell.name)}</span>`:`<span class="chip">${esc(m.basestation_name||'—')}</span>`}</td><td>${(m.groups||[]).map(g=>tgChip(g)).join(' ')||'<span class="mut">—</span>'}</td><td>${esc(m.mode)}</td><td class="m mut">${esc(m.basestation_addr||'')}</td></tr>`).join('')||'<tr><td colspan="5" class="mut">No radios registered</td></tr>'}
+  <div class="card"><div class="ch"><h2>Registered radios</h2><span class="cnt">${ms.length}</span>${helpBtn('radios')}</div>${helpNote('radios',CELL_ID_HELP+' <i>Station</i> is the Brew login the radio is registered through. <i>Cell</i> is shown when the station reports cells (<code>bts-info</code>, <code>ms-cell</code>). Apps and other terminals (Terminal mode) have no cells; a station without these extensions is shown without a cell.')}<div class="tw"><table><thead><tr><th>ISSI</th><th>Station</th><th>Cell (global ID)</th><th>Groups</th><th>Via</th><th>Station address</th></tr></thead><tbody>
+  ${ms.sort((a,b)=>a.issi-b.issi).map(m=>`<tr><td>${issiCell(m.issi,true)}</td><td><b class="m">${esc(m.basestation_name||'—')}</b>${infoOf(m.basestation_name)?`<span class="sub">${esc(infoOf(m.basestation_name))}</span>`:''}</td><td>${cellCell(m.cell&&m.cell.name,m.mode)}</td><td>${(m.groups||[]).map(g=>tgChip(g)).join(' ')||'<span class="mut">—</span>'}</td><td>${esc(m.mode)}</td><td class="m mut">${esc(m.basestation_addr||'')}</td></tr>`).join('')||'<tr><td colspan="6" class="mut">No radios registered</td></tr>'}
   </tbody></table></div></div>
-  <div class="card"><div class="ch"><h2>Registration log</h2><span class="cnt">${regs.length}</span></div><div class="tw"><table><thead><tr><th>Time</th><th>ISSI</th><th>Event</th><th>Station</th></tr></thead><tbody>
-  ${regs.slice(0,300).map(r=>`<tr><td class="m">${tmd(r.at_ms)}</td><td>${issiCell(r.issi)}</td><td>${r.kind==='register'?'<span class="chip a">register</span>':r.kind==='timeout'?'<span class="chip w">timeout</span>':`<span class="chip i">${esc(r.kind)}</span>`}</td><td>${esc(r.bts||'')}${r.cell?' <span class="chip">'+esc(r.cell)+'</span>':''}</td></tr>`).join('')||'<tr><td colspan="4" class="mut">No registrations yet</td></tr>'}
+  <div class="card"><div class="ch"><h2>Registration log</h2><span class="cnt">${regs.length}</span></div><div class="tw"><table><thead><tr><th>Time</th><th>ISSI</th><th>Event</th><th>Station</th><th>Cell (global ID)</th></tr></thead><tbody>
+  ${regs.slice(0,300).map(r=>`<tr><td class="m">${tmd(r.at_ms)}</td><td>${issiCell(r.issi)}</td><td>${r.kind==='register'?'<span class="chip a">register</span>':r.kind==='timeout'?'<span class="chip w">timeout</span>':`<span class="chip i">${esc(r.kind)}</span>`}</td><td>${esc(r.bts||'')}</td><td>${r.cell?'<span class="chip">'+esc(r.cell)+'</span>':'<span class="mut">—</span>'}</td></tr>`).join('')||'<tr><td colspan="5" class="mut">No registrations yet</td></tr>'}
   </tbody></table></div></div>`;
 };
 // Name of an ISSI from the directory, if any.
@@ -763,17 +765,26 @@ const issiTxt=issi=>{const n=nameOf(issi);return n?`${issi} · ${esc(n)}`:String
 const issiCell=(issi,bold)=>{const n=nameOf(issi);return `${bold?'<b class="m">':'<span class="m">'}${issi}${bold?'</b>':'</span>'}${n?`<span class="sub">${esc(n)}</span>`:''}`;};
 // Info text of a login (Accounts page), if any.
 const infoOf=login=>(D.names||{})[login]||'';
+// Station and cell naming, the same on every page: a station is named by its Brew login; a cell by
+// its global cell ID <login>/<cell number in the station>. The global ID is a brew-server and
+// FlowStation name for Brew and the dashboard, not an ETSI identity.
+const CELL_ID_HELP='<b>Station</b> = a base station (FlowStation) connected in Basestation mode, named by its Brew login. <b>Global cell ID</b> = <i>login/cell</i>: the Brew login of the station and the number of the cell inside the station (local cell number, 0 = primary), e.g. 1000002/1. The global cell ID is defined by brew-server and FlowStation for Brew and this dashboard; it is not an ETSI identity. On the air interface a cell is identified by MCC, MNC, main carrier and band plan; the location area (LA) is shown separately.';
+// The cell column of a radio: its global cell ID, or why there is none.
+const cellCell=(name,mode)=>name?`<span class="chip">${esc(name)}</span>`:mode==='Terminal'?'<span class="mut" title="Apps and other terminals have no cells">— (terminal)</span>':'<span class="mut" title="The station reports no cells">—</span>';
+// Global cell ID of a station cell seen in telemetry, by its carrier (unique in a network).
+const gcidOf=carrier=>{const c=((D.conn&&D.conn.cells)||[]).find(x=>x.online!==false&&x.carrier===carrier);return c?c.name:'';};
 // "Bost FlowStation/v0.5.6-55a08812" -> "Bost FlowStation v0.5.6-55a08812".
 function software(a){if(!a)return '<span class="mut">—</span>';const m=/^(.+?)\/(\S+)(.*)$/.exec(a);return m?`${esc(m[1])} <span class="m">${esc(m[2])}</span>${esc(m[3])}`:esc(a);}
 R.stations=()=>{
   const c=D.conn;if(!c)return '<div class="empty">Loading…</div>';
+  const conns=connGroups(c.brew_clients);
   const f=UI.filter.cellf||'all';
   const cells=(c.cells||[]).filter(x=>f==='all'||(f==='on')===(x.online!==false));
   const dups=c.duplicate_carriers||[];
   const caps=x=>(x.capabilities||[]).map(k=>`<span class="chip">${esc(k)}</span>`).join(' ')||'<span class="mut">—</span>';
   return `<div class="bar">${seg('cellf',[['all','All'],['on','Online'],['off','Offline']])}</div>
   ${dups.length?`<div class="card"><div class="note">${ic('alert')}<div><b>Duplicate carriers:</b> ${dups.map(d=>esc(JSON.stringify(d))).join(', ')}. The newest announcement serves.</div></div></div>`:''}
-  <div class="card"><div class="ch"><h2>Cells</h2><span class="cnt">${cells.length}</span>${helpBtn('cells')}</div><div class="tw"><table><thead><tr><th>Cell</th><th>Status</th><th>Carrier</th><th>Downlink</th><th>LA</th><th>MCC / MNC</th><th>Neighbours</th><th>Radios</th></tr></thead><tbody>
+  <div class="card"><div class="ch"><h2>Cells</h2><span class="cnt">${cells.length}</span>${helpBtn('cells')}</div><div class="tw"><table><thead><tr><th>Cell (global ID)</th><th>Status</th><th>Carrier</th><th>Downlink</th><th>LA</th><th>MCC / MNC</th><th>Neighbours</th><th>Radios</th></tr></thead><tbody>
   ${cells.map(x=>{const key='c'+x.name;const open=UI.open[key];const offc=x.online===false;
    const ci=infoOf(String(x.name).split('/')[0]);
    return `<tr class="click${offc?' off':''}" onclick="UI.open['${esc(key)}']=!UI.open['${esc(key)}'];render(true)" aria-expanded="${!!open}"><td><b>${esc(x.name)}</b> ${x.cell===0&&!offc?'<span class="chip i">primary</span>':''}${x.duplicate?' <span class="chip w">duplicate</span>':''}${ci?`<span class="sub">${esc(ci)}</span>`:''}</td>
@@ -781,9 +792,9 @@ R.stations=()=>{
    <td>${x.neighbours?(x.neighbours.map(n=>`<span class="chip">${esc(n)}</span>`).join(' ')||'<span class="mut">none</span>'):'<span class="mut">—</span>'}</td><td class="num">${offc?'—':x.registered_issis}</td></tr>
    ${open?`<tr class="exp"><td colspan="8"><div class="kv"><div><span class="l">Station address</span>${offc?'—':`<span class="m">${esc(x.remote_addr||'—')}</span>`}</div><div><span class="l">${offc?'Gone':'Connected'}</span>${offc?(x.last_seen_ms?ago(x.last_seen_ms)+' ago':'—'):ago(x.connected_at_ms)}</div>
     <div><span class="l">Extensions</span>${caps(x)}</div><div><span class="l">Access level / MS power</span>${x.rxlev_access_min_dbm!=null?x.rxlev_access_min_dbm+' dBm':'—'} · ${x.ms_txpwr_max_dbm!=null?x.ms_txpwr_max_dbm+' dBm':'—'}</div></div></td></tr>`:''}`;}).join('')||'<tr><td colspan="8" class="mut">No cells announced</td></tr>'}
-  </tbody></table></div>${helpNote('cells','Cells the stations announce (FlowStation with the <code>bts-info</code> extension), named <i>login/cell</i>: the Brew login of the station and the cell number in it (0 = primary). On the air a cell is identified by MCC, MNC, carrier and band plan. Click a row for details. A station that went away stays listed as offline until it connects again (stations with a login only).')}</div>
-  <div class="card"><div class="ch"><h2>Brew connections</h2><span class="cnt">${c.brew_clients.length}</span></div><div class="tw"><table><thead><tr><th>Station</th><th>Mode</th><th>Software</th><th>Remote address</th><th>Connected</th><th>Radios</th><th>Cells</th></tr></thead><tbody>
-  ${c.brew_clients.map(b=>`<tr><td><b>${esc(b.station)}</b>${infoOf(b.station)?`<span class="sub">${esc(infoOf(b.station))}</span>`:''}</td><td>${esc(b.mode)}</td><td>${software(b.agent)}<span class="sub">Brew v${b.version}</span></td><td class="m">${esc(b.remote_addr||'—')}</td><td>${ago(b.connected_at_ms)}</td><td class="num">${b.registered_issis}</td><td>${(b.cells||[]).map(x=>`<span class="chip">${x.carrier}</span>`).join(' ')||'<span class="mut">—</span>'}</td></tr>`).join('')||'<tr><td colspan="7" class="mut">No Brew connections</td></tr>'}
+  </tbody></table></div>${helpNote('cells','Cells the stations announce (FlowStation with the <code>bts-info</code> extension). '+CELL_ID_HELP+' Click a row for details. A station that went away stays listed as offline until it connects again (stations with a login only). Apps and other terminals (Terminal mode) have no cells. A station without the <code>bts-info</code> extension is counted as a station (Overview, Brew connections), but its cells are not known and not listed here.')}</div>
+  <div class="card"><div class="ch"><h2>Brew connections</h2><span class="cnt">${conns.length}</span>${helpBtn('conns')}</div>${helpNote('conns','Every Brew connection, by login: stations (Basestation mode), apps and other terminals (Terminal mode, no cells) and this server\'s own links to other networks (Network mode). A station that opens several connections (one per cell or per network) is listed once, with all its cells, the radios summed and every remote address. A station without the <code>bts-info</code> extension shows no cells.')}<div class="tw"><table><thead><tr><th>Login</th><th>Mode</th><th>Software</th><th>Remote address</th><th>Connected</th><th>Radios</th><th>Cells (global ID)</th></tr></thead><tbody>
+  ${conns.map(b=>`<tr><td><b>${esc(b.station)}</b>${infoOf(b.station)?`<span class="sub">${esc(infoOf(b.station))}</span>`:''}${b.n>1?`<span class="sub">${b.n} connections</span>`:''}</td><td>${esc(b.mode)}</td><td>${[...new Set(b.agents)].map(software).join('<br>')}<span class="sub">Brew v${[...new Set(b.versions)].join(', v')}</span></td><td class="m">${[...new Set(b.addrs)].map(esc).join('<br>')||'—'}</td><td>${ago(b.connected_at_ms)}</td><td class="num">${b.registered_issis}</td><td>${b.cells.sort((x,y)=>x.name.localeCompare(y.name,undefined,{numeric:true})).map(x=>`<span class="chip" title="Carrier ${x.carrier}, ${x.mcc}/${x.mnc}">${esc(x.name)}</span>`).join(' ')||`<span class="mut">${b.mode==='Terminal'?'— (terminal)':'—'}</span>`}</td></tr>`).join('')||'<tr><td colspan="7" class="mut">No Brew connections</td></tr>'}
   </tbody></table></div></div>
   ${c.sip&&c.sip.enabled?'':''}`;
 };
@@ -815,19 +826,19 @@ function tlmCalls(s){
   const grid=[...used.keys()].sort((a,b)=>a-b).map(cn=>{const b=used.get(cn);
     return `<div class="tsg"><span class="l">Carrier ${cn}</span>${[1,2,3,4].map(ts=>{const c=b.get(ts);
       return c?`<span class="tss b" title="Carrier ${cn} TS${ts}: ${esc(String(c.source_issi))} → ${c.is_group?'group':'radio'} ${esc(String(c.gssi_or_called))}">TS${ts}</span>`:`<span class="tss" title="Carrier ${cn} TS${ts}: available">TS${ts}</span>`;}).join('')}</div>`;}).join('');
-  return `<div class="tw"><table><thead><tr><th>Call</th><th>From</th><th>To</th>${multi?'<th>Cell</th>':''}<th>Carrier / TS</th><th>Pri</th></tr></thead><tbody>${calls.map(c=>`<tr><td>${c.is_group?'Group':'Individual'}</td><td class="m">${esc(String(c.source_issi))}</td><td class="m">${esc(String(c.gssi_or_called))}</td>${multi?`<td>${cellOf[c.carrier_num]??'—'}</td>`:''}<td class="m">${c.carrier_num} / TS${c.ts}</td><td class="num">${c.priority}</td></tr>`).join('')}</tbody></table></div>
+  return `<div class="tw"><table><thead><tr><th>Call</th><th>From</th><th>To</th>${multi?'<th>Cell (local / global ID)</th>':''}<th>Carrier / TS</th><th>Pri</th></tr></thead><tbody>${calls.map(c=>`<tr><td>${c.is_group?'Group':'Individual'}</td><td class="m">${esc(String(c.source_issi))}</td><td class="m">${esc(String(c.gssi_or_called))}</td>${multi?`<td>${cellOf[c.carrier_num]??'—'}${gcidOf(c.carrier_num)?` <span class="mut">(${esc(gcidOf(c.carrier_num))})</span>`:''}</td>`:''}<td class="m">${c.carrier_num} / TS${c.ts}</td><td class="num">${c.priority}</td></tr>`).join('')}</tbody></table></div>
    <div style="padding:4px 18px 14px">${grid}<div class="tsg" style="gap:12px;margin-top:8px"><span><span class="tss b" style="width:12px;height:12px"></span> busy</span><span><span class="tss" style="width:12px;height:12px"></span> available</span></div></div>`;
 }
 R.telemetry=()=>{
   const t=D.tele||[];
   const lvl=l=>l==='ok'?'':l==='degraded'?' w':' d';
-  return t.length?`<div class="grid2" style="grid-template-columns:repeat(auto-fill,minmax(min(420px,100%),1fr))">${t.map(s=>{const h=s.health||{};
+  return t.length?`<div class="card"><div class="ch"><h2>Station telemetry</h2><span class="cnt">${t.length}</span>${helpBtn('tlm')}</div>${helpNote('tlm','One card per station with a telemetry connection, named by its telemetry login. <i>Cell (local / global ID)</i>: the number of the cell inside the station (local, 0 = primary) and in brackets its global cell ID <i>login/cell</i> as on the other pages. '+CELL_ID_HELP)}</div><div class="grid2" style="grid-template-columns:repeat(auto-fill,minmax(min(420px,100%),1fr))">${t.map(s=>{const h=s.health||{};
   const nm=infoOf(s.id)||(s.site_name&&s.site_name!==s.id?s.site_name:'');
   return `<div class="card tlm"><div class="ch"><h2>${esc(s.id)}</h2>${nm?`<span class="mut" style="font-size:13px">${esc(nm)}</span>`:''}<span class="sp"></span><span class="st${lvl(h.overall)}"><i></i>${esc(h.overall||'unknown')}</span></div>
    <div class="kv tight" style="padding:12px 18px"><div><span class="l">Version</span>${esc(s.build||s.version||'—')}</div><div><span class="l">Address</span><span class="m">${esc(s.ip||'—')}</span></div><div><span class="l">Connected</span>${ago(s.connected_at_ms)}</div><div><span class="l">Backhaul</span>${s.backhaul_connected==null?'—':s.backhaul_connected?'connected':'down'}</div>
     <div><span class="l">Radios</span>${s.registration_count}</div><div><span class="l">Calls</span>${Object.keys(s.active_calls||{}).length}</div><div><span class="l">TX EVM</span>${s.evm_pct!=null?s.evm_pct.toFixed(1)+' %':'—'}</div><div><span class="l">Emergencies</span>${(s.emergencies||[]).length||'none'}</div></div>
    ${(h.domains||[]).length?`<div class="chips" style="padding:0 18px 12px;display:flex;gap:6px;flex-wrap:wrap">${h.domains.map(d=>`<span class="chip ${d.level==='ok'?'a':d.level==='degraded'?'w':'d'}" title="${esc(d.detail)}">${esc(d.domain)}: ${esc(d.detail)}</span>`).join('')}</div>`:''}
-   <div class="tw"><table><thead><tr><th>Cell</th><th>Carrier</th><th>LA</th><th>RF</th><th>Radios</th></tr></thead><tbody>${(s.cells||[]).map(x=>`<tr><td>${x.id}${x.primary?' <span class="chip i">primary</span>':''}</td><td class="m">${x.main_carrier}${x.secondary_carrier?' + '+x.secondary_carrier:''}</td><td>${x.location_area}</td><td><span class="st${x.rf_state==='online'?'':' w'}" title="${esc(x.rf_detail||'')}"><i></i>${esc(x.rf_state||'—')}</span></td><td class="num">${x.registered_radios}</td></tr>`).join('')||'<tr><td colspan="5" class="mut">No cell report yet</td></tr>'}</tbody></table></div>${tlmCalls(s)}</div>`;}).join('')}</div>`
+   <div class="tw"><table><thead><tr><th title="Local cell number in this station, global cell ID in brackets">Cell (local / global ID)</th><th>Carrier</th><th>LA</th><th>RF</th><th>Radios</th></tr></thead><tbody>${(s.cells||[]).map(x=>`<tr><td>${x.id}${gcidOf(x.main_carrier)?` <span class="mut">(${esc(gcidOf(x.main_carrier))})</span>`:''}${x.primary?' <span class="chip i">primary</span>':''}</td><td class="m">${x.main_carrier}${x.secondary_carrier?' + '+x.secondary_carrier:''}</td><td>${x.location_area}</td><td><span class="st${x.rf_state==='online'?'':' w'}" title="${esc(x.rf_detail||'')}"><i></i>${esc(x.rf_state||'—')}</span></td><td class="num">${x.registered_radios}</td></tr>`).join('')||'<tr><td colspan="5" class="mut">No cell report yet</td></tr>'}</tbody></table></div>${tlmCalls(s)}</div>`;}).join('')}</div>`
   :'<div class="card"><div class="empty">No station telemetry connections. Stations report here with FlowStation <code>[telemetry]</code>.</div></div>';
 };
 R.control=()=>{
@@ -848,13 +859,30 @@ const v=id=>($(id)||{}).value||'';
 async function ctl(id,s,cmd){const body=typeof cmd==='string'?{action:cmd}:cmd;setMsg(s+'_res','mut','Sending…');
   try{const r=await postJ('/api/control/'+encodeURIComponent(id),body);setMsg(s+'_res','ok','Sent'+(r&&r.response?': '+JSON.stringify(r.response):''));}catch(e){setMsg(s+'_res','err',e.message);}}
 
+// One row per login and mode: a station with several Brew connections (one per cell or network) is listed once.
+function connGroups(list){const m=new Map();
+  for(const b of list||[]){const k=b.mode+'|'+b.station;let g=m.get(k);
+    if(!g){g={station:b.station,mode:b.mode,n:0,agents:[],versions:[],addrs:[],connected_at_ms:b.connected_at_ms,registered_issis:0,cells:[]};m.set(k,g);}
+    g.n++;g.agents.push(b.agent);g.versions.push(b.version);if(b.remote_addr)g.addrs.push(b.remote_addr);
+    g.connected_at_ms=Math.min(g.connected_at_ms,b.connected_at_ms);g.registered_issis+=b.registered_issis;
+    for(const x of b.cells||[])if(!g.cells.some(y=>y.name===x.name))g.cells.push(x);}
+  return [...m.values()];}
 /* ---------- routing ---------- */
 R.routing=()=>{
   const adm=D.who.admin;
   const pools=D.pools;
-  const poolRows=pools.map((p,i)=>{const l=p.live;const mem=[...p.groups.map(g=>({t:tgChip(g,(l&&l.gssi===g)?' src':''),g})),...(p.remote||[]).map(r=>({t:`<span class="tg net" title="Group of the network ${esc(r.network)}">${ic('globe')} ${esc(r.network)}:${r.gssi}</span>`}))];
+  const live=p=>{const l=p.live;return l?`<span class="talk"><span class="bars"><b></b><b></b><b></b><b></b></span>${issiTxt(l.talker)} talking on ${tgTxt(l.gssi)}</span> · heard on ${l.legs.length} group${l.legs.length===1?'':'s'}${l.waiting.length?` · ${l.waiting.join(', ')} join${l.waiting.length===1?'s':''} after ${l.waiting.length===1?'its':'their'} own over`:''}`:(p.enabled?'Idle':'Switched off');};
+  // Linked talkgroups: one group of this server both ways to one group of another network.
+  const links=pools.map((p,i)=>[p,i]).filter(([p])=>p.linked);
+  const ownNet=(D.nets&&D.nets.name)||'This server';
+  const linkRows=links.map(([p,i])=>{const r=(p.remote||[])[0]||{network:'?',gssi:0};const g=p.groups[0];
+   return `<tr class="${p.enabled?'':'off'}"><td><button class="tog" role="switch" aria-checked="${p.enabled}" aria-label="Link ${esc(p.name)} on" ${adm?'':'disabled'} onclick="togglePool(${i})"></button></td>
+    <td>${p.name===autoLink(p)?'<span class="mut">—</span>':`<b>${esc(p.name)}</b>`}</td><td><span class="mut" style="font-size:12px">${esc(ownNet)}</span><br>${tgChip(g)}</td><td class="arrow" style="font-size:18px">⇄</td>
+    <td><span class="mut" style="font-size:12px">${esc(r.network)}</span><br><span class="tg net" title="Group of the network ${esc(r.network)}">${ic('globe')} ${r.gssi}</span></td>
+    <td>${live(p)}</td><td style="white-space:nowrap">${adm?`<button class="btn" onclick="editLink(${i})">Edit</button> <button class="btn danger" onclick="delPool(${i})">Delete</button>`:''}</td></tr>`;}).join('');
+  const poolRows=pools.map((p,i)=>{if(p.linked)return '';const l=p.live;const mem=[...p.groups.map(g=>({t:tgChip(g,(l&&l.gssi===g)?' src':''),g})),...(p.remote||[]).map(r=>({t:`<span class="tg net" title="Group of the network ${esc(r.network)}">${ic('globe')} ${esc(r.network)}:${r.gssi}</span>`}))];
    const groups=mem.map((m,j)=>`${!p.both_ways&&j===0?m.t.replace('class="tg','class="tg src'):m.t}${j===0&&!p.both_ways?' <span class="arrow">→</span>':''}`).join(' ');
-   const state=l?`<span class="talk"><span class="bars"><b></b><b></b><b></b><b></b></span>${issiTxt(l.talker)} talking on ${tgTxt(l.gssi)}</span> · heard on ${l.legs.length} group${l.legs.length===1?'':'s'}${l.waiting.length?` · ${l.waiting.join(', ')} join${l.waiting.length===1?'s':''} after ${l.waiting.length===1?'its':'their'} own over`:''}`:(p.enabled?'Idle':'Switched off');
+   const state=live(p);
    return `<div class="row pool${p.enabled?'':' offp'}"><button class="tog" role="switch" aria-checked="${p.enabled}" aria-label="Pool ${esc(p.name)} on" ${adm?'':'disabled'} onclick="togglePool(${i})"></button>
     <div class="rm"><div class="rt">${esc(p.name)} <span class="chip ${p.enabled?'a':'i'}">${p.enabled?'on':'off'}</span><span class="chip">${p.both_ways?'⇄ both ways':'→ one way'}</span></div>
     <div class="flow">${p.both_ways?groups.replace(/<\/span> <span class="tg/,'</span> <span class="arrow">⇄</span> <span class="tg'):groups}</div><div class="rs" style="margin-top:6px">${state}</div></div>
@@ -869,14 +897,18 @@ R.routing=()=>{
   const groupsOf=r=>{const cat=new Map(r.catalog.map(g=>[g.gssi,g]));const all=[...new Set([...r.groups,...r.catalog.filter(g=>g.is_attached).map(g=>g.gssi)])].sort((a,b)=>a-b);
     return all.map(g=>{const c=cat.get(g);const nm=c&&c.mnemonic?c.mnemonic:gName(g);return `<span class="tg" title="${esc(nm)}${c&&c.is_dynamic?' (DGNA)':''}">${g}${nm?' · '+esc(nm):''}${c&&c.is_dynamic?' ★':''}</span>`;}).join(' ')||'<span class="mut">—</span>';};
   const f=UI.dgf||(UI.dgf={gssi:'',name:'',assign:true,mode:0});
-  return `<div class="card"><div class="ch"><h2>Talkgroup pools</h2><span class="cnt">${pools.length}</span>${helpBtn('pools')}<span class="sp"></span>${adm?`<button class="btn pri" onclick="editPool(-1)">${ic('plus')}New pool</button>`:''}</div>
-   ${poolRows||'<div class="empty">No pools yet. A pool plays the calls of one group on other groups too.</div>'}
+  return `<div class="card"><div class="ch"><h2>Linked talkgroups</h2><span class="cnt">${links.length}</span>${helpBtn('links')}<span class="sp"></span>${adm?`<button class="btn pri" onclick="editLink(-1)">${ic('plus')}New link</button>`:''}</div>
+   ${helpNote('links','A linked talkgroup connects one group of this server with one group of another network (Multi Network link), both ways: a call on either group is heard on the other, the talker\'s ISSI is passed on 1:1. It works like a talkgroup pool with exactly these two groups and is saved as one (<code>[[talkgroup_pools]]</code> with <code>linked = true</code>). The other network must be set up on the Multi Network page. Changes apply at once, no restart.')}
+   ${links.length?`<div class="tw"><table><thead><tr><th style="width:56px">On</th><th>Name</th><th>This server · TG</th><th style="width:30px"></th><th>Linked network · TG</th><th>Status</th><th></th></tr></thead><tbody>${linkRows}</tbody></table></div>`:'<div class="empty">No linked talkgroups yet. A link connects one group here with one group of another network.</div>'}
+   ${msgDiv('link-msg')}</div>
+  <div class="card"><div class="ch"><h2>Talkgroup pools</h2><span class="cnt">${pools.length-links.length}</span>${helpBtn('pools')}<span class="sp"></span>${adm?`<button class="btn pri" onclick="editPool(-1)">${ic('plus')}New pool</button>`:''}</div>
+   ${poolRows.trim()||'<div class="empty">No pools yet. A pool plays the calls of one group on other groups too.</div>'}
    ${helpNote('pools','A pool switches groups together inside this server. A call on a group of the pool is played 1:1 on the other groups, as an ordinary group call on each group\'s own GSSI, so the radios see nothing unusual. <i>Both ways</i>: every group of the pool reaches all others. <i>One way</i>: only the first group is copied, to the rest. A group that has a call of its own waits until that over has ended and then joins. Changes apply at once and are saved to the config file, no restart. Federation peers do not get the copies.')}
    ${msgDiv('pool-msg')}</div>
   <div class="card"><div class="ch"><h2>Assign radios to a group (DGNA)</h2>${helpBtn('dgna')}<span class="sp"></span>${searchBox('dg','ISSI, group or station…')}</div>
    ${helpNote('dgna','Dynamic group number assignment (SS-DGNA, ETSI EN 300 392-12-22): the station tells the selected radios to add or remove a group, with an optional name the radio shows. Each command goes to the station the radio is registered on, over its control connection (FlowStation <code>[command]</code>). The answer of each radio shows under <i>Last DGNA</i>. ★ = group assigned by DGNA. Apps and other terminals cannot be reached.')}
-   <div class="tw"><table><thead><tr><th style="width:44px"><input type="checkbox" class="chk" aria-label="Select all" ${allSel?'checked':''} ${adm?'':'disabled'} onchange="selAll(this.checked)"></th><th>ISSI</th><th>Station / cell</th><th>Groups now</th><th>Last DGNA</th></tr></thead><tbody>
-   ${radios.map(r=>`<tr${r.radio?'':' class="off"'}><td><input type="checkbox" class="chk" aria-label="Select ${r.issi}" ${UI.sel.has(r.issi)?'checked':''} ${adm&&r.radio?'':'disabled'} onchange="selOne(${r.issi},this.checked)"></td><td>${issiCell(r.issi,true)}</td><td><span class="chip">${esc(r.cell||r.station)}</span></td><td>${groupsOf(r)}</td><td>${r.radio?dg(r):'<span class="mut">not a radio, DGNA n/a</span>'}</td></tr>`).join('')||'<tr><td colspan="5" class="mut">No radios registered</td></tr>'}
+   <div class="tw"><table><thead><tr><th style="width:44px"><input type="checkbox" class="chk" aria-label="Select all" ${allSel?'checked':''} ${adm?'':'disabled'} onchange="selAll(this.checked)"></th><th>ISSI</th><th>Station</th><th>Cell (global ID)</th><th>Groups now</th><th>Last DGNA</th></tr></thead><tbody>
+   ${radios.map(r=>`<tr${r.radio?'':' class="off"'}><td><input type="checkbox" class="chk" aria-label="Select ${r.issi}" ${UI.sel.has(r.issi)?'checked':''} ${adm&&r.radio?'':'disabled'} onchange="selOne(${r.issi},this.checked)"></td><td>${issiCell(r.issi,true)}</td><td><b class="m">${esc(r.station||'—')}</b></td><td>${r.cell?`<span class="chip">${esc(r.cell)}</span>`:`<span class="mut">${r.radio?'—':'— (terminal)'}</span>`}</td><td>${groupsOf(r)}</td><td>${r.radio?dg(r):'<span class="mut">not a radio, DGNA n/a</span>'}</td></tr>`).join('')||'<tr><td colspan="6" class="mut">No radios registered</td></tr>'}
    </tbody></table></div>
    ${adm?`<div class="selbar"><b>${sel} selected</b><span class="arrow">→</span>
     <input class="f" id="dg-gssi" placeholder="GSSI" inputmode="numeric" style="width:110px" value="${esc(f.gssi)}" oninput="UI.dgf.gssi=this.value">
@@ -899,13 +931,44 @@ async function sendDgna(){
     await refreshSlow();
   }catch(e){setMsg('dg-msg','err',e.message);}
 }
-async function savePools(list,okText){
-  try{await postJ('/api/pools/save',list);D.pools=await getJ('/api/pools');setMsg('pool-msg','ok',okText);render(true);return true;}
-  catch(e){setMsg('pool-msg','err',e.message);render(true);return false;}
+async function savePools(list,okText,box='pool-msg'){
+  try{await postJ('/api/pools/save',list);D.pools=await getJ('/api/pools');setMsg(box,'ok',okText);render(true);return true;}
+  catch(e){setMsg(box,'err',e.message);render(true);return false;}
 }
-const plain=p=>({name:p.name,enabled:p.enabled,both_ways:p.both_ways,groups:p.groups,remote:(p.remote||[]).map(r=>({network:r.network,gssi:r.gssi}))});
-function togglePool(i){const l=D.pools.map(plain);l[i].enabled=!l[i].enabled;savePools(l,`${l[i].name} switched ${l[i].enabled?'on':'off'}.`);}
-function delPool(i){const p=D.pools[i];if(!confirm(`Delete pool "${p.name}"?`))return;const l=D.pools.map(plain);l.splice(i,1);savePools(l,`${p.name} deleted.`);}
+// Name a link gets when its name field is left empty.
+const autoLink=p=>{const r=(p.remote||[])[0]||{};return `TG ${p.groups[0]} ⇄ ${r.network}:${r.gssi}`.slice(0,40);};
+const plain=p=>({name:p.name,enabled:p.enabled,both_ways:p.both_ways,groups:p.groups,remote:(p.remote||[]).map(r=>({network:r.network,gssi:r.gssi})),linked:!!p.linked});
+// Editor of a linked talkgroup: one own group, one network, one group there.
+function editLink(i){
+  const p=i>=0?plain(D.pools[i]):{name:'',enabled:true,both_ways:true,groups:[],remote:[],linked:true};
+  const r=p.remote[0]||{network:'',gssi:''};const nets=(D.nets&&D.nets.networks||[]).map(n=>n.name);
+  if(r.network&&!nets.includes(r.network))nets.push(r.network);
+  $('sheet').innerHTML=`<div class="ch"><h3 id="sheet-title">${i>=0?'Edit linked talkgroup':'New linked talkgroup'}</h3></div><div class="sb">
+   <div><label class="l" for="le-name">Name (optional)</label><input class="f" id="le-name" maxlength="40" value="${p.name===autoLink(p)?'':esc(p.name)}" placeholder="e.g. Austria wide ⇄ TetraPack"><div class="mut" style="font-size:12px;margin-top:4px">Can stay empty.</div></div>
+   <div><label class="l" for="le-own">Talkgroup of this server (GSSI)</label><input class="f" id="le-own" inputmode="numeric" value="${p.groups[0]??''}" placeholder="e.g. 9" autocomplete="off"></div>
+   <div><label class="l" for="le-net">Linked network (Multi Network)</label>${nets.length?`<select class="f" id="le-net">${nets.map(n=>`<option ${n===r.network?'selected':''}>${esc(n)}</option>`).join('')}</select>`:`<input class="f" id="le-net" value="${esc(r.network)}" placeholder="network name as on the Multi Network page">`}</div>
+   <div><label class="l" for="le-tg">Talkgroup in the linked network (GSSI)</label><input class="f" id="le-tg" inputmode="numeric" value="${r.gssi}" placeholder="e.g. 909" autocomplete="off"></div>
+   <label style="display:flex;gap:10px;align-items:center"><button class="tog" role="switch" id="le-on" aria-checked="${p.enabled}" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true')"></button> Switched on</label>
+   <div class="msg" id="sheet-msg" style="padding:0"></div></div>
+   <div class="acts"><button class="btn" onclick="closeSheet()">Cancel</button><button class="btn pri" onclick="saveLink(${i})">Save</button></div>`;
+  $('scrim').classList.add('on');setTimeout(()=>$('le-name').focus(),30);
+}
+async function saveLink(i){
+  const m=$('sheet-msg'),own=+$('le-own').value.trim(),tg=+$('le-tg').value.trim(),net=$('le-net').value.trim();
+  const bad=t=>{m.className='msg err';m.textContent=t;};
+  if(!(Number.isInteger(own)&&own>=1&&own<=16777215))return bad('Enter the talkgroup of this server (1 to 16777215).');
+  if(!net)return bad('Choose the linked network.');
+  if(!(Number.isInteger(tg)&&tg>=1&&tg<=16777215))return bad('Enter the talkgroup in the linked network (1 to 16777215).');
+  const p={name:'',groups:[own],remote:[{network:net,gssi:tg}],both_ways:true,enabled:$('le-on').getAttribute('aria-checked')==='true',linked:true};
+  p.name=($('le-name').value.trim()||autoLink(p)).slice(0,40);
+  if(D.pools.some((q,j)=>j!==i&&q.linked&&q.groups[0]===own&&q.remote[0]&&q.remote[0].network===net&&q.remote[0].gssi===tg))return bad('This link exists already.');
+  const l=D.pools.map(plain);if(i>=0)l[i]=p;else l.push(p);
+  m.className='msg mut';m.textContent='Saving…';
+  try{await postJ('/api/pools/save',l);closeSheet();D.pools=await getJ('/api/pools');setMsg('link-msg','ok',`${p.name} saved.`);render(true);}
+  catch(e){bad(e.message);}
+}
+function togglePool(i){const l=D.pools.map(plain);l[i].enabled=!l[i].enabled;savePools(l,`${l[i].name} switched ${l[i].enabled?'on':'off'}.`,l[i].linked?'link-msg':'pool-msg');}
+function delPool(i){const p=D.pools[i];if(!confirm(`Delete ${p.linked?'linked talkgroup':'pool'} "${p.name}"?`))return;const l=D.pools.map(plain);l.splice(i,1);savePools(l,`${p.name} deleted.`,p.linked?'link-msg':'pool-msg');}
 function editPool(i){
   const p=i>=0?plain(D.pools[i]):{name:'',enabled:true,both_ways:true,groups:[],remote:[]};
   $('sheet').innerHTML=`<div class="ch"><h3 id="sheet-title">${i>=0?'Edit pool':'New pool'}</h3></div><div class="sb">
@@ -1256,6 +1319,34 @@ mod tests {
                 assert!(line.contains(".admin"), "{route} polled without an admin check: {line}");
             }
         }
+    }
+
+    /// Stations and cells are named the same way on every page: a station by its Brew login, a
+    /// cell by its global cell ID (login/cell), with telemetry adding the local cell number; the
+    /// help says that the global ID is not an ETSI identity and that terminals have no cells.
+    #[test]
+    fn stations_and_cells_are_named_the_same_everywhere() {
+        assert!(!PAGE_HTML.contains("Station / cell"), "station and cell in their own columns");
+        assert!(PAGE_HTML.contains("<th>Cell (global ID)</th>"));
+        assert!(PAGE_HTML.contains("Cell (local / global ID)"), "telemetry: local number and global ID");
+        assert!(PAGE_HTML.contains("it is not an ETSI identity"));
+        assert!(PAGE_HTML.contains("Apps and other terminals (Terminal mode) have no cells"));
+        assert!(PAGE_HTML.contains("a station without it is counted as a station, its cells are unknown"));
+        assert!(PAGE_HTML.contains("conns.map(b=>") && PAGE_HTML.contains("function connGroups("), "one Brew connections row per station, not per connection");
+        for page in [&*crate::dashboard::TELEMETRY_SDS_HTML, &*crate::dashboard::REGISTRATIONS_HTML] {
+            assert!(!page.contains("<th>BTS</th>"), "Station, not BTS");
+        }
+    }
+
+    /// Linked talkgroups have their own list and editor on the Routing page and
+    /// are saved as pools with `linked`.
+    #[test]
+    fn routing_page_lists_linked_talkgroups() {
+        assert!(PAGE_HTML.contains("<h2>Linked talkgroups</h2>"));
+        assert!(PAGE_HTML.contains("function editLink(") && PAGE_HTML.contains("function saveLink("));
+        assert!(PAGE_HTML.contains("id=\"le-name\""), "a link has a name field");
+        assert!(PAGE_HTML.contains("linked:!!p.linked"), "the flag survives every save of the pool list");
+        assert!(PAGE_HTML.contains("if(p.linked)return '';"), "links are not listed again as pools");
     }
 
     /// Recent calls show one row per pool call, naming the pool, instead of a row per group.
