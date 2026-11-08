@@ -357,18 +357,18 @@ static SDS_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| log_p
     &["Time", "From", "To", "Reports", "UUID"], 10, "No SDS yet",
 ));
 
-static TELEMETRY_SDS_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| log_page(
+pub(crate) static TELEMETRY_SDS_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| log_page(
     "Telemetry SDS Log", "/api/telemetry",
     "d.flatMap(s=>(s.recent_sds_out||[]).map(x=>({...x,bts:s.id}))).sort((a,b)=>b.at_ms-a.at_ms).slice(0,50)",
     "`<tr><td>${dt(x.at_ms)}</td><td>${esc(x.bts)}</td><td>${esc(x.direction)}</td><td>${x.source_issi}</td><td>${x.dest_issi}${x.is_group?' (grp)':''}</td><td>${x.protocol_id===10?'<span class=\"badge badge-pos\">\\uD83D\\uDCCD Position</span>':`<span class=\"badge badge-sds\">SDS<\\/span> <span class=muted>pid ${x.protocol_id}<\\/span>`}</td><td>${x.protocol_id===10&&!(x.text||'').trim()?'<span class=pos-undec>binary LIP (undecoded)<\\/span>':esc(x.text)}</td></tr>`",
-    &["Time", "BTS", "Dir", "From", "To", "Type", "Text"], 5, "No telemetry SDS yet",
+    &["Time", "Station", "Dir", "From", "To", "Type", "Text"], 5, "No telemetry SDS yet",
 ));
 
-static REGISTRATIONS_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| log_page(
+pub(crate) static REGISTRATIONS_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| log_page(
     "Mobile Station Registrations", "/api/registrations",
     "d",
     "`<tr><td>${dt(x.at_ms)}</td><td>${esc(x.bts)}</td><td>${x.issi}</td><td>${x.cell?esc(x.cell)+' <span class=muted>('+x.carrier+')</span>':'<span class=muted>-</span>'}</td><td>${x.kind==='register'?'<span class=\"badge badge-reg-in\">Registered</span>':x.kind==='deregister'?'<span class=\"badge badge-reg-out\">Deregistered</span>':x.kind==='roamed'?'<span class=\"badge badge-reg-out\">Deregistered</span> <span class=muted>(roamed to other BS'+(x.roamed_to?' '+esc(x.roamed_to):'')+')</span>':'<span class=\"badge badge-reg-timeout\">Timed out</span>'}</td></tr>`",
-    &["Time", "BTS", "ISSI", "Cell", "Event"], 15, "No registration events yet",
+    &["Time", "Station", "ISSI", "Cell (global ID)", "Event"], 15, "No registration events yet",
 ));
 
 static SMS_CENTER_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| log_page(
@@ -1882,7 +1882,7 @@ mod tests {
         assert_eq!(conn["roaming_log"][0]["from"]["cell"], "2320997/0");
         assert_eq!(conn["roaming_log"][0]["to"]["station"], "2320998");
         assert!(CONNECTIONS_HTML.contains("id=roaming-log"));
-        assert!(REGISTRATIONS_HTML.contains("<th>Cell</th>") && REGISTRATIONS_HTML.contains("x.cell"));
+        assert!(REGISTRATIONS_HTML.contains("<th>Cell (global ID)</th>") && REGISTRATIONS_HTML.contains("x.cell"));
     }
 
     #[test]
