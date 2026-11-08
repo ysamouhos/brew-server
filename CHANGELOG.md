@@ -2,6 +2,15 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.20.1 adds:
+
+- **Pool calls in one row.** Recent calls show the legs of a talkgroup pool
+  call (same talker, groups of one pool, started within 3 s) as one row with
+  the pool's name and its groups, instead of one row per group. Live calls
+  still show every group.
+  This also works logged out (the network list is admin only), and a bridge
+  whose pool is not known joins its legs by GSSI.
+
 Version 1.20.0 adds:
 
 - **Timeslots on the Telemetry page again.** The new dashboard's station cards
