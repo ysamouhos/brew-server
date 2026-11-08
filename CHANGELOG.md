@@ -8,6 +8,10 @@ Version 1.20.0 adds:
   list the station's calls (group or individual, from, to, cell, carrier and
   timeslot, priority) and draw the four timeslots of every carrier in use, busy
   or available, as the classic Basestation Telemetry panel did.
+- **Pool calls in one row.** Recent calls show the legs of a talkgroup pool
+  call (same talker, groups of one pool, started within 3 s) as one row with
+  the pool's name and its groups, instead of one row per group. Live calls
+  still show every group.
 - **One configuration editor.** The Settings page of the new dashboard no
   longer shows the classic raw TOML editor; the configuration is edited on the
   Configuration page. The classic dashboard's Settings page keeps it.

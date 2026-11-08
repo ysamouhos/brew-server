@@ -601,6 +601,31 @@ function legIds(){
   return out;
 }
 function poolOf(call){return D.pools.find(p=>p.live&&p.live.gssi===call.destination&&p.live.talker===call.source);}
+// The pool a group belongs to: one of its own groups, or a group of another network (alias above
+// the 24 GSSI bits, slot << 24 | gssi).
+function poolOfGroup(g){return D.pools.find(p=>g<=16777215?p.groups.includes(g):(p.remote||[]).some(r=>{const n=netOfSlot(Math.floor(g/16777216));return n&&n.name===r.network&&g%16777216===r.gssi;}));}
+// Recent calls: the legs of one pool call (same talker, groups of one pool, started within 3 s)
+// become one row naming the pool, so a bridge does not fill the log with a row per group.
+function mergePoolLegs(list){
+  const out=[],used=new Set();
+  list.forEach((c,i)=>{
+    if(used.has(i))return;
+    const p=c.kind==='group'&&poolOfGroup(c.destination);
+    if(!p){out.push(c);return;}
+    const legs=[c];
+    for(let j=i+1;j<list.length&&j<=i+50;j++){const o=list[j];
+      if(used.has(j)||o.kind!=='group'||o.source!==c.source||Math.abs(o.started_at_ms-c.started_at_ms)>3000||poolOfGroup(o.destination)!==p)continue;
+      legs.push(o);used.add(j);}
+    if(legs.length<2){out.push(c);return;}
+    const ends=legs.map(x=>x.ended_at_ms).filter(Boolean);
+    out.push(Object.assign({},c,{pool:p.name,legs:legs.map(x=>x.destination),
+      started_at_ms:Math.min(...legs.map(x=>x.started_at_ms)),ended_at_ms:ends.length===legs.length?Math.max(...ends):null,
+      voice_frames:Math.max(...legs.map(x=>x.voice_frames)),
+      from_network:legs.map(x=>x.from_network).find(Boolean)||null,
+      to_networks:[...new Set(legs.flatMap(x=>x.to_networks||[]))]}));
+  });
+  return out;
+}
 
 /* ---------- render ---------- */
 let lastSig='';
@@ -691,12 +716,12 @@ R.calls=()=>{
   const st=D.status,now=Date.now();if(!st)return '<div class="empty">Loading…</div>';
   const legs=legIds();const q=UI.filter.calls||'';const k=UI.filter.callk||'all';
   const act=st.active_calls.filter(x=>!legs.has(x.uuid));
-  const rec=st.recent_calls.filter(c=>(k==='all'||c.kind===k)&&match(q,c.source,c.destination,c.from_network,(c.to_networks||[]).join(' '),nameOf(c.source),c.kind==='group'?gName(c.destination):nameOf(c.destination),c.kind==='group'&&c.destination>16777215?tgTxt(c.destination):''));
+  const rec=mergePoolLegs(st.recent_calls).filter(c=>(k==='all'||c.kind===k)&&match(q,c.source,c.destination,c.pool,(c.legs||[]).map(tgTxt).join(' '),c.from_network,(c.to_networks||[]).join(' '),nameOf(c.source),c.kind==='group'?gName(c.destination):nameOf(c.destination),c.kind==='group'&&c.destination>16777215?tgTxt(c.destination):''));
   const nc=hasNet(rec);
   return `<div class="card"><div class="ch"><h2>Live calls</h2><span class="cnt">${act.length}</span></div>${act.length?act.map(x=>callRow(x,now)).join(''):'<div class="empty">No active calls</div>'}</div>
   <div class="bar">${seg('callk',[['all','All'],['group','Group'],['private','Individual']])}${searchBox('calls','ISSI or group…')}<span class="sp"></span><span class="mut" style="font-size:12.5px">${st.total_calls} calls in total</span></div>
   <div class="card"><div class="ch"><h2>Recent calls</h2><span class="cnt">${rec.length}</span></div><div class="tw"><table><thead><tr><th>Started</th><th>Type</th><th>From</th><th>To</th>${nc?'<th>Network</th>':''}<th>Duration</th><th>Prio</th><th>Voice frames</th></tr></thead><tbody>
-   ${rec.slice(0,300).map(c=>`<tr><td class="m">${tmd(c.started_at_ms)}</td><td>${c.kind==='group'?'<span class="chip a">Group</span>':'<span class="chip b">Individual</span>'}</td><td>${issiCell(c.source)}</td><td>${c.kind==='group'?`<span class="m">${c.destination>16777215?tgTxt(c.destination):c.destination}</span>${gName(c.destination)?`<span class="sub">${esc(gName(c.destination))}</span>`:''}`:issiCell(c.destination)}</td>${nc?`<td>${netChips(c)}</td>`:''}<td class="m">${c.ended_at_ms?dur(c.ended_at_ms-c.started_at_ms):'—'}</td><td class="num">${c.priority}</td><td class="num">${c.voice_frames}</td></tr>`).join('')||'<tr><td colspan="${nc?8:7}" class="mut">No calls yet</td></tr>'}
+   ${rec.slice(0,300).map(c=>`<tr><td class="m">${tmd(c.started_at_ms)}</td><td>${c.kind==='group'?'<span class="chip a">Group</span>':'<span class="chip b">Individual</span>'}</td><td>${issiCell(c.source)}</td><td>${c.pool?`<span class="chip" title="Pool: one call heard on ${c.legs.length} groups">${ic('routing')} ${esc(c.pool)}</span><span class="sub">${c.legs.map(g=>g>16777215?tgTxt(g):String(g)).join(' · ')}</span>`:c.kind==='group'?`<span class="m">${c.destination>16777215?tgTxt(c.destination):c.destination}</span>${gName(c.destination)?`<span class="sub">${esc(gName(c.destination))}</span>`:''}`:issiCell(c.destination)}</td>${nc?`<td>${netChips(c)}</td>`:''}<td class="m">${c.ended_at_ms?dur(c.ended_at_ms-c.started_at_ms):'—'}</td><td class="num">${c.priority}</td><td class="num">${c.voice_frames}</td></tr>`).join('')||'<tr><td colspan="${nc?8:7}" class="mut">No calls yet</td></tr>'}
   </tbody></table></div></div>`;
 };
 R.sds=()=>{
@@ -1225,6 +1250,19 @@ mod tests {
             for line in body.lines().filter(|l| l.contains(&format!("getJ({route}"))) {
                 assert!(line.contains(".admin"), "{route} polled without an admin check: {line}");
             }
+        }
+    }
+
+    /// Recent calls show one row per pool call, naming the pool, instead of a row per group.
+    #[test]
+    fn recent_calls_merge_the_legs_of_a_pool_call() {
+        let start = PAGE_HTML.find("R.calls=()=>{").expect("R.calls");
+        let body = &PAGE_HTML[start..start + PAGE_HTML[start..].find("\n};\n").expect("end")];
+        assert!(body.contains("mergePoolLegs(st.recent_calls)"), "recent calls merged");
+        assert!(body.contains("c.pool?"), "pool name in the To column");
+        let f = &PAGE_HTML[PAGE_HTML.find("function mergePoolLegs(list){").expect("mergePoolLegs")..start];
+        for needle in ["o.source!==c.source", "3000", "poolOfGroup(o.destination)!==p"] {
+            assert!(f.contains(needle), "{needle}");
         }
     }
 
