@@ -2,7 +2,7 @@
 
 All notable changes to brew-server, newest first.
 
-Unreleased:
+Version 1.20.2 adds:
 
 - **Linked talkgroups on the Routing page.** A simple list of 1:1 links
   "this server · TG ⇄ linked network · TG": one group of this server, both
