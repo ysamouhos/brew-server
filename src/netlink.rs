@@ -1442,6 +1442,7 @@ mod tests {
         TalkgroupPoolConfig {
             name: name.into(), enabled: true, both_ways: true, groups: vec![9],
             remote: remote.iter().map(|(n, g)| RemotePoolGroup { network: (*n).into(), gssi: *g }).collect(),
+            linked: false,
         }
     }
 
@@ -1619,6 +1620,7 @@ mod e2e {
         cfg.talkgroup_pools.push(TalkgroupPoolConfig {
             name: "Bridge".into(), enabled: true, both_ways: true, groups: vec![9],
             remote: vec![RemotePoolGroup { network: "TP".into(), gssi: 909 }],
+            linked: false,
         });
         let (main, main_addr) = serve(cfg).await;
         run(main.clone()).await;
@@ -1766,6 +1768,7 @@ mod e2e {
         cfg.talkgroup_pools.push(TalkgroupPoolConfig {
             name: "Bridge".into(), enabled: true, both_ways: true, groups: vec![9],
             remote: vec![RemotePoolGroup { network: "TP".into(), gssi: 909 }],
+            linked: false,
         });
         let (main, main_addr) = serve(cfg).await;
         // 10 stations, 25 radios, none in TG 9; station 0 has Multi Network
@@ -2260,7 +2263,7 @@ mod e2e {
         let slot = slots(&state)["TP"];
         if let Ok(mut p) = state.pools.write() {
             p.push(TalkgroupPoolConfig { name: "B".into(), enabled: true, both_ways: true, groups: vec![9],
-                remote: vec![RemotePoolGroup { network: "TP".into(), gssi: 909 }] });
+                remote: vec![RemotePoolGroup { network: "TP".into(), gssi: 909 }], linked: false });
         }
         let (bs, link) = (Uuid::new_v4(), Uuid::new_v4());
         {
@@ -2290,7 +2293,7 @@ mod e2e {
         let slot = slots(&state)["TP"];
         if let Ok(mut p) = state.pools.write() {
             p.push(TalkgroupPoolConfig { name: "B".into(), enabled: true, both_ways: true, groups: vec![9],
-                remote: vec![RemotePoolGroup { network: "TP".into(), gssi: 909 }] });
+                remote: vec![RemotePoolGroup { network: "TP".into(), gssi: 909 }], linked: false });
         }
         let (bs, link) = (Uuid::new_v4(), Uuid::new_v4());
         {
@@ -2380,6 +2383,7 @@ mod e2e {
         cfg.talkgroup_pools.push(TalkgroupPoolConfig {
             name: "TestLink".into(), enabled: true, both_ways: true, groups: vec![9],
             remote: vec![RemotePoolGroup { network: "Loop".into(), gssi: 909 }],
+            linked: false,
         });
         let state = Arc::new(AppState::new(cfg, "test.toml".into()).0);
         let app = axum::Router::new()

@@ -2,6 +2,36 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.20.2 adds:
+
+- **Linked talkgroups on the Routing page.** A simple list of 1:1 links
+  "this server · TG ⇄ linked network · TG": one group of this server, both
+  ways, to one group of another network of the Multi Network page. Each link
+  has its own editor (one GSSI here, the network from the list, one GSSI
+  there), an on/off switch and its live status. A link is a talkgroup pool
+  with exactly these two groups, saved as `[[talkgroup_pools]]` with
+  `linked = true`; the server refuses a link with more groups or one way.
+  Links are not listed again under Talkgroup pools. The name is optional;
+  without one the list shows only the groups.
+
+- **Stations and cells named the same on every page.** A station is named by
+  its Brew login, a cell by its global cell ID `login/cell` (the Brew login
+  and the cell number inside the station, 0 = primary). Radios, the
+  registration log and DGNA show station and cell in separate columns;
+  Brew connections list their cells by global ID; Telemetry shows the local
+  cell number with the global ID in brackets; "BTS" columns are now
+  "Station". The help ("?") explains that the global cell ID is not an ETSI
+  identity, that apps and other terminals have no cells, and that a station
+  without `bts-info` is counted but its cells are unknown.
+  A station with several Brew connections (one per network its cells
+  serve) is listed once under Brew connections, with all its cells, its
+  remote addresses and the radios summed; the sidebar counts stations, not
+  connections.
+  The Overview adds up the radios of a station that has one connection per
+  network.
+  Thanks to OE1LHP for the visual review and the reports of
+  inconsistencies.
+
 Version 1.20.1 adds:
 
 - **Pool calls in one row.** Recent calls show the legs of a talkgroup pool

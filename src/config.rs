@@ -157,11 +157,16 @@ pub struct TalkgroupPoolConfig {
     /// `both_ways = false` and no `groups`, the first of them is the source.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub remote: Vec<RemotePoolGroup>,
+    /// A linked talkgroup: one group of this server bridged both ways to one
+    /// group of another network. Works like any pool; the dashboard lists it
+    /// under "Linked talkgroups" with its own editor.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub linked: bool,
 }
 
 impl Default for TalkgroupPoolConfig {
     fn default() -> Self {
-        Self { name: String::new(), enabled: true, both_ways: true, groups: Vec::new(), remote: Vec::new() }
+        Self { name: String::new(), enabled: true, both_ways: true, groups: Vec::new(), remote: Vec::new(), linked: false }
     }
 }
 
