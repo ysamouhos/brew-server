@@ -2,6 +2,16 @@
 
 All notable changes to brew-server, newest first.
 
+Unreleased:
+
+- **Federation peers: `path` sent as written.** The trailing slash of a
+  `[[federation.peers]]` path is no longer cut off, so a core that serves
+  discovery at `/brew/` and redirects `/brew` to its website (TetraPack) can
+  be peered with `path = "/brew/"`; a brew-server answers on both. Discovery
+  errors quote the start of the peer's reply. The idea comes from PR #54 by
+  David Harcus, MM7FDM, brought onto the current version (that PR is based on
+  an older one; redirects are already handled since 1.20.0).
+
 Version 1.20.2 adds:
 
 - **Linked talkgroups on the Routing page.** A simple list of 1:1 links

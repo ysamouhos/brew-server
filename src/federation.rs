@@ -380,22 +380,32 @@ pub(crate) async fn discover(
             );
             let resp2 = http_get(peer, tls, path, Some(&authz), extra, who).await?;
             if resp2.status != 200 {
-                anyhow::bail!("digest auth rejected (HTTP {})", resp2.status);
+                anyhow::bail!("digest auth rejected (HTTP {}): {}", resp2.status, preview(&resp2.body));
             }
             ws_path_from(resp2.body)
         }
-        other => anyhow::bail!("unexpected discovery status {other}"),
+        other => anyhow::bail!("unexpected discovery status {other}: {}", preview(&resp.body)),
     }
+}
+
+/// The start of a reply for an error message, on one line, so the log shows
+/// what the peer actually sent (an HTML page, an error text).
+fn preview(body: &[u8]) -> String {
+    let text = String::from_utf8_lossy(&body[..body.len().min(80)]);
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() { "(empty reply)".to_string() } else { format!("{text:?}") }
 }
 
 /// The WebSocket path a discovery answered with. Anything that is not a
 /// plain path (a web page behind a redirect, an error text) is refused, so
 /// it is never dialled.
 fn ws_path_from(body: Vec<u8>) -> anyhow::Result<String> {
-    let text = String::from_utf8(body)?;
+    let Ok(text) = std::str::from_utf8(&body) else {
+        anyhow::bail!("discovery answered with something that is not a path (wrong path configured?): {}", preview(&body));
+    };
     let p = text.trim();
     if p.is_empty() || p.len() > 256 || p.chars().any(|c| c.is_whitespace() || c == '<') {
-        anyhow::bail!("discovery answered with something that is not a path (wrong path configured?)");
+        anyhow::bail!("discovery answered with something that is not a path (wrong path configured?): {}", preview(&body));
     }
     Ok(p.to_string())
 }
@@ -481,10 +491,11 @@ async fn connect_and_run(state: &Arc<AppState>, peer: &FederationPeerConfig) -> 
     Ok(())
 }
 
+/// The configured path with a leading slash, otherwise as written: a trailing
+/// slash matters to some cores (TetraPack serves discovery at `/brew/` and
+/// redirects `/brew` to its website). A brew-server answers on both.
 pub(crate) fn normalize_path(path: &str) -> String {
-    let mut p = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
-    while p.len() > 1 && p.ends_with('/') { p.pop(); }
-    p
+    if path.starts_with('/') { path.to_string() } else { format!("/{path}") }
 }
 
 /// Runs one established peer session: registers the peer in `inner.clients`
@@ -641,6 +652,23 @@ mod tests {
         let peer = FederationPeerConfig { remote_host: addr, ..Default::default() };
         let err = discover(&peer, None, "/brew", &[], PEER_IDENTITY).await.unwrap_err().to_string();
         assert!(err.contains("not a path"), "{err}");
+    }
+
+    /// The configured path keeps its trailing slash (idea from PR #54).
+    #[test]
+    fn peer_path_is_sent_as_written() {
+        assert_eq!(normalize_path("/brew/"), "/brew/");
+        assert_eq!(normalize_path("brew/"), "/brew/");
+        assert_eq!(normalize_path("/brew"), "/brew");
+    }
+
+    #[tokio::test]
+    async fn discovery_errors_quote_the_reply() {
+        const GONE: &str = "HTTP/1.1 404 Not Found\r\nContent-Length: 15\r\nConnection: close\r\n\r\nno such\r\npath\r\n";
+        let (addr, _server) = http_stub(vec![GONE], None).await;
+        let peer = FederationPeerConfig { remote_host: addr, ..Default::default() };
+        let err = discover(&peer, None, "/brew", &[], PEER_IDENTITY).await.unwrap_err().to_string();
+        assert!(err.contains("status 404") && err.contains("no such path"), "{err}");
     }
 
     #[test]
