@@ -2,7 +2,7 @@
 
 All notable changes to brew-server, newest first.
 
-Unreleased:
+Version 1.20.3 adds:
 
 - **Federation peers: `path` sent as written.** The trailing slash of a
   `[[federation.peers]]` path is no longer cut off, so a core that serves
