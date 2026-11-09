@@ -243,7 +243,10 @@ async fn serve(state: &AppState, key: &hmac::Key, mut stream: TcpStream) -> Resu
     info!(standby = %node, "HA replication: Standby connected");
     state.ha.repl.connected.store(true, Ordering::Relaxed);
 
-    let mut offset = history_from;
+    // An offset from before a compaction of our log (retention, Clear) may
+    // fall inside a record: start over, the Standby skips what it has.
+    let mut offset = history_from.map(|o| match &state.store { Some(st) if !st.is_boundary(o) => 0, _ => o });
+    let mut generation = state.store.as_ref().map_or(0, |s| s.generation());
     let mut sms_rev = 0u64;
     let mut caught_up = false;
     let mut last_send = tokio::time::Instant::now();
@@ -253,6 +256,10 @@ async fn serve(state: &AppState, key: &hmac::Key, mut stream: TcpStream) -> Resu
         }
         let mut sent = false;
         if let (Some(store), Some(mut off)) = (&state.store, offset) {
+            if store.generation() != generation {
+                generation = store.generation();
+                off = 0;
+            }
             loop {
                 // `start` is 0 rather than `off` when our log was replaced
                 // by a shorter one; carry on from there.

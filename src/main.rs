@@ -11,6 +11,7 @@ mod dashboard_auth;
 mod dashboard_ui;
 mod group_access;
 mod issi_names;
+mod callsign_db;
 mod emergency;
 mod federation;
 mod fedroute;
@@ -93,6 +94,8 @@ async fn services(
     tokio::spawn(netlink::run(state.clone()));
     tokio::spawn(aprs::run(state.clone(), aprs_rx));
     tokio::spawn(sms_center::run(state.clone()));
+    tokio::spawn(monitor::run_retention(state.clone()));
+    tokio::spawn(callsign_db::run(state.clone()));
     tokio::spawn(emergency::run(state.clone()));
 
     tokio::try_join!(

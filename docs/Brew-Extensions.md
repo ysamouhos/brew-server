@@ -867,6 +867,10 @@ on calls that stay local to one Basestation.
   admitted and not listen-only.
 - Emergency calls (call priority 15, "pre-emptive priority 4 (Emergency)", table 14.46) always pass.
 - A group without an entry is open.
+- Managed talkgroups (server option): only the listed groups may be used at
+  all; every other group is refused for every radio (emergency calls pass).
+  Groups of a visitor's home network ((V)GSSIs, section 12b) are not checked
+  against the list.
 
 ### 12.2 `SERVICE_GROUP_ACCESS` (0x1F)
 
@@ -887,6 +891,13 @@ table each time; open groups are left out, so `{"groups":[]}` opens all.
 | `mode` | no | `allow` (default) or `block` |
 | `issis`, `rx_only_issis` | no | ISSIs, 1 to 16777215 each; absent = empty |
 | `rx_only` | no | default `false` |
+| `managed` | no | `true`: managed talkgroups, only the groups in `listed` may be attached and talked on; absent or `false` = not managed |
+| `listed` | no | with `managed`: the listed GSSIs (1 to 16777215, at most 4096) |
+
+With managed talkgroups on, the server adds `"managed":true` and
+`"listed":[9,91,2321]` to the same message. A Basestation that does not know
+the two fields ignores them; the server still refuses the other groups for
+it (no affiliation recorded, group calls dropped).
 
 Server:
 

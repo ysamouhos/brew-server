@@ -2,6 +2,76 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.21.0 adds:
+
+- **History stays small.** `[storage] keep_days = 7`, `max_calls = 2000`,
+  `max_sds = 2000` (0 = no limit): older entries and those over the limit
+  are dropped from the history log at start and once an hour (the log is
+  rewritten, its format is unchanged). The call / SDS totals keep counting
+  them (`<path>.totals`). Admins can clear all calls or all SDS on the Calls
+  / SDS pages; the totals stay. Calls and SDS pages: "Show 25 / 50 / 100 /
+  500 / All (7 days)". Overview shows the call total under "No active
+  calls". HA: a Standby whose copy position no longer fits the rewritten log
+  starts over and skips what it has.
+- **Ham callsign database** (Directory, Radios tab, folded card, off by
+  default): radios without a Directory name are named by their call sign
+  from a list of `ID;CALLSIGN` lines, by default radioid.net `dmrid.dat`.
+  Directory names always come first. "Now" fetches the list, "Automatic"
+  every day at 00:00 UTC; a new list replaces the old one (one cache file,
+  nothing else stored). Config `[callsign_db] enabled`, `url`, `auto`,
+  `cache`; API `GET /api/callsigns?issi=..`, `GET /api/callsign-db`.
+- **Map: names.** The popup of a radio shows its call sign / name from the
+  ISSI directory (or the callsign database), e.g. "ISSI 2320972 (OE4SXM)".
+- **Phone fixes.** Live updates wait while the page is scrolled (iOS left
+  blank areas), fields use 16 px text so iOS no longer zooms in on them,
+  double-tap zoom is off and the page does not zoom (`maximum-scale=1`). On
+  phones the page itself scrolls now (before, a scrolling area inside a
+  fixed-height page: the header could move away and parts stayed blank), so
+  the header stays at the top.
+- **Sidebar:** the group "Network" is called "Infrastructure".
+- **Dashboard clean-up:** Accounts and the registration log on Radios load
+  when the page opens (before, up to 5 s of "Loading…"); on phones the page
+  titles fit, search fields take the full width and the "?" buttons have a
+  larger touch area; a cell without LA or MCC/MNC shows "—"; the pages
+  "Configuration" and "Settings" are called "Config file" and "Server
+  settings"; the map card is called "Radio positions".
+- **Overview: names instead of numbers.** Live calls, recent calls and
+  recent SDS show the name or call sign of a radio alone when there is one
+  (the ISSI is in the tooltip and on the Calls / SDS pages); a group with a
+  name in the Directory likewise (GSSI in the tooltip). A station with a
+  name (Accounts, info) shows it after its number: "1000002 (Name)".
+- **DGNA: saved talkgroups.** A "Saved TGs…" dropdown next to the GSSI
+  field fills in GSSI and name from the groups the server knows.
+- **Managed talkgroups.** A card on the Routing page (folds to a thin bar:
+  folded while off, open while on) closes the set of talkgroups: only
+  allowed groups may be used, i.e. the card's list, the groups of
+  talkgroup pools and linked talkgroups, and groups with the access "Only
+  these" (limited to their ISSIs anyway). Each group shows its access badges
+  ("Only N ISSIs", "N blocked", "RX only"); Edit / Rules opens the Directory
+  dialog (name, access, RX only) right on the Routing page. Groups are
+  allowed by GSSI with an optional name (written to the Directory) or from the foldable "Saved TGs
+  on server" (groups the server knows, including refused ones). Affiliations
+  to any other group are not recorded and its group calls are dropped
+  (emergency calls pass); radios already on such a group are dropped from
+  it. Basestations with `group-access` get `"managed"` and `"listed"` in
+  `SERVICE_GROUP_ACCESS` and refuse the attachment on the air (FlowStation
+  0.5.6 from this change on); older ones ignore the fields. Off (the
+  default) nothing changes and the list is kept. Config `[talkgroups]
+  managed`, `allowed`.
+- **Directory: hide groups.** A group without a name that radios are on can
+  be hidden from the list with ✕ (`[talkgroups] hidden`, display only); the
+  filter "Hidden" shows it again. Groups of other networks (`network:GSSI`)
+  are no longer listed there as raw numbers.
+- **Directory: names for bridge logins.** The Radios (ISSI) list takes
+  numbers up to 12 digits, so the Brew login of a bridge (Network mode, such
+  as 232099709) can be named; the name shows under the login on Stations &
+  Cells. Terminals and base stations are named on the Accounts page. Groups
+  stay 24-bit GSSIs.
+- **Overview in three pairs.** Live calls | recent calls, stations | radios,
+  cell changes | recent SDS, side by side in equal columns; on a phone they
+  stack in that order. Recent calls (last 5, pool legs merged) and radios
+  (first 6, with cell and group count) are new on the Overview.
+
 Version 1.20.3 adds:
 
 - **Federation peers: `path` sent as written.** The trailing slash of a

@@ -13,6 +13,13 @@
 //! Brew has no such message, so a Basestation without it still lets the radio
 //! attach and talk locally.
 //!
+//! Managed talkgroups (`[talkgroups] managed`): only allowed groups may be
+//! used (`AppState::group_listed`: `[talkgroups] allowed`, or a group of a
+//! pool or linked talkgroup). The same checks then refuse every other group, and
+//! `SERVICE_GROUP_ACCESS` carries `"managed":true` and the `"listed"` GSSIs so
+//! a Basestation refuses the attachment on the air too. A Basestation that
+//! does not know these fields ignores them. Off, nothing changes.
+//!
 //! Edited live on the dashboard's Directory page and written to the config
 //! file without a restart.
 
@@ -37,7 +44,8 @@ pub const CAPABILITY: &str = "group-access";
 /// `group-access` capability (or only for `only`): the whole table,
 /// `{"groups":[{"gssi":N,"mode":"allow"|"block","issis":[..],"rx_only":bool,
 /// "rx_only_issis":[..]}]}`, groups sorted by GSSI. An empty list means every
-/// group is open.
+/// group is open. With managed talkgroups also `"managed":true` and
+/// `"listed":[GSSI,..]`: no other group may be attached.
 pub fn updates(state: &AppState, inner: &Inner, only: Option<ClientId>) -> Vec<(ClientId, Vec<u8>)> {
     let table = state.group_access.read().map(|g| g.clone()).unwrap_or_default();
     let mut groups: Vec<(u32, GroupAccessConfig)> = table.into_iter().filter_map(|(k, a)| Some((k.trim().parse().ok()?, a))).collect();
@@ -49,7 +57,12 @@ pub fn updates(state: &AppState, inner: &Inner, only: Option<ClientId>) -> Vec<(
             "gssi": gssi, "mode": a.mode, "issis": a.issis, "rx_only": a.rx_only, "rx_only_issis": a.rx_only_issis,
         }))
         .collect();
-    let packet = crate::protocol::build_service(crate::protocol::SERVICE_GROUP_ACCESS, &serde_json::json!({ "groups": groups }).to_string());
+    let body = if state.talkgroups_managed() {
+        serde_json::json!({ "groups": groups, "managed": true, "listed": state.listed_groups() })
+    } else {
+        serde_json::json!({ "groups": groups })
+    };
+    let packet = crate::protocol::build_service(crate::protocol::SERVICE_GROUP_ACCESS, &body.to_string());
     inner
         .clients
         .keys()
@@ -79,28 +92,39 @@ pub fn parse_issis(text: &str) -> Result<Vec<u32>, String> {
     Ok(out)
 }
 
-/// Forgets the affiliations to `gssi` of radios on this server's own
-/// stations that the group no longer admits, so its calls stop going to a
-/// station only for them. Federation peers are told as for a deaffiliation.
-async fn drop_affiliations(state: &Arc<AppState>, gssi: u32) {
+/// Forgets the affiliations of radios on this server's own stations to
+/// groups that no longer admit them (`[group_access]`, managed talkgroups),
+/// so their calls stop going to a station only for them. Federation peers are
+/// told as for a deaffiliation.
+async fn drop_affiliations(state: &Arc<AppState>) {
     let mut inner = state.inner.write().await;
-    let gone: Vec<u32> = inner
+    let gone: Vec<(u32, Vec<u32>)> = inner
         .subscribers
         .iter()
-        .filter(|(issi, s)| {
-            s.groups.contains(&gssi)
-                && !state.group_permits(gssi, **issi)
-                && inner.clients.get(&s.client_id).is_some_and(|c| c.mode != ClientMode::Peer)
+        .filter(|(_, s)| inner.clients.get(&s.client_id).is_some_and(|c| c.mode != ClientMode::Peer))
+        .filter_map(|(issi, s)| {
+            let g: Vec<u32> = s.groups.iter().copied().filter(|g| !state.group_permits(*g, *issi)).collect();
+            (!g.is_empty()).then_some((*issi, g))
         })
-        .map(|(issi, _)| *issi)
         .collect();
-    for issi in gone {
+    for (issi, groups) in gone {
         let Some(old) = inner.subscribers.get(&issi).cloned() else { continue };
         let mut sub = old.clone();
-        sub.groups.remove(&gssi);
+        for gssi in &groups { sub.groups.remove(gssi); }
         crate::fedroute::set_effective(&mut inner, issi, Some(sub));
         crate::fedroute::publish(&inner, issi, Some(&old));
-        tracing::info!(issi, gssi, "affiliation dropped: the group no longer admits this ISSI (group_access)");
+        tracing::info!(issi, ?groups, "affiliation dropped: the group no longer admits this ISSI (group_access / managed talkgroups)");
+    }
+}
+
+/// After a change of who may use which group (access lists, Directory
+/// names, pools, the managed switch): drops affiliations that are no longer
+/// admitted and sends the table to every Basestation with `group-access`.
+pub async fn refresh(state: &Arc<AppState>) {
+    drop_affiliations(state).await;
+    let inner = state.inner.read().await;
+    for (to, packet) in updates(state, &inner, None) {
+        if let Some(client) = inner.clients.get(&to) { let _ = client.tx.send(packet); }
     }
 }
 
@@ -141,18 +165,112 @@ pub async fn set(State(state): State<Arc<AppState>>, Json(req): Json<AccessReque
             g.insert(gssi.to_string(), entry.clone());
         }
     }
-    tracing::warn!(gssi, mode = ?entry.mode, issis = entry.issis.len(), rx_only = entry.rx_only, rx_only_issis = entry.rx_only_issis.len(), "group access changed from the dashboard");
-    drop_affiliations(&state, gssi).await;
-    {
-        let inner = state.inner.read().await;
-        for (to, packet) in updates(&state, &inner, None) {
-            if let Some(client) = inner.clients.get(&to) { let _ = client.tx.send(packet); }
-        }
+    if state.group_listed(gssi) {
+        if let Ok(mut r) = state.refused_groups.write() { r.remove(&gssi); }
     }
+    tracing::warn!(gssi, mode = ?entry.mode, issis = entry.issis.len(), rx_only = entry.rx_only, rx_only_issis = entry.rx_only_issis.len(), "group access changed from the dashboard");
+    refresh(&state).await;
     let cfg = state.config_snapshot();
     crate::CONFIG_WRITE_APPLIED_LIVE.store(true, std::sync::atomic::Ordering::SeqCst);
     match crate::dashboard::save_config(&state, &cfg).await {
         Ok(_) => Json(snapshot(&state)).into_response(),
+        Err(e) => {
+            crate::CONFIG_WRITE_APPLIED_LIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("applied, but writing the config file failed: {e}")).into_response()
+        }
+    }
+}
+
+/// `GET /api/talkgroups`: the managed switch, the hidden groups and the
+/// listed groups.
+pub async fn talkgroups(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(talkgroups_view(&state))
+}
+
+fn talkgroups_view(state: &AppState) -> serde_json::Value {
+    let t = state.talkgroups.read().map(|t| t.clone()).unwrap_or_default();
+    let refused: BTreeMap<String, usize> = state.refused_groups.read()
+        .map(|r| r.iter().map(|(g, i)| (g.to_string(), i.len())).collect())
+        .unwrap_or_default();
+    serde_json::json!({
+        "managed": t.managed, "allowed": t.allowed, "hidden": t.hidden,
+        "listed": state.listed_groups(), "refused": refused,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TalkgroupsRequest {
+    /// Switch managed talkgroups on or off.
+    #[serde(default)]
+    pub managed: Option<bool>,
+    /// Allow a group (GSSI as text, so a typed value can be checked).
+    #[serde(default)]
+    pub allow: Option<String>,
+    /// With `allow`: a name for the group, written to `[gssi_names]`
+    /// (empty keeps the name it has).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Take a group off the allowed list.
+    #[serde(default)]
+    pub disallow: Option<u32>,
+    /// Hide a group from the Directory page.
+    #[serde(default)]
+    pub hide: Option<u32>,
+    /// Show a hidden group again.
+    #[serde(default)]
+    pub unhide: Option<u32>,
+}
+
+/// `POST /api/talkgroups/set` (admins): the managed switch, allow (with an
+/// optional name for the Directory) / disallow, hide / unhide.
+pub async fn set_talkgroups(State(state): State<Arc<AppState>>, Json(req): Json<TalkgroupsRequest>) -> Response {
+    let gssi_ok = |g: u32| (1..=0xFF_FFFF).contains(&g);
+    for g in [req.hide, req.unhide, req.disallow].into_iter().flatten() {
+        if !gssi_ok(g) {
+            return (StatusCode::BAD_REQUEST, format!("'{g}' is not a GSSI (1 to 16777215)")).into_response();
+        }
+    }
+    let allow = match req.allow.as_deref().map(str::trim) {
+        None => None,
+        Some(t) => match t.parse::<u32>() {
+            Ok(g) if gssi_ok(g) => Some(g),
+            _ => return (StatusCode::BAD_REQUEST, format!("'{t}' is not a GSSI (1 to 16777215)")).into_response(),
+        },
+    };
+    let name = req.name.as_deref().map(str::trim).unwrap_or("").to_owned();
+    if name.chars().count() > 60 || name.chars().any(char::is_control) {
+        return (StatusCode::BAD_REQUEST, "name: up to 60 characters").into_response();
+    }
+    if let (Some(g), false) = (allow, name.is_empty()) {
+        if let Ok(mut n) = state.gssi_names.write() { n.insert(g.to_string(), name); }
+    }
+    let (switched, list_changed) = {
+        let Ok(mut t) = state.talkgroups.write() else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
+        if let Some(g) = req.hide { if !t.hidden.contains(&g) { t.hidden.push(g); t.hidden.sort_unstable(); } }
+        if let Some(g) = req.unhide { t.hidden.retain(|h| *h != g); }
+        let before = t.allowed.clone();
+        if let Some(g) = allow { if !t.allowed.contains(&g) { t.allowed.push(g); t.allowed.sort_unstable(); } }
+        if let Some(g) = req.disallow { t.allowed.retain(|a| *a != g); }
+        let was = t.managed;
+        if let Some(m) = req.managed { t.managed = m; }
+        ((was != t.managed).then_some(t.managed), before != t.allowed)
+    };
+    if let Some(g) = allow {
+        if let Ok(mut r) = state.refused_groups.write() { r.remove(&g); }
+    }
+    if let Some(on) = switched {
+        tracing::warn!(managed = on, allowed = state.listed_groups().len(), "managed talkgroups switched from the dashboard");
+    }
+    if list_changed {
+        tracing::warn!(allow = ?allow, disallow = ?req.disallow, "allowed talkgroups changed from the dashboard");
+    }
+    if switched.is_some() || (list_changed && state.talkgroups_managed()) {
+        refresh(&state).await;
+    }
+    let cfg = state.config_snapshot();
+    crate::CONFIG_WRITE_APPLIED_LIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+    match crate::dashboard::save_config(&state, &cfg).await {
+        Ok(_) => Json(talkgroups_view(&state)).into_response(),
         Err(e) => {
             crate::CONFIG_WRITE_APPLIED_LIVE.store(false, std::sync::atomic::Ordering::SeqCst);
             (StatusCode::INTERNAL_SERVER_ERROR, format!("applied, but writing the config file failed: {e}")).into_response()

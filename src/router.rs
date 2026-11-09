@@ -1157,6 +1157,11 @@ async fn handle_subscriber(state: &Arc<AppState>, source: ClientId, msg: Subscri
                     info!(%source, issi=msg.issi, gssi, alias=a, "subscriber affiliated to a group of a linked network");
                     continue;
                 }
+                if !state.group_admitted(*gssi) {
+                    info!(%source, issi=msg.issi, gssi, "affiliation not recorded: the group is not allowed (managed talkgroups)");
+                    state.note_refused_group(*gssi, msg.issi);
+                    continue;
+                }
                 if !state.group_permits(*gssi, msg.issi) {
                     info!(%source, issi=msg.issi, gssi, "affiliation not recorded: the group does not admit this ISSI (group_access)");
                     continue;
@@ -2761,7 +2766,7 @@ mod pool_tests {
 #[cfg(test)]
 mod group_access_tests {
     use super::*;
-    use crate::config::{GroupAccessConfig, GroupAccessMode};
+    use crate::config::{GroupAccessConfig, GroupAccessMode, TalkgroupPoolConfig};
     use crate::protocol::{ConnVersion, SUB_AFFILIATE, SUB_REGISTER};
     use crate::state::Client;
 
@@ -2934,6 +2939,138 @@ mod group_access_tests {
         assert_eq!(heard, vec![0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
         let saved = crate::config::Config::load(path.to_str().unwrap()).unwrap();
         assert_eq!(saved.group_access[&GSSI.to_string()].issis, vec![5000, 5001]);
+        crate::CONFIG_WRITE_APPLIED_LIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::fs::remove_file(&path);
+    }
+    fn managed_state(path: &std::path::Path, managed: bool) -> Arc<AppState> {
+        let mut config = crate::config::Config::default();
+        config.storage.enabled = false;
+        config.sms_center.enabled = false;
+        config.fallback_broadcast_when_no_affiliations = false;
+        config.talkgroups.managed = managed;
+        config.talkgroups.allowed = vec![9, 232];
+        // A name or an access entry alone does not allow a group.
+        config.gssi_names.insert(GSSI.to_string(), "District".into());
+        config.group_access.insert("4000".into(), GroupAccessConfig { rx_only: true, ..Default::default() });
+        // A block list does not allow a group either; an allow list ("Only these") does.
+        config.group_access.insert("4100".into(), GroupAccessConfig { mode: GroupAccessMode::Block, issis: vec![5009], ..Default::default() });
+        config.group_access.insert("4200".into(), GroupAccessConfig { mode: GroupAccessMode::Allow, issis: vec![5003, 5004], ..Default::default() });
+        config.talkgroup_pools.push(TalkgroupPoolConfig { name: "Link".into(), groups: vec![91, 2326406], linked: true, ..Default::default() });
+        Arc::new(AppState::new(config, path.to_path_buf()).0)
+    }
+
+    async fn groups_of(state: &AppState, issi: u32) -> Vec<u32> {
+        let inner = state.inner.read().await;
+        let mut v: Vec<u32> = inner.subscribers.get(&issi).map(|s| s.groups.iter().copied().collect()).unwrap_or_default();
+        v.sort_unstable();
+        v
+    }
+
+    /// Managed talkgroups: only an allowed group (`allowed`, pool or linked
+    /// talkgroup) may be affiliated and talked on, a name or access entry alone
+    /// is not enough; switched off, nothing changes. 10 stations, 25 radios.
+    #[tokio::test]
+    async fn managed_talkgroups_admit_only_listed_groups() {
+        let path = std::env::temp_dir().join(format!("brew-managed-{}.toml", uuid::Uuid::new_v4().simple()));
+        let open = managed_state(&path, false);
+        network(&open).await;
+        assert_eq!(affiliated(&open).await.len(), 25, "switch off: an unlisted group is open as before");
+
+        let state = managed_state(&path, true);
+        let mut st = network(&state).await;
+        assert!(affiliated(&state).await.is_empty(), "2321 has a name but is not allowed: no affiliation recorded");
+        assert_eq!(state.refused_groups.read().unwrap()[&GSSI].len(), 25, "the refused attempts are noted");
+        for n in 0..25u32 {
+            sub(&state, st[(n % 10) as usize].0, SUB_AFFILIATE, 5000 + n, &[9, 232, 91, 2326406, 4000]).await;
+        }
+        assert_eq!(groups_of(&state, 5007).await, vec![9, 91, 232, 2326406], "allowed and linked/pool groups pass; 4000 (access entry only) does not");
+        for n in 0..25u32 {
+            sub(&state, st[(n % 10) as usize].0, SUB_AFFILIATE, 5000 + n, &[4100, 4200]).await;
+        }
+        assert_eq!(groups_of(&state, 5003).await, vec![9, 91, 232, 4200, 2326406], "Only these counts as allowed, for its ISSIs");
+        assert!(!groups_of(&state, 5005).await.contains(&4200), "Only these still admits only its ISSIs");
+        assert!((5000..5025).all(|i| state.inner.try_read().map_or(true, |inn| !inn.subscribers.get(&i).is_some_and(|s| s.groups.contains(&4100)))), "a block list does not allow a group");
+        assert!(state.listed_groups().contains(&4200) && !state.listed_groups().contains(&4100));
+        talk(&state, st[0].0, 5000, 0).await;
+        assert!(st.iter_mut().all(|(_, rx)| drain(rx) == 0), "no group call on an unlisted group");
+        let id = talk(&state, st[0].0, 5000, EMERGENCY_PRIORITY).await;
+        assert!(state.inner.read().await.calls.contains_key(&id), "an emergency call passes");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Managed talkgroups and `[group_access]` together: the group must be
+    /// listed and the radio admitted; RX only still holds. 10 stations, 25 radios.
+    #[tokio::test]
+    async fn managed_and_group_access_both_apply() {
+        let path = std::env::temp_dir().join(format!("brew-managed3-{}.toml", uuid::Uuid::new_v4().simple()));
+        let mut config = crate::config::Config::default();
+        config.storage.enabled = false;
+        config.sms_center.enabled = false;
+        config.fallback_broadcast_when_no_affiliations = false;
+        config.talkgroups.managed = true;
+        config.talkgroups.allowed = vec![GSSI];
+        // 2321: only 5000-5002 admitted, 5001 listens only. 4000: not allowed.
+        config.group_access.insert(GSSI.to_string(), GroupAccessConfig { mode: GroupAccessMode::Allow, issis: vec![5000, 5001, 5002], rx_only: true, rx_only_issis: vec![5001] });
+        let state = Arc::new(AppState::new(config, path.clone()).0);
+        let mut st = network(&state).await;
+        assert_eq!(affiliated(&state).await, vec![5000, 5001, 5002], "allowed, admitted radios only");
+        for n in 0..25u32 { sub(&state, st[(n % 10) as usize].0, SUB_AFFILIATE, 5000 + n, &[4000]).await; }
+        assert!(!state.inner.read().await.subscribers.values().any(|s| s.groups.contains(&4000)), "unlisted: nobody");
+        talk(&state, st[1].0, 5001, 0).await;
+        assert!(st.iter_mut().all(|(_, rx)| drain(rx) == 0), "RX only still holds");
+        talk(&state, st[3].0, 5003, 0).await;
+        assert!(st.iter_mut().all(|(_, rx)| drain(rx) == 0), "not admitted");
+        talk(&state, st[0].0, 5000, 0).await;
+        let heard: Vec<usize> = st.iter_mut().map(|(_, rx)| drain(rx)).collect();
+        assert_eq!(heard, vec![0, 1, 1, 0, 0, 0, 0, 0, 0, 0], "the stations of the other admitted radios");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Switching managed talkgroups on drops affiliations to groups not
+    /// allowed; allowing a group (with a name for the Directory) lets radios
+    /// on it; stations with `group-access` get the allowed groups.
+    #[tokio::test]
+    async fn switching_managed_on_drops_unlisted_and_tells_stations() {
+        let path = std::env::temp_dir().join(format!("brew-managed2-{}.toml", uuid::Uuid::new_v4().simple()));
+        let state = managed_state(&path, false);
+        let st = network(&state).await;
+        let (a, mut a_rx) = bts(&state).await;
+        handle_packet(state.clone(), a, protocol::build_service(protocol::SERVICE_BTS_INFO,
+            r#"{"mcc":232,"mnc":5,"cells":[{"carrier":1528,"carrier_ext":264,"location_area":2}],"capabilities":["group-access"]}"#)).await;
+        for n in 0..25u32 { sub(&state, st[(n % 10) as usize].0, SUB_AFFILIATE, 5000 + n, &[9]).await; }
+        let lists = |rx: &mut mpsc::UnboundedReceiver<Vec<u8>>| -> Vec<serde_json::Value> {
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .filter(|p| p.len() > 2 && p[0] == protocol::CLASS_SERVICE && p[1] == protocol::SERVICE_GROUP_ACCESS)
+                .map(|p| serde_json::from_slice(&p[2..p.len() - 1]).unwrap())
+                .collect()
+        };
+        assert!(lists(&mut a_rx)[0].get("managed").is_none(), "switch off: the table as before");
+        let set = |req: serde_json::Value| crate::group_access::set_talkgroups(axum::extract::State(state.clone()), axum::Json(serde_json::from_value(req).unwrap()));
+        assert_eq!(set(serde_json::json!({"managed": true})).await.status(), axum::http::StatusCode::OK);
+        assert!(affiliated(&state).await.is_empty(), "2321 dropped");
+        assert_eq!(groups_of(&state, 5000).await, vec![9], "the allowed group stays");
+        let got = lists(&mut a_rx);
+        assert_eq!(got.last().unwrap()["managed"], true);
+        assert_eq!(got.last().unwrap()["listed"], serde_json::json!([9, 91, 232, 4200, 2326406]));
+
+        assert_eq!(set(serde_json::json!({"allow": "77x"})).await.status(), axum::http::StatusCode::BAD_REQUEST);
+        set(serde_json::json!({"allow": " 2322 ", "name": "District South"})).await;
+        assert_eq!(state.gssi_names.read().unwrap()["2322"], "District South", "the name goes to the Directory");
+        set(serde_json::json!({"allow": "2321"})).await;
+        assert_eq!(state.gssi_names.read().unwrap()[&GSSI.to_string()], "District", "no name: the old one stays");
+        assert_eq!(lists(&mut a_rx).last().unwrap()["listed"], serde_json::json!([9, 91, 232, 2321, 2322, 4200, 2326406]));
+        sub(&state, st[0].0, SUB_AFFILIATE, 5000, &[GSSI]).await;
+        assert_eq!(groups_of(&state, 5000).await, vec![9, GSSI]);
+
+        set(serde_json::json!({"disallow": 2322})).await;
+        set(serde_json::json!({"hide": 4000})).await;
+        let saved = crate::config::Config::load(path.to_str().unwrap()).unwrap();
+        assert!(saved.talkgroups.managed && saved.talkgroups.hidden == vec![4000]);
+        assert_eq!(saved.talkgroups.allowed, vec![9, 232, 2321]);
+        // Off: the list is kept, every group open again.
+        set(serde_json::json!({"managed": false})).await;
+        assert!(lists(&mut a_rx).last().unwrap().get("managed").is_none());
+        assert!(state.group_permits(4000, 5000));
         crate::CONFIG_WRITE_APPLIED_LIVE.store(false, std::sync::atomic::Ordering::SeqCst);
         let _ = std::fs::remove_file(&path);
     }

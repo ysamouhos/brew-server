@@ -112,6 +112,10 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/gssi-names/set", axum::routing::post(crate::issi_names::set_gssi))
         .route("/api/gssi-names/import", axum::routing::post(crate::issi_names::import_gssi))
         .route("/api/group-access/set", axum::routing::post(crate::group_access::set))
+        .route("/api/talkgroups/set", axum::routing::post(crate::group_access::set_talkgroups))
+        .route("/api/history/clear", axum::routing::post(history_clear))
+        .route("/api/callsign-db/set", axum::routing::post(crate::callsign_db::set))
+        .route("/api/callsign-db/update", axum::routing::post(crate::callsign_db::update_now))
         .route("/api/accounts/{username}", axum::routing::delete(crate::accounts::remove))
         .route("/api/ha/active", axum::routing::post(ha_make_active))
         .route("/api/ha/standby", axum::routing::post(ha_make_standby))
@@ -129,6 +133,9 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/issi-names", get(crate::issi_names::list))
         .route("/api/gssi-names", get(crate::issi_names::list_gssi))
         .route("/api/group-access", get(crate::group_access::list))
+        .route("/api/talkgroups", get(crate::group_access::talkgroups))
+        .route("/api/callsigns", get(crate::callsign_db::lookup))
+        .route("/api/callsign-db", get(crate::callsign_db::status))
         .route("/api/pools", get(crate::routing_api::pools_get))
         .route("/calls", get(calls_page))
         .route("/sds", get(sds_page))
@@ -388,7 +395,7 @@ static MAP_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| forma
 <style>#map{{height:70vh;border:1px solid #203047;border-radius:12px}}.map-note{{font-size:12px;color:#8fa2b8;margin-top:10px}}.leaflet-popup-content{{color:#0d1826}}.emg-pin{{animation:emgpulse 1.2s ease-in-out infinite}}@keyframes emgpulse{{0%,100%{{box-shadow:0 0 0 0 rgba(229,57,53,.8)}}50%{{box-shadow:0 0 0 14px rgba(229,57,53,0)}}}}.emg-pop{{color:#c62828;font-weight:700}}</style>
 </head><body><header><h1>MS MAP</h1><div class=hdr-status><span class=live></span><span id=status>Live</span><div class=hdr-user><span id=whoami></span><button id=login-btn onclick="doLogin()">Login</button><button id=logout-btn onclick="doLogout()">Logout</button></div><div class=ver>v{ver}</div></div></header><main class=wrap>
 <p><a class=backlink href="/">&larr; Back to dashboard</a></p>
-<section class=panel><h2>Mobile station positions</h2><div id=map></div>
+<section class=panel><h2>Radio positions</h2><div id=map></div>
 <div class=map-note id=note>Loading positions&hellip;</div>
 <div class=map-note>Positions come from decoded LIP (binary short &amp; long reports) and textual beacons over the Brew channel. Radios that beacon but can't be plotted (no GPS fix, or coordinates not relayed to this server) are listed below.</div>
 </section>
@@ -425,18 +432,24 @@ async function loadBts(){{
 async function load(){{
   try{{
     const fixes=(await(await fetch('/api/positions')).json()).filter(f=>f.lat!==0||f.lon!==0);
+    // Call sign / name from the ISSI directory ([issi_names]), shown as "2320972 (OE4SXM)".
+    const names=await fetch('/api/issi-names').then(r=>r.ok?r.json():{{}}).catch(()=>({{}}));
+    // Then the ham callsign database for ISSIs without a Directory name (Directory names come first).
+    const miss=fixes.map(f=>f.issi).filter(i=>!names[i]);
+    if(miss.length){{const cs=await fetch('/api/callsigns?issi='+miss.join(',')).then(r=>r.ok?r.json():{{}}).catch(()=>({{}}));for(const k in cs)if(!names[k])names[k]=cs[k];}}
+    const nm=i=>names[i]?' ('+String(names[i]).replace(/[<>&"]/g,'')+')':'';
     $('status').textContent='Live';
     const seen=new Set();
     fixes.forEach(f=>{{
       seen.add(f.issi);
       const when=new Date(f.at_ms).toLocaleString();
-      const html=`${{f.emergency?'<div class=emg-pop>&#128680; EMERGENCY</div>':''}}<b>ISSI ${{f.issi}}</b><br>${{f.lat.toFixed(5)}}, ${{f.lon.toFixed(5)}}<br>Station: ${{f.bts}}<br>${{when}}<br><span style="color:#555">${{(f.source_text||'').replace(/[<>&]/g,'')}}</span>`;
+      const html=`${{f.emergency?'<div class=emg-pop>&#128680; EMERGENCY</div>':''}}<b>ISSI ${{f.issi}}${{nm(f.issi)}}</b><br>${{f.lat.toFixed(5)}}, ${{f.lon.toFixed(5)}}<br>Station: ${{f.bts}}<br>${{when}}<br><span style="color:#555">${{(f.source_text||'').replace(/[<>&]/g,'')}}</span>`;
       const icon=f.emergency?msIconEmg:msIcon,z=f.emergency?10000:0;
       if(markers[f.issi]){{markers[f.issi].setLatLng([f.lat,f.lon]).setIcon(icon).setZIndexOffset(z).setPopupContent(html);}}
       else{{markers[f.issi]=L.marker([f.lat,f.lon],{{icon,zIndexOffset:z}}).addTo(map).bindPopup(html);}}
     }});
     Object.keys(markers).forEach(k=>{{if(!seen.has(Number(k))){{map.removeLayer(markers[k]);delete markers[k];}}}});
-    const emg=fixes.filter(f=>f.emergency).map(f=>f.issi);
+    const emg=fixes.filter(f=>f.emergency).map(f=>f.issi+nm(f.issi));
     $('note').textContent=(fixes.length?`${{fixes.length}} station(s) positioned.`:'No decodable position beacons received yet.')+(emg.length?' EMERGENCY: ISSI '+emg.join(', ')+'.':'');
     $('note').style.color=emg.length?'#ff6b6b':'';
     if(!fitted&&fixes.length){{fitted=true;map.fitBounds(fixes.map(f=>[f.lat,f.lon]),{{padding:[40,40],maxZoom:13}});}}
@@ -756,7 +769,27 @@ pub async fn sds_page() -> Html<&'static str> { Html(SDS_HTML.as_str()) }
 pub async fn telemetry_sds_page() -> Html<&'static str> { Html(TELEMETRY_SDS_HTML.as_str()) }
 pub async fn registrations_page() -> Html<&'static str> { Html(REGISTRATIONS_HTML.as_str()) }
 pub async fn connections_page() -> Html<&'static str> { Html(CONNECTIONS_HTML.as_str()) }
-pub async fn snapshot(State(state): State<Arc<AppState>>) -> Json<crate::monitor::Snapshot> { let i=state.inner.read().await; let counts=(i.basestation_count(),i.ms_registration_count(),i.group_clients.len()); drop(i); Json(state.monitor.snapshot(counts.0,counts.1,counts.2).await) }
+/// `?calls=N&sds=N`: how many recent calls / SDS to list (a number, or
+/// `all` for everything kept); 50 each without.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct SnapshotQuery { calls: Option<String>, sds: Option<String> }
+
+pub async fn snapshot(State(state): State<Arc<AppState>>, axum::extract::Query(q): axum::extract::Query<SnapshotQuery>) -> Json<crate::monitor::Snapshot> {
+    let n = |v: &Option<String>| match v.as_deref() { Some("all") => usize::MAX, Some(t) => t.parse().unwrap_or(50), None => 50 };
+    let i=state.inner.read().await; let counts=(i.basestation_count(),i.ms_registration_count(),i.group_clients.len()); drop(i);
+    Json(state.monitor.snapshot_n(counts.0,counts.1,counts.2,n(&q.calls),n(&q.sds)).await)
+}
+
+/// `POST /api/history/clear` (admins) `{"calls":bool,"sds":bool}`: drops
+/// every call / SDS from the history (the totals stay).
+#[derive(Debug, serde::Deserialize)]
+pub struct ClearHistory { #[serde(default)] calls: bool, #[serde(default)] sds: bool }
+
+pub async fn history_clear(State(state): State<Arc<AppState>>, Json(req): Json<ClearHistory>) -> Json<serde_json::Value> {
+    tracing::warn!(calls = req.calls, sds = req.sds, "history cleared from the dashboard");
+    let d = crate::monitor::prune_history(&state, req.calls, req.sds).await;
+    Json(serde_json::json!({ "calls": d.calls, "sds": d.sds }))
+}
 pub async fn live(State(state): State<Arc<AppState>>, ws: WebSocketUpgrade) -> impl IntoResponse { ws.on_upgrade(move |s| live_socket(state,s)) }
 async fn live_socket(state: Arc<AppState>, mut socket: WebSocket) { let mut rx=state.monitor.subscribe(); while let Ok(ev)=rx.recv().await { if socket.send(Message::Text(serde_json::to_string(&ev).unwrap().into())).await.is_err(){break;} } }
 
@@ -1952,6 +1985,7 @@ mod tests {
         let h = MAP_HTML.as_str();
         assert!(!h.contains("__STYLE__"), "style substituted");
         assert!(h.contains("/api/positions"), "map polls positions api");
+        assert!(h.contains("ISSI ${f.issi}${nm(f.issi)}") && h.contains("/api/issi-names"), "map shows the directory name next to the ISSI");
         assert!(h.contains("leaflet"), "leaflet loaded");
         assert!(h.contains("Back to dashboard"), "back link present");
         // OSM tile template must survive the format! escaping as literal braces
