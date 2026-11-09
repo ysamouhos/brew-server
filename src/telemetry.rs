@@ -640,6 +640,19 @@ impl TelemetryState {
         }
     }
 
+    /// Drops telemetry SDS log entries older than `keep_days` (0 = none), or
+    /// all of them with `clear` (dashboard: Clear all SDS).
+    pub fn prune_sds_history(&mut self, keep_days: u32, clear: bool) {
+        if clear {
+            self.recent_sds.clear();
+        } else if keep_days > 0 {
+            let cut = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+                - keep_days as u64 * 86_400_000;
+            self.recent_sds.retain(|r| r.at_ms >= cut);
+        }
+        self.recent_sds_out = self.recent_sds.iter().cloned().collect();
+    }
+
     /// Adds an SDS telemetry record replicated from the HA peer (already in
     /// the store) to the dashboard's recent list.
     pub fn ingest_replicated(&mut self, rec: SdsTelemetryRecord) {

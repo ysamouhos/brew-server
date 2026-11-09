@@ -1,6 +1,6 @@
 # Routing: DGNA and talkgroup pools
 
-The **Routing** page of the dashboard (new UI, sidebar **Network -> Routing**)
+The **Routing** page of the dashboard (new UI, sidebar **Infrastructure -> Routing**)
 does two things:
 
 - assign a group to several radios at once with DGNA, and
@@ -93,7 +93,7 @@ new one under `/ui`.
 
 Two more pages of the new dashboard, both for admins:
 
-- **Network -> Accounts:** the logins Basestations and terminals connect with.
+- **Infrastructure -> Accounts:** the logins Basestations and terminals connect with.
   One login can be on Brew (the station's or terminal's number, 1 to 7
   digits), telemetry and control at once. Changes apply to the next
   connection without a restart and are written to the config file;
@@ -149,6 +149,34 @@ Two more pages of the new dashboard, both for admins:
   rx_only = true            # optional
   rx_only_issis = [2321100] # optional, empty = everyone listens only
   ```
-- **System -> Configuration:** the whole config file. Save checks it and
+
+  Unnamed groups radios are on can be hidden from the Directory with ✕
+  (display only, filter "Hidden", `[talkgroups] hidden`).
+- **Managed talkgroups** (Routing page, a card that folds to a thin bar:
+  folded while off, open while on, foldable either way): a closed set of
+  groups. Switched on, radios may only use allowed groups: the ones in the
+  card's list, every group of a talkgroup pool or linked talkgroup, and
+  every group with the access *Only these* (only its ISSIs may use it
+  anyway); these are listed as *automatic*. Each row shows the access
+  badges of the group (*Only N ISSIs*, *N blocked*, *RX only*), and *Edit*
+  (group with rules) or *Rules* (open group) opens the same dialog as on the
+  Directory page. The server records no affiliation to any other
+  group and drops its group calls (emergency calls pass); radios already on
+  such a group are dropped from it, and a FlowStation with `group-access`
+  refuses the attachment on the air. Switched off, every group is open and
+  the list is kept, so it can be prepared first. A group is allowed by GSSI
+  with an optional name (written to the Directory), or with *+ Allow* from
+  *Saved TGs on server*: the groups the server knows (a Directory name or
+  access entry, in use now, or refused since the start) that are not allowed
+  yet. A Directory name, a block list or RX only alone does not allow a
+  group.
+
+  ```toml
+  [talkgroups]
+  managed = true
+  allowed = [9, 232, 2321]
+  hidden = [4000]   # hidden from the Directory page
+  ```
+- **System -> Config file:** the whole config file. Save checks it and
   applies it with a restart (running calls drop, stations reconnect, you sign
   in again).

@@ -37,8 +37,14 @@ connect talkgroups inside the server without a restart
 Basestations and terminals (Brew, telemetry, control) without a restart, with
 an info text and position per login, the **Directory** keeps names for ISSIs
 and groups (`[issi_names]`, `[gssi_names]`) and who may use a group (allow or
-block list and RX only, `[group_access]`), and **Configuration** edits the whole config
-file. Sign in with the Log in button top right; HTTP Basic auth keeps working
+block list and RX only, `[group_access]`), and **Config file** edits the whole config
+file. **Managed talkgroups** on the Routing page close the set of groups that
+may be used (`[talkgroups]`). The optional **ham callsign database** names
+radios without a Directory name from radioid.net `dmrid.dat`, fetched on
+demand or daily (`[callsign_db]`; Directory names always come first). The
+call and SDS history keeps 7 days and at most 2000 entries each by default
+(`[storage] keep_days`, `max_calls`, `max_sds`), admins can clear it, and the
+totals keep counting. Sign in with the Log in button top right; HTTP Basic auth keeps working
 too. To keep the classic dashboard at `/`:
 
 ```toml

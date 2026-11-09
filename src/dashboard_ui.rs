@@ -20,7 +20,7 @@ pub async fn page() -> Html<&'static str> {
 
 // The classic pages' embedded form lives in `dashboard::STYLE` (`html.embed`).
 const PAGE_HTML: &str = r##"<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>__SERVERNAME__</title>
 <style>
@@ -149,7 +149,17 @@ a.tile{color:inherit;cursor:pointer}
 .note svg{color:var(--accent2);width:16px;height:16px;margin-top:1px}
 .empty{padding:16px 18px;color:var(--text3);font-size:13px}
 .grid2{display:grid;grid-template-columns:1.35fr 1fr;gap:18px}
+.grid2.ov{grid-template-columns:repeat(2,minmax(0,1fr))}
+.tgh{cursor:pointer;user-select:none}.tgh .chev{display:inline-block;width:14px;color:var(--text3);transition:transform .15s}.tgh[aria-expanded=true] .chev{transform:rotate(90deg)}
+.card.shut .ch.tgh{border-bottom:0}
+.tgadd{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:12px 18px;border-bottom:1px solid var(--sep)}
+.tgsaved{border-top:1px solid var(--sep)}.tgsaved>summary{padding:12px 18px;cursor:pointer;font-weight:650;font-size:14px;list-style-position:inside}
+.tgt{table-layout:fixed}.tgt col.g{width:15%}.tgt col.n{width:37%}.tgt col.w{width:26%}.tgt col.a{width:22%}
+.tgt td.tga{text-align:right;white-space:nowrap}.tgc{margin-top:3px;display:flex;flex-wrap:wrap;gap:4px}
+@media (max-width:760px){.tgt col.g{width:24%}.tgt col.n{width:40%}.tgt col.a{width:36%}.tgt td.tga{white-space:normal}.tgt td.tga .btn{padding:0 9px}}
+@media (prefers-reduced-motion:reduce){.tgh .chev{transition:none}}
 .tw{overflow-x:auto}
+.empty .tot{margin-top:6px;font-size:12.5px}.empty .tot b{font:600 15px var(--mono,ui-monospace,monospace);color:var(--text2)}
 table{width:100%;border-collapse:collapse}
 th{text-align:left;font:600 11px var(--sans);letter-spacing:.04em;text-transform:uppercase;color:var(--text3);padding:9px 18px;background:color-mix(in srgb,var(--text) 2.5%,transparent);white-space:nowrap}
 td{padding:10px 18px;border-top:1px solid var(--sep);font-size:13.5px;vertical-align:middle}
@@ -300,18 +310,38 @@ td .sub{display:block;font-size:12px;color:var(--text3);font-weight:400;margin-t
 
 /* Phone */
 .tabbar{display:none}
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+body{touch-action:manipulation}
 @media (max-width:760px){
+  /* Phones: the page itself scrolls (one scroller). A scrolling <main> inside a fixed-height body gave iOS two
+     nested scrollers: the header moved away and parts of the page stayed blank while scrolling. */
+  html{overscroll-behavior-y:none}
+  html,body{height:auto;min-height:100%}
+  body{display:block}
+  main{display:block;height:auto;min-height:100vh;min-height:100dvh;overflow:visible}
+  .top{position:sticky;top:0;z-index:25;padding-top:calc(12px + env(safe-area-inset-top));background:var(--bg);-webkit-backdrop-filter:none;backdrop-filter:none}
+  .menu{position:fixed;top:calc(60px + env(safe-area-inset-top))}
+  body.sbopen{overflow:hidden}
+  #sb{padding-top:env(safe-area-inset-top)}
+  /* iOS zooms into a field with text under 16px when it gets focus, and stays zoomed. */
+  input.f,select.f,textarea.f,textarea.cfg,.sheet input,.sheet textarea,.sheet select{font-size:16px}
   #rochip{display:none}
   #sb{position:fixed;left:0;top:0;transform:translateX(-100%);transition:transform .2s;box-shadow:var(--shadow);z-index:35;padding-bottom:env(safe-area-inset-bottom)}
   body.sbopen #sb{transform:none}
-  .top{padding:12px 16px}
-  .top h1{font-size:24px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .top{padding-left:16px;padding-right:16px;padding-bottom:12px}
+  .top h1{font-size:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .top{gap:8px}
+  #acct-name,#acctbtn>svg{display:none}
   .hide-s{display:none!important}
   .content{padding:14px 16px 100px;gap:14px}
   .tiles{grid-template-columns:1fr 1fr;gap:10px}
-  .grid2{grid-template-columns:1fr}
+  .grid2,.grid2.ov{grid-template-columns:1fr}
   th,td{padding-left:12px;padding-right:12px}
   .search input{width:100%}
+  .bar>.search{flex:1 1 100%}
+  /* Small round buttons keep their look and get a 42px touch area. */
+  .help{position:relative}
+  .help::after{content:"";position:absolute;inset:-10px}
   .tabbar{display:flex;position:fixed;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom) - 13px);height:62px;border-radius:31px;z-index:30;
     background:color-mix(in srgb,var(--bg2) 76%,transparent);-webkit-backdrop-filter:blur(20px) saturate(1.6);backdrop-filter:blur(20px) saturate(1.6);border:1px solid var(--border);box-shadow:var(--shadow);justify-content:space-around;align-items:center}
   .tab{display:flex;flex-direction:column;align-items:center;gap:2px;font-size:10.5px;color:var(--text3);font-weight:600;min-width:56px;min-height:44px;justify-content:center;border:0;background:none;cursor:pointer}
@@ -436,11 +466,11 @@ const ic=(n,cls)=>`<svg class="i${cls?' '+cls:''}" viewBox="0 0 24 24" aria-hidd
 const PAGES=[
  ['overview','Overview','home','Monitor'],['calls','Calls','call','Monitor'],['sds','SDS','sds','Monitor'],
  ['radios','Radios','radios','Monitor'],['issis','Directory','book','Monitor'],['map','Map','map','Monitor','/map'],
- ['stations','Stations & Cells','bts','Network'],['routing','Routing','routing','Network'],['roaming','Roaming','roam','Network'],['multinet','Multi Network','globe','Network',null,true],
- ['telemetry','Telemetry','tele','Network'],['control','Control','ctl','Network',null,true],['accounts','Accounts','key','Network',null,true],
+ ['stations','Stations & Cells','bts','Infrastructure'],['routing','Routing','routing','Infrastructure'],['roaming','Roaming','roam','Infrastructure'],['multinet','Multi Network','globe','Infrastructure',null,true],
+ ['telemetry','Telemetry','tele','Infrastructure'],['control','Control','ctl','Infrastructure',null,true],['accounts','Accounts','key','Infrastructure',null,true],
  ['sip','SIP / VoIP','sip','Integrations','/sip'],['sipcfg','SIP Config','sipcfg','Integrations','/sip-config'],
  ['sms','SMS Center','sms','Integrations','/sms-center'],['tsds','Telemetry SDS','tsds','Integrations','/telemetry-sds'],
- ['ha','High Availability','ha','System','/ha'],['config','Configuration','file','System',null,true],['settings','Settings','set','System','/settings',true]
+ ['ha','High Availability','ha','System','/ha'],['config','Config file','file','System',null,true],['settings','Server settings','set','System','/settings',true]
 ];
 const PG=Object.fromEntries(PAGES.map(p=>[p[0],p]));
 const $=id=>document.getElementById(id);
@@ -502,7 +532,7 @@ function setTheme(t){
 }
 document.addEventListener('click',e=>{if(!e.target.closest('#menu'))closeMenu();});
 
-const D={status:null,conn:null,tele:[],pools:[],nets:null,radios:[],who:{admin:false},names:{},issi:{},gssi:{},access:{},ctl:[],emg:[],ha:null,regs:[]};
+const D={status:null,conn:null,tele:[],pools:[],nets:null,radios:[],who:{admin:false},names:{},issi:{},gssi:{},access:{},tg:{managed:false,hidden:[],listed:[]},ctl:[],emg:[],ha:null,regs:[]};
 const UI={page:'overview',open:{},filter:{},sel:new Set(),help:{},msg:{}};
 // Messages survive the periodic re-render (kept in UI.msg, drawn by msgDiv).
 function setMsg(id,cls,text){UI.msg[id]=[cls,text];const e=$(id);if(e){e.className='msg '+cls;e.textContent=text;}}
@@ -538,7 +568,11 @@ function show(p){
   if(emb&&PG[p][5]&&!D.who.admin){$('content').innerHTML=`<div class="card"><div class="empty">${esc(PG[p][1])} is for admins. <button class="btn pri" onclick="openLogin(false)">Log in</button></div></div>`;return;}
   if(emb){const fixed=emb==='/map';$('content').innerHTML=`<iframe class="embed${fixed?' fixed':''}" title="${esc(PG[p][1])}" src="${emb}?embed=1${document.documentElement.dataset.theme?'&theme='+document.documentElement.dataset.theme:''}"></iframe>`;if(!fixed)fitFrame();}
   else render(true);
-  $('content').parentElement.scrollTop=0;
+  $('content').parentElement.scrollTop=0;window.scrollTo(0,0);
+  if(p==='calls'||p==='sds')refreshFast();
+  // Lists only this page shows: ask for them now, not at the next slow refresh (up to 5 s of "Loading…").
+  if(p==='radios')getJ('/api/registrations').then(v=>{D.regs=v;if(UI.page===p)render();}).catch(()=>{});
+  if(p==='accounts'&&D.who.admin)getJ('/api/accounts').then(v=>{D.acc=v;if(UI.page===p)render();}).catch(()=>{});
 }
 function fitFrame(){const f=document.querySelector('iframe.embed');if(!f)return;f.onload=()=>{try{const d=f.contentDocument;const fit=()=>{f.style.height=Math.max(window.innerHeight-130,d.documentElement.scrollHeight+20)+'px';};fit();new ResizeObserver(fit).observe(d.body);}catch(e){}};}
 function helpBtn(key){return `<button class="help" aria-expanded="${!!UI.help[key]}" aria-controls="h-${key}" onclick="UI.help['${key}']=!UI.help['${key}'];render(true)" title="What is this?">?<span class="sr">Explain</span></button>`;}
@@ -548,7 +582,7 @@ function helpNote(key,text){return `<div class="note" id="h-${key}" ${UI.help[ke
 async function refreshFast(){
   if(document.body.classList.contains('locked'))return;
   try{
-    const [st,pools,emg]=await Promise.all([getJ('/api/status'),getJ('/api/pools'),getJ('/api/emergencies')]);
+    const [st,pools,emg]=await Promise.all([getJ(statusUrl()),getJ('/api/pools'),getJ('/api/emergencies')]);
     D.status=st;D.pools=pools;D.emg=emg;ok=true;
   }catch(e){ok=false;}
   $('live').className='pill'+(ok?'':' d');$('live').lastChild.textContent=ok?'Live':'Offline';
@@ -570,9 +604,49 @@ async function refreshSlow(){
   tasks.push(getJ('/api/issi-names').then(v=>D.issi=v).catch(()=>{}));
   tasks.push(getJ('/api/gssi-names').then(v=>D.gssi=v).catch(()=>{}));
   tasks.push(getJ('/api/group-access').then(v=>D.access=v).catch(()=>{}));
+  tasks.push(getJ('/api/talkgroups').then(v=>D.tg=v).catch(()=>{}));
+  tasks.push(getJ('/api/callsign-db').then(v=>{if(D.csdb&&(D.csdb.updated_ms!==v.updated_ms||D.csdb.enabled!==v.enabled)){D.cs={};CS_ASKED.clear();}D.csdb=v;}).catch(()=>{}));
   if(D.who.admin)tasks.push(getJ('/api/control').then(v=>D.ctl=v).catch(()=>{}));
   await Promise.allSettled(tasks);
+  await csLookup();
   chrome();render();
+}
+// Ham callsign database: ask the server for the ISSIs on screen that have no Directory name (once each).
+const CS_ASKED=new Set();
+async function csLookup(){
+  if(!(D.csdb&&D.csdb.enabled&&D.csdb.entries))return;
+  const want=new Set(),add=i=>{if(i>0&&i<=16777215)want.add(String(i));};
+  const st=D.status||{};
+  for(const c of [...(st.active_calls||[]),...(st.recent_calls||[])]){add(c.source);if(c.kind!=='group')add(c.destination);}
+  for(const x of (st.recent_sds||[])){add(x.source);add(x.destination);}
+  for(const m of ((D.conn&&D.conn.mobile_stations)||[]))add(m.issi);
+  for(const r of ((D.conn&&D.conn.roaming_log)||[]))add(r.issi);
+  for(const r of (D.regs||[]))add(r.issi);
+  const ask=[...want].filter(i=>!(D.issi||{})[i]&&!CS_ASKED.has(i)).slice(0,500);
+  if(!ask.length)return;
+  try{const m=await getJ('/api/callsigns?issi='+ask.join(','));ask.forEach(i=>CS_ASKED.add(i));D.cs=Object.assign(D.cs||{},m);}catch(e){}
+}
+function csCard(adm){
+  const c=D.csdb;if(!c)return '';
+  const open=!!UI.csOpen,when=c.updated_ms?new Date(c.updated_ms).toLocaleString():'never';
+  const state=c.running?'updating…':c.enabled?`${c.entries.toLocaleString()} call signs · updated ${esc(when)}`:'';
+  return `<div class="card${open?'':' shut'}"><div class="ch tgh" role="button" tabindex="0" aria-expanded="${open}" onclick="UI.csOpen=!${open};render(true)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}">
+    <span class="chev" aria-hidden="true">▸</span><h2>Ham callsign database</h2>${c.enabled?'<span class="chip a">on</span>':'<span class="chip i">off</span>'}${state?`<span class="cnt hide-s">${state}</span>`:''}<span onclick="event.stopPropagation()">${helpBtn('csdb')}</span><span class="sp"></span>
+    <label style="display:flex;gap:10px;align-items:center" onclick="event.stopPropagation()"><button class="tog" role="switch" aria-checked="${!!c.enabled}" aria-label="Ham callsign database" ${adm?'':'disabled'} onclick="csSet({enabled:this.getAttribute('aria-checked')!=='true'})"></button></label></div>
+   ${helpNote('csdb','Names radios without a Directory name by their call sign from a list of <code>ID;CALLSIGN</code> lines (default: radioid.net <code>dmrid.dat</code>, the DMR IDs that amateur TETRA networks use as ISSIs). <b>Directory names always come first.</b> <i>Now</i> fetches the list, <i>Automatic</i> every day at 00:00 UTC. A new list replaces the old one (one file, <code>[callsign_db] cache</code>); nothing else is stored or collected. Config <code>[callsign_db]</code>, no restart.')}
+   ${open?`<div class="tgadd"><input class="f" id="cs-url" value="${esc(c.url)}" placeholder="${esc(c.default_url)}" style="flex:1;min-width:200px" ${adm?'':'disabled'} onkeydown="if(event.key==='Enter')csSet({url:this.value})" onchange="csSet({url:this.value})">
+     <button class="btn" ${adm&&c.enabled&&!c.running?'':'disabled'} onclick="csNow()">${c.running?'Updating…':'Now'}</button>
+     <label style="display:flex;gap:10px;align-items:center;font-size:13px;font-weight:600"><button class="tog" role="switch" aria-checked="${!!c.auto}" ${adm?'':'disabled'} onclick="csSet({auto:this.getAttribute('aria-checked')!=='true'})"></button>Automatic <span class="mut" style="font-weight:400">(daily 00:00 UTC)</span></label></div>
+   <div class="msg ${c.error?'err':'mut'}" style="padding:10px 18px">${c.error?'Last update failed: '+esc(c.error):state}</div>${msgDiv('cs-msg','padding:0 18px 10px')}`:''}</div>`;
+}
+async function csSet(req){
+  try{D.csdb=await postJ('/api/callsign-db/set',req);D.cs={};CS_ASKED.clear();if(req.enabled)UI.csOpen=true;setMsg('cs-msg','ok',req.enabled===false?'Switched off.':'Saved.');}catch(e){setMsg('cs-msg','err',e.message);}
+  render(true);if(D.csdb&&D.csdb.running)setTimeout(refreshSlow,4000);
+}
+async function csNow(){
+  D.csdb={...D.csdb,running:true};render(true);
+  try{D.csdb=await postJ('/api/callsign-db/update',{});D.cs={};CS_ASKED.clear();await csLookup();setMsg('cs-msg','ok',`${D.csdb.entries.toLocaleString()} call signs loaded.`);}catch(e){setMsg('cs-msg','err',e.message);D.csdb={...D.csdb,running:false};}
+  render(true);
 }
 function chrome(){
   const c=D.conn,st=D.status;
@@ -632,10 +706,38 @@ function mergePoolLegs(list){
   return out;
 }
 
+/* ---------- history (Calls / SDS pages) ---------- */
+// How many entries the Calls / SDS pages list (UI.show.calls / .sds): 25, 50, 100, 500 or 'all' (everything kept).
+const SHOW_N=[25,50,100,500,'all'];
+const showN=k=>{const v=(UI.show||{})[k];return SHOW_N.includes(v)?v:50;};
+function statusUrl(){
+  // Pool calls have one entry per group: ask for more so the merged list still fills the page.
+  if(UI.page==='calls'){const n=showN('calls');return '/api/status?calls='+(n==='all'?'all':n*4);}
+  if(UI.page==='sds')return '/api/status?sds='+showN('sds');
+  return '/api/status';}
+function showSel(k){const st=D.status||{},days=st.keep_days;
+  return `<label class="mut" style="font-size:12.5px;display:flex;gap:6px;align-items:center">Show <select class="f" aria-label="How many to show" onchange="UI.show=UI.show||{};UI.show['${k}']=this.value==='all'?'all':+this.value;refreshFast();render(true)">${SHOW_N.map(n=>`<option value="${n}" ${showN(k)===n?'selected':''}>${n==='all'?'All'+(days?` (${days} days)`:''):n}</option>`).join('')}</select></label>`;}
+async function clearHistory(k){
+  const what=k==='calls'?'every call':'every SDS (with delivery reports and the telemetry SDS log)';
+  if(!confirm(`Delete ${what} from the history? The totals stay. This cannot be undone.`))return;
+  try{await postJ('/api/history/clear',k==='calls'?{calls:true}:{sds:true});setMsg(k+'-msg','ok',k==='calls'?'Calls deleted.':'SDS deleted.');await refreshFast();}catch(e){setMsg(k+'-msg','err',e.message);}
+  render(true);}
+const keptNote=(st,k)=>{const d=st.keep_days;return `${k==='calls'?st.kept_calls:st.kept_sds} kept${d?` · up to ${d} days`:''}`;};
+
 /* ---------- render ---------- */
 let lastSig='';
+// Phones (iOS Safari): replacing the page while it scrolls leaves blank areas. Live updates wait until the
+// finger is off and the scroll has come to rest; a forced render (a click) still happens at once.
+let scrollBusy=0,touchOn=false,renderLater=false;
+function scrollRest(){clearTimeout(scrollBusy);scrollBusy=setTimeout(()=>{scrollBusy=0;if(!touchOn&&renderLater){renderLater=false;render();}},500);}
+(()=>{const m=document.querySelector('main');if(!m)return;
+  // Desktop scrolls <main>, phones the page itself.
+  m.addEventListener('scroll',scrollRest,{passive:true});window.addEventListener('scroll',scrollRest,{passive:true});
+  m.addEventListener('touchstart',()=>{touchOn=true;clearTimeout(scrollBusy);scrollBusy=1;},{passive:true});
+  const up=()=>{touchOn=false;scrollRest();};m.addEventListener('touchend',up,{passive:true});m.addEventListener('touchcancel',up,{passive:true});})();
 function render(force){
   const p=UI.page;if(PG[p][4])return;
+  if(!force&&(scrollBusy||touchOn)){renderLater=true;return;}
   // Keep focus and typing alive: pages with inputs only re-render when forced or nothing is focused inside.
   const a=document.activeElement;
   if(!force&&a&&$('content').contains(a)&&(a.tagName==='INPUT'||a.tagName==='SELECT'||a.tagName==='TEXTAREA'))return;
@@ -651,15 +753,16 @@ function netChips(x){
   return from.concat(to).join(' ');
 }
 const hasNet=list=>list.some(x=>x.from_network||(x.to_networks||[]).length);
-const callRow=(c,now)=>{
+const callRow=(c,now,short)=>{
+  const who=short?issiShort:issiTxt;
   const pool=poolOf(c);
   const grp=c.kind==='group';
   const em=c.priority>=15;
   const legs=pool?pool.live.legs.map(g=>tgChip(g)).join(' '):'';
   const wait=pool&&pool.live.waiting.length?` <span class="mut">waiting: ${pool.live.waiting.join(', ')}</span>`:'';
   return `<div class="row"><div class="ric${em?' e':grp?'':' p'}">${ic(grp?'radios':'call')}</div><div class="rm">
-   <div class="rt">${grp?'TG '+tgTxt(c.destination):issiTxt(c.source)+' → '+issiTxt(c.destination)} <span class="chip ${em?'d':grp?'a':'b'}">${em?'Emergency':grp?'Group':'Individual'}</span>${pool?`<span class="chip">${ic('routing')} ${esc(pool.name)}</span>`:''}${netChips(c)?' '+netChips(c):''}</div>
-   <div class="rs">${grp?`<span class="talk"><span class="bars"><b></b><b></b><b></b><b></b></span>${issiTxt(c.source)} talking</span>`:''}${pool?`<span class="mut">also on</span> ${legs}${wait}`:''}</div></div>
+   <div class="rt">${grp?(short&&gName(c.destination)?tgShort(c.destination):'TG '+tgTxt(c.destination)):who(c.source)+' → '+who(c.destination)} <span class="chip ${em?'d':grp?'a':'b'}">${em?'Emergency':grp?'Group':'Individual'}</span>${pool?`<span class="chip">${ic('routing')} ${esc(pool.name)}</span>`:''}${netChips(c)?' '+netChips(c):''}</div>
+   <div class="rs">${grp?`<span class="talk"><span class="bars"><b></b><b></b><b></b><b></b></span>${who(c.source)} talking</span>`:''}${pool?`<span class="mut">also on</span> ${legs}${wait}`:''}</div></div>
    <div class="rr"><b>${dur(now-c.started_at_ms)}</b><br>${c.voice_frames} frames · prio ${c.priority}</div></div>`;
 };
 function stationsList(){
@@ -685,6 +788,8 @@ R.overview=()=>{
   const radios=c?c.mobile_stations.length:0;
   const grpCalls=calls.filter(x=>x.kind==='group').length;
   const sdsToday=st.recent_sds.filter(s=>isToday(s.at_ms)).length;
+  const recent=mergePoolLegs(st.recent_calls).slice(0,5);
+  const ms=c?[...c.mobile_stations].sort((a,b)=>a.issi-b.issi):[];
   return `<div class="tiles">
    <a class="tile" data-go="stations"><div class="k">${ic('bts')}Stations</div><div class="v">${on}</div><div class="s">${cells} cell${cells===1?'':'s'}${off?' · '+off+' offline':''}</div></a>
    <a class="tile" data-go="radios"><div class="k">${ic('radios')}Radios</div><div class="v">${radios}</div><div class="s">registered now</div></a>
@@ -693,19 +798,25 @@ R.overview=()=>{
    <a class="tile" data-go="roaming"><div class="k">${ic('roam')}Cell changes</div><div class="v">${roamToday.length}</div><div class="s">today · ${roamToday.filter(r=>r.kind==='handover'||String(r.reselection||'').startsWith('announced')).length} announced</div></a>
    <a class="tile" data-go="sds"><div class="k">${ic('sds')}SDS</div><div class="v">${sdsToday}</div><div class="s">today · ${st.total_sds} total</div></a>
   </div>
-  <div class="grid2">
+  <div class="grid2 ov">
    <div class="card"><div class="ch"><h2>Live calls</h2><span class="cnt">${calls.length}</span><span class="sp"></span><a data-go="calls" href="#calls">All calls ›</a></div>
-    ${calls.length?calls.map(x=>callRow(x,now)).join(''):'<div class="empty">No active calls</div>'}</div>
+    ${calls.length?calls.map(x=>callRow(x,now,true)).join(''):`<div class="empty">No active calls<div class="tot"><b>${st.total_calls}</b> calls in total</div></div>`}</div>
+   <div class="card"><div class="ch"><h2>Recent calls</h2><span class="sp"></span><a data-go="calls" href="#calls">All calls ›</a></div>
+    ${recent.length?recent.map(x=>`<div class="ev"><time>${tm(x.started_at_ms)}</time><b class="m">${issiShort(x.source)}</b><span class="arrow">→</span>${x.pool?`<span class="chip" title="Pool: one call heard on ${x.legs.length} groups">${ic('routing')} ${esc(x.pool)}</span>`:x.kind==='group'?`<span class="tg">${tgShort(x.destination)}</span>`:`<b class="m">${issiShort(x.destination)}</b>`}${netChips(x)?' '+netChips(x):''}<span class="ml m mut">${x.ended_at_ms?dur(x.ended_at_ms-x.started_at_ms):'—'}</span></div>`).join(''):'<div class="empty">No calls yet</div>'}</div>
+  </div>
+  <div class="grid2 ov">
    <div class="card"><div class="ch"><h2>Stations</h2><span class="cnt">${stations.length}</span>${helpBtn('ovst')}<span class="sp"></span><a data-go="stations" href="#stations">Cells ›</a></div>
     ${helpNote('ovst',CELL_ID_HELP+' Cells are counted only for stations with the <code>bts-info</code> extension; a station without it is counted as a station, its cells are unknown. Apps and other terminals are not stations and have no cells.')}
-    ${stations.length?stations.map(s=>`<div class="row"><div class="ric s">${ic('bts')}</div><div class="rm"><div class="rt">${esc(s.name)}</div><div class="rs">${s.cells.length?s.cells.length+' cell'+(s.cells.length===1?'':'s')+' · '+s.cells.map(x=>esc(x.name)+' ('+x.carrier+')').join(', '):'cells unknown (no <code>bts-info</code>)'}${s.tele&&s.tele.version?' · FlowStation '+esc(s.tele.version):''}</div></div>
+    ${stations.length?stations.map(s=>`<div class="row"><div class="ric s">${ic('bts')}</div><div class="rm"><div class="rt">${esc(s.name)}${infoOf(s.name)?` <span class="mut" style="font-weight:500">(${esc(infoOf(s.name))})</span>`:''}</div><div class="rs">${s.cells.length?s.cells.length+' cell'+(s.cells.length===1?'':'s')+' · '+s.cells.map(x=>esc(x.name)+' ('+x.carrier+')').join(', '):'cells unknown (no <code>bts-info</code>)'}${s.tele&&s.tele.version?' · FlowStation '+esc(s.tele.version):''}</div></div>
       <div class="rr">${s.online?'<span class="st"><i></i>Online</span>':'<span class="st i"><i></i>Offline</span>'}<br>${s.online?s.regs+' radio'+(s.regs===1?'':'s'):(s.gone?'gone '+ago(s.gone):'')}</div></div>`).join(''):'<div class="empty">No stations connected</div>'}</div>
+   <div class="card"><div class="ch"><h2>Radios</h2><span class="cnt">${ms.length}</span><span class="sp"></span><a data-go="radios" href="#radios">All radios ›</a></div>
+    ${ms.length?ms.slice(0,6).map(m=>`<div class="ev"><b class="m">${issiTxt(m.issi)}</b>${m.cell&&m.cell.name?`<span class="chip">${esc(m.cell.name)}</span>`:m.basestation_name?`<span class="chip">${esc(m.basestation_name)}</span>`:''}<span class="ml mut">${(m.groups||[]).length?(m.groups||[]).length+' group'+((m.groups||[]).length===1?'':'s'):''}</span></div>`).join('')+(ms.length>6?`<div class="ev"><a data-go="radios" href="#radios" class="mut">+ ${ms.length-6} more</a></div>`:''):'<div class="empty">No radios registered</div>'}</div>
   </div>
-  <div class="grid2">
+  <div class="grid2 ov">
    <div class="card"><div class="ch"><h2>Recent cell changes</h2><span class="sp"></span><a data-go="roaming" href="#roaming">Roaming log ›</a></div>
     ${roam.length?roam.slice(0,5).map(r=>`<div class="ev"><time>${tm(r.at_ms)}</time><b class="m">${issiTxt(r.issi)}</b>${place(r.from)}<span class="arrow">→</span>${place(r.to)}<span class="ml">${howOf(r)}</span></div>`).join(''):'<div class="empty">No cell changes yet</div>'}</div>
    <div class="card"><div class="ch"><h2>Recent SDS</h2><span class="sp"></span><a data-go="sds" href="#sds">All SDS ›</a></div>
-    ${st.recent_sds.length?st.recent_sds.slice(0,5).map(s=>`<div class="ev"><time>${tm(s.at_ms)}</time><b class="m">${issiTxt(s.source)}</b><span class="arrow">→</span><b class="m">${issiTxt(s.destination)}</b>${netChips(s)?' '+netChips(s):''}<span class="ml mut">${s.reports?s.reports+' report'+(s.reports===1?'':'s'):''}</span></div>`).join(''):'<div class="empty">No SDS yet</div>'}</div>
+    ${st.recent_sds.length?st.recent_sds.slice(0,5).map(s=>`<div class="ev"><time>${tm(s.at_ms)}</time><b class="m">${issiShort(s.source)}</b><span class="arrow">→</span><b class="m">${issiShort(s.destination)}</b>${netChips(s)?' '+netChips(s):''}<span class="ml mut">${s.reports?s.reports+' report'+(s.reports===1?'':'s'):''}</span></div>`).join(''):'<div class="empty">No SDS yet</div>'}</div>
   </div>`;
 };
 const RESEL={undeclared:['i','undeclared'],unannounced:['w','unannounced'],announced_type_1:['a','announced · type 1'],announced_type_2:['a','announced · type 2'],announced_type_3:['a','announced · type 3']};
@@ -726,17 +837,19 @@ R.calls=()=>{
   const rec=mergePoolLegs(st.recent_calls).filter(c=>(k==='all'||c.kind===k)&&match(q,c.source,c.destination,c.pool,(c.legs||[]).map(tgTxt).join(' '),c.from_network,(c.to_networks||[]).join(' '),nameOf(c.source),c.kind==='group'?gName(c.destination):nameOf(c.destination),c.kind==='group'&&c.destination>16777215?tgTxt(c.destination):''));
   const nc=hasNet(rec);
   return `<div class="card"><div class="ch"><h2>Live calls</h2><span class="cnt">${act.length}</span></div>${act.length?act.map(x=>callRow(x,now)).join(''):'<div class="empty">No active calls</div>'}</div>
-  <div class="bar">${seg('callk',[['all','All'],['group','Group'],['private','Individual']])}${searchBox('calls','ISSI or group…')}<span class="sp"></span><span class="mut" style="font-size:12.5px">${st.total_calls} calls in total</span></div>
-  <div class="card"><div class="ch"><h2>Recent calls</h2><span class="cnt">${rec.length}</span></div><div class="tw"><table><thead><tr><th>Started</th><th>Type</th><th>From</th><th>To</th>${nc?'<th>Network</th>':''}<th>Duration</th><th>Prio</th><th>Voice frames</th></tr></thead><tbody>
-   ${rec.slice(0,300).map(c=>`<tr><td class="m">${tmd(c.started_at_ms)}</td><td>${c.kind==='group'?'<span class="chip a">Group</span>':'<span class="chip b">Individual</span>'}</td><td>${issiCell(c.source)}</td><td>${c.pool?`<span class="chip" title="Pool: one call heard on ${c.legs.length} groups">${ic('routing')} ${esc(c.pool)}</span><span class="sub">${c.legs.map(g=>g>16777215?tgTxt(g):String(g)).join(' · ')}</span>`:c.kind==='group'?`<span class="m">${c.destination>16777215?tgTxt(c.destination):c.destination}</span>${gName(c.destination)?`<span class="sub">${esc(gName(c.destination))}</span>`:''}`:issiCell(c.destination)}</td>${nc?`<td>${netChips(c)}</td>`:''}<td class="m">${c.ended_at_ms?dur(c.ended_at_ms-c.started_at_ms):'—'}</td><td class="num">${c.priority}</td><td class="num">${c.voice_frames}</td></tr>`).join('')||'<tr><td colspan="${nc?8:7}" class="mut">No calls yet</td></tr>'}
+  <div class="bar">${seg('callk',[['all','All'],['group','Group'],['private','Individual']])}${searchBox('calls','ISSI or group…')}<span class="sp"></span>${showSel('calls')}<span class="mut" style="font-size:12.5px">${st.total_calls} calls in total</span>${D.who.admin?`<button class="btn danger" onclick="clearHistory('calls')">${ic('trash')}Clear all calls</button>`:''}</div>
+  ${msgDiv('calls-msg','padding:0 4px')}
+  <div class="card"><div class="ch"><h2>Recent calls</h2><span class="cnt">${Math.min(rec.length,showN('calls')==='all'?1e9:showN('calls'))}</span><span class="sp"></span><span class="mut" style="font-size:12px">${keptNote(st,'calls')}</span></div><div class="tw"><table><thead><tr><th>Started</th><th>Type</th><th>From</th><th>To</th>${nc?'<th>Network</th>':''}<th>Duration</th><th>Prio</th><th>Voice frames</th></tr></thead><tbody>
+   ${rec.slice(0,showN('calls')==='all'?undefined:showN('calls')).map(c=>`<tr><td class="m">${tmd(c.started_at_ms)}</td><td>${c.kind==='group'?'<span class="chip a">Group</span>':'<span class="chip b">Individual</span>'}</td><td>${issiCell(c.source)}</td><td>${c.pool?`<span class="chip" title="Pool: one call heard on ${c.legs.length} groups">${ic('routing')} ${esc(c.pool)}</span><span class="sub">${c.legs.map(g=>g>16777215?tgTxt(g):String(g)).join(' · ')}</span>`:c.kind==='group'?`<span class="m">${c.destination>16777215?tgTxt(c.destination):c.destination}</span>${gName(c.destination)?`<span class="sub">${esc(gName(c.destination))}</span>`:''}`:issiCell(c.destination)}</td>${nc?`<td>${netChips(c)}</td>`:''}<td class="m">${c.ended_at_ms?dur(c.ended_at_ms-c.started_at_ms):'—'}</td><td class="num">${c.priority}</td><td class="num">${c.voice_frames}</td></tr>`).join('')||'<tr><td colspan="${nc?8:7}" class="mut">No calls yet</td></tr>'}
   </tbody></table></div></div>`;
 };
 R.sds=()=>{
   const st=D.status;if(!st)return '<div class="empty">Loading…</div>';
   const q=UI.filter.sds||'';const list=st.recent_sds.filter(s=>match(q,s.source,s.destination,nameOf(s.source),nameOf(s.destination),s.from_network,(s.to_networks||[]).join(' ')));
   const nc=hasNet(list);
-  return `<div class="bar">${searchBox('sds','ISSI…')}<span class="sp"></span><span class="mut" style="font-size:12.5px">${st.total_sds} SDS in total</span></div>
-  <div class="card"><div class="ch"><h2>Recent SDS</h2><span class="cnt">${list.length}</span></div><div class="tw"><table><thead><tr><th>Time</th><th>From</th><th>To</th>${nc?'<th>Network</th>':''}<th>Reports</th></tr></thead><tbody>
+  return `<div class="bar">${searchBox('sds','ISSI…')}<span class="sp"></span>${showSel('sds')}<span class="mut" style="font-size:12.5px">${st.total_sds} SDS in total</span>${D.who.admin?`<button class="btn danger" onclick="clearHistory('sds')">${ic('trash')}Clear all SDS</button>`:''}</div>
+  ${msgDiv('sds-msg','padding:0 4px')}
+  <div class="card"><div class="ch"><h2>Recent SDS</h2><span class="cnt">${list.length}</span><span class="sp"></span><span class="mut" style="font-size:12px">${keptNote(st,'sds')}</span></div><div class="tw"><table><thead><tr><th>Time</th><th>From</th><th>To</th>${nc?'<th>Network</th>':''}<th>Reports</th></tr></thead><tbody>
   ${list.map(s=>`<tr><td class="m">${tmd(s.at_ms)}</td><td>${issiCell(s.source)}</td><td>${issiCell(s.destination)}</td>${nc?`<td>${netChips(s)}</td>`:''}<td class="num">${s.reports}</td></tr>`).join('')||'<tr><td colspan="${nc?5:4}" class="mut">No SDS yet</td></tr>'}</tbody></table></div></div>`;
 };
 R.radios=()=>{
@@ -753,18 +866,24 @@ R.radios=()=>{
   </tbody></table></div></div>`;
 };
 // Name of an ISSI from the directory, if any.
-const nameOf=issi=>(D.issi||{})[String(issi)]||'';
+// Directory names first (always!), then the ham callsign database (D.cs, only asked for ISSIs without one).
+const nameOf=issi=>(D.issi||{})[String(issi)]||(D.cs||{})[String(issi)]||'';
 const gName=g=>(D.gssi||{})[String(g)]||'';
 // A group of another network shows as "network:GSSI" (inside the server it
 // is an alias above the 24 GSSI bits, see netlink.rs).
 const netOfSlot=s=>((D.nets&&D.nets.networks)||[]).find(n=>n.slot===s);
 const tgTxt=g=>{if(g>16777215){const n=netOfSlot(Math.floor(g/16777216));return `${esc(n?n.name:'net '+Math.floor(g/16777216))}:${g%16777216}`;}const n=gName(g);return n?`${g} · ${esc(n)}`:String(g);};
+// Compact form for the Overview: the group name alone when there is one (the GSSI stays in the tooltip).
+const tgShort=g=>{const n=g>16777215?'':gName(g);return n?`<span title="GSSI ${g}">${esc(n)}</span>`:tgTxt(g);};
 const tgChip=(g,cls)=>`<span class="tg${cls||''}"${gName(g)?` title="${esc(gName(g))}"`:''}>${tgTxt(g)}</span>`;
 // "2320972 · OE4SXM" for running text, number and name stacked for tables.
 const issiTxt=issi=>{const n=nameOf(issi);return n?`${issi} · ${esc(n)}`:String(issi);};
+// Compact form for the Overview: the name alone when there is one (the ISSI stays in the tooltip).
+const issiShort=issi=>{const n=nameOf(issi);return n?`<span title="ISSI ${issi}">${esc(n)}</span>`:String(issi);};
 const issiCell=(issi,bold)=>{const n=nameOf(issi);return `${bold?'<b class="m">':'<span class="m">'}${issi}${bold?'</b>':'</span>'}${n?`<span class="sub">${esc(n)}</span>`:''}`;};
 // Info text of a login (Accounts page), if any.
-const infoOf=login=>(D.names||{})[login]||'';
+// A login's name: its Accounts name ([bts_locations]), else a Directory name (bridge logins up to 12 digits).
+const infoOf=login=>(D.names||{})[login]||nameOf(login);
 // Station and cell naming, the same on every page: a station is named by its Brew login; a cell by
 // its global cell ID <login>/<cell number in the station>. The global ID is a brew-server and
 // FlowStation name for Brew and the dashboard, not an ETSI identity.
@@ -788,7 +907,7 @@ R.stations=()=>{
   ${cells.map(x=>{const key='c'+x.name;const open=UI.open[key];const offc=x.online===false;
    const ci=infoOf(String(x.name).split('/')[0]);
    return `<tr class="click${offc?' off':''}" onclick="UI.open['${esc(key)}']=!UI.open['${esc(key)}'];render(true)" aria-expanded="${!!open}"><td><b>${esc(x.name)}</b> ${x.cell===0&&!offc?'<span class="chip i">primary</span>':''}${x.duplicate?' <span class="chip w">duplicate</span>':''}${ci?`<span class="sub">${esc(ci)}</span>`:''}</td>
-   <td>${offc?'<span class="st i"><i></i>Offline</span>':'<span class="st"><i></i>Online</span>'}</td><td class="m">${x.carrier}</td><td class="num">${mhz(x.downlink_hz)}</td><td>${x.location_area}</td><td class="num">${x.mcc} / ${x.mnc}</td>
+   <td>${offc?'<span class="st i"><i></i>Offline</span>':'<span class="st"><i></i>Online</span>'}</td><td class="m">${x.carrier}</td><td class="num">${mhz(x.downlink_hz)}</td><td>${x.location_area??'—'}</td><td class="num">${x.mcc!=null&&x.mnc!=null?x.mcc+' / '+x.mnc:'—'}</td>
    <td>${x.neighbours?(x.neighbours.map(n=>`<span class="chip">${esc(n)}</span>`).join(' ')||'<span class="mut">none</span>'):'<span class="mut">—</span>'}</td><td class="num">${offc?'—':x.registered_issis}</td></tr>
    ${open?`<tr class="exp"><td colspan="8"><div class="kv"><div><span class="l">Station address</span>${offc?'—':`<span class="m">${esc(x.remote_addr||'—')}</span>`}</div><div><span class="l">${offc?'Gone':'Connected'}</span>${offc?(x.last_seen_ms?ago(x.last_seen_ms)+' ago':'—'):ago(x.connected_at_ms)}</div>
     <div><span class="l">Extensions</span>${caps(x)}</div><div><span class="l">Access level / MS power</span>${x.rxlev_access_min_dbm!=null?x.rxlev_access_min_dbm+' dBm':'—'} · ${x.ms_txpwr_max_dbm!=null?x.ms_txpwr_max_dbm+' dBm':'—'}</div></div></td></tr>`:''}`;}).join('')||'<tr><td colspan="8" class="mut">No cells announced</td></tr>'}
@@ -838,7 +957,7 @@ R.telemetry=()=>{
    <div class="kv tight" style="padding:12px 18px"><div><span class="l">Version</span>${esc(s.build||s.version||'—')}</div><div><span class="l">Address</span><span class="m">${esc(s.ip||'—')}</span></div><div><span class="l">Connected</span>${ago(s.connected_at_ms)}</div><div><span class="l">Backhaul</span>${s.backhaul_connected==null?'—':s.backhaul_connected?'connected':'down'}</div>
     <div><span class="l">Radios</span>${s.registration_count}</div><div><span class="l">Calls</span>${Object.keys(s.active_calls||{}).length}</div><div><span class="l">TX EVM</span>${s.evm_pct!=null?s.evm_pct.toFixed(1)+' %':'—'}</div><div><span class="l">Emergencies</span>${(s.emergencies||[]).length||'none'}</div></div>
    ${(h.domains||[]).length?`<div class="chips" style="padding:0 18px 12px;display:flex;gap:6px;flex-wrap:wrap">${h.domains.map(d=>`<span class="chip ${d.level==='ok'?'a':d.level==='degraded'?'w':'d'}" title="${esc(d.detail)}">${esc(d.domain)}: ${esc(d.detail)}</span>`).join('')}</div>`:''}
-   <div class="tw"><table><thead><tr><th title="Local cell number in this station, global cell ID in brackets">Cell (local / global ID)</th><th>Carrier</th><th>LA</th><th>RF</th><th>Radios</th></tr></thead><tbody>${(s.cells||[]).map(x=>`<tr><td>${x.id}${gcidOf(x.main_carrier)?` <span class="mut">(${esc(gcidOf(x.main_carrier))})</span>`:''}${x.primary?' <span class="chip i">primary</span>':''}</td><td class="m">${x.main_carrier}${x.secondary_carrier?' + '+x.secondary_carrier:''}</td><td>${x.location_area}</td><td><span class="st${x.rf_state==='online'?'':' w'}" title="${esc(x.rf_detail||'')}"><i></i>${esc(x.rf_state||'—')}</span></td><td class="num">${x.registered_radios}</td></tr>`).join('')||'<tr><td colspan="5" class="mut">No cell report yet</td></tr>'}</tbody></table></div>${tlmCalls(s)}</div>`;}).join('')}</div>`
+   <div class="tw"><table><thead><tr><th title="Local cell number in this station, global cell ID in brackets">Cell (local / global ID)</th><th>Carrier</th><th>LA</th><th>RF</th><th>Radios</th></tr></thead><tbody>${(s.cells||[]).map(x=>`<tr><td>${x.id}${gcidOf(x.main_carrier)?` <span class="mut">(${esc(gcidOf(x.main_carrier))})</span>`:''}${x.primary?' <span class="chip i">primary</span>':''}</td><td class="m">${x.main_carrier}${x.secondary_carrier?' + '+x.secondary_carrier:''}</td><td>${x.location_area??'—'}</td><td><span class="st${x.rf_state==='online'?'':' w'}" title="${esc(x.rf_detail||'')}"><i></i>${esc(x.rf_state||'—')}</span></td><td class="num">${x.registered_radios}</td></tr>`).join('')||'<tr><td colspan="5" class="mut">No cell report yet</td></tr>'}</tbody></table></div>${tlmCalls(s)}</div>`;}).join('')}</div>`
   :'<div class="card"><div class="empty">No station telemetry connections. Stations report here with FlowStation <code>[telemetry]</code>.</div></div>';
 };
 R.control=()=>{
@@ -905,13 +1024,14 @@ R.routing=()=>{
    ${poolRows.trim()||'<div class="empty">No pools yet. A pool plays the calls of one group on other groups too.</div>'}
    ${helpNote('pools','A pool switches groups together inside this server. A call on a group of the pool is played 1:1 on the other groups, as an ordinary group call on each group\'s own GSSI, so the radios see nothing unusual. <i>Both ways</i>: every group of the pool reaches all others. <i>One way</i>: only the first group is copied, to the rest. A group that has a call of its own waits until that over has ended and then joins. Changes apply at once and are saved to the config file, no restart. Federation peers do not get the copies.')}
    ${msgDiv('pool-msg')}</div>
+  ${tgCard(adm,pools)}
   <div class="card"><div class="ch"><h2>Assign radios to a group (DGNA)</h2>${helpBtn('dgna')}<span class="sp"></span>${searchBox('dg','ISSI, group or station…')}</div>
    ${helpNote('dgna','Dynamic group number assignment (SS-DGNA, ETSI EN 300 392-12-22): the station tells the selected radios to add or remove a group, with an optional name the radio shows. Each command goes to the station the radio is registered on, over its control connection (FlowStation <code>[command]</code>). The answer of each radio shows under <i>Last DGNA</i>. ★ = group assigned by DGNA. Apps and other terminals cannot be reached.')}
    <div class="tw"><table><thead><tr><th style="width:44px"><input type="checkbox" class="chk" aria-label="Select all" ${allSel?'checked':''} ${adm?'':'disabled'} onchange="selAll(this.checked)"></th><th>ISSI</th><th>Station</th><th>Cell (global ID)</th><th>Groups now</th><th>Last DGNA</th></tr></thead><tbody>
    ${radios.map(r=>`<tr${r.radio?'':' class="off"'}><td><input type="checkbox" class="chk" aria-label="Select ${r.issi}" ${UI.sel.has(r.issi)?'checked':''} ${adm&&r.radio?'':'disabled'} onchange="selOne(${r.issi},this.checked)"></td><td>${issiCell(r.issi,true)}</td><td><b class="m">${esc(r.station||'—')}</b></td><td>${r.cell?`<span class="chip">${esc(r.cell)}</span>`:`<span class="mut">${r.radio?'—':'— (terminal)'}</span>`}</td><td>${groupsOf(r)}</td><td>${r.radio?dg(r):'<span class="mut">not a radio, DGNA n/a</span>'}</td></tr>`).join('')||'<tr><td colspan="6" class="mut">No radios registered</td></tr>'}
    </tbody></table></div>
    ${adm?`<div class="selbar"><b>${sel} selected</b><span class="arrow">→</span>
-    <input class="f" id="dg-gssi" placeholder="GSSI" inputmode="numeric" style="width:110px" value="${esc(f.gssi)}" oninput="UI.dgf.gssi=this.value">
+    ${dgSaved(f)}<input class="f" id="dg-gssi" placeholder="GSSI" inputmode="numeric" style="width:110px" value="${esc(f.gssi)}" oninput="UI.dgf.gssi=this.value">
     <input class="f" id="dg-name" placeholder="Name (optional)" maxlength="15" style="width:160px" value="${esc(f.name)}" oninput="UI.dgf.name=this.value">
     <div class="seg" role="group" aria-label="Assign or remove"><button aria-pressed="${f.assign}" onclick="UI.dgf.assign=true;render(true)">Assign</button><button aria-pressed="${!f.assign}" onclick="UI.dgf.assign=false;render(true)">Remove</button></div>
     <label class="mut" style="font-size:12.5px">Attachment <select class="f" id="dg-mode" style="max-width:220px" onchange="UI.dgf.mode=+this.value">${['0 · attached permanently','1 · attach on next ITSI attach','2 · not allowed on next ITSI attach','3 · attach on next location update','4 · not attached, radio may request','5 · not attached, radio may not request'].map((t,i)=>`<option value="${i}" ${f.mode===i?'selected':''}>${t}</option>`).join('')}</select></label>
@@ -1159,6 +1279,12 @@ async function delAcc(i){
 const DIR={issi:{api:'/api/issi-names',what:'ISSI',who:'radio',ex:'2320972',exn:'OE4SXM Sebastian',ex2:'2321100, Relay North',file:'issi-directory.csv'},
   gssi:{api:'/api/gssi-names',what:'GSSI',who:'group',ex:'2321',exn:'District North',ex2:'2322, District South',file:'gssi-directory.csv'}};
 const dirK=()=>UI.filter.dirk==='gssi'?'gssi':'issi';
+// Badges for the access entry of a group ([group_access]): "Only N ISSIs" / "N blocked" and "RX only"; '' when open.
+function accChips(a){if(!a)return '';const n=a.issis.length;
+  const join=!n?'':a.mode==='block'?`<span class="chip w" title="${a.issis.join(', ')}">${n} blocked</span>`:`<span class="chip a" title="${a.issis.join(', ')}">Only ${n} ISSI${n===1?'':'s'}</span>`;
+  const rx=!a.rx_only?'':a.rx_only_issis.length?`<span class="chip i" title="${a.rx_only_issis.join(', ')}">${a.rx_only_issis.length} RX only</span>`:'<span class="chip i">RX only</span>';
+  return [join,rx].filter(Boolean).join(' ');}
+const onlyThese=a=>!!(a&&a.mode!=='block'&&a.issis.length);
 const dirNames=()=>D[dirK()]||{};
 R.issis=()=>{
   const adm=D.who.admin;const K=dirK(),d=DIR[K];const q=UI.filter.issi||'';const f=UI.filter.issif||'all';
@@ -1166,29 +1292,32 @@ R.issis=()=>{
   let seen=new Map();
   if(K==='issi')seen=new Map(ms.map(m=>[String(m.issi),m]));
   else{for(const m of ms)for(const g of (m.groups||[])){const k=String(g);seen.set(k,(seen.get(k)||0)+1);}
-    for(const c of ((D.status&&D.status.active_calls)||[]))if(c.kind==='group'&&!seen.has(String(c.destination)))seen.set(String(c.destination),0);}
+    for(const c of ((D.status&&D.status.active_calls)||[]))if(c.kind==='group'&&!seen.has(String(c.destination)))seen.set(String(c.destination),0);
+    // Groups of other networks (aliases above the 24 GSSI bits) belong to their link, not here.
+    for(const k of [...seen.keys()])if(+k>16777215)seen.delete(k);}
   const acc=K==='gssi'?(D.access||{}):{};
-  const keys=[...new Set([...Object.keys(names),...seen.keys(),...Object.keys(acc)])].sort((a,b)=>a-b);
-  const rows=keys.filter(k=>(f==='all'||(f==='named'&&names[k])||(f==='unnamed'&&!names[k])||(f==='limited'&&acc[k]))&&match(q,k,names[k],...((acc[k]||{}).issis||[])));
-  const accCell=k=>{const a=acc[k];if(!a)return '<span class="mut">Open</span>';const n=a.issis.length;
-    const join=!n?'':a.mode==='block'?`<span class="chip w" title="${a.issis.join(', ')}">${n} blocked</span>`:`<span class="chip a" title="${a.issis.join(', ')}">Only ${n} ISSI${n===1?'':'s'}</span>`;
-    const rx=!a.rx_only?'':a.rx_only_issis.length?`<span class="chip i" title="${a.rx_only_issis.join(', ')}">${a.rx_only_issis.length} RX only</span>`:'<span class="chip i">RX only</span>';
-    return [join,rx].filter(Boolean).join(' ')||'<span class="mut">Open</span>';};
+  const tg=D.tg||{},hid=new Set(K==='gssi'?(tg.hidden||[]).map(String):[]);
+  const keys=[...new Set([...Object.keys(names),...seen.keys(),...Object.keys(acc),...hid])].sort((a,b)=>a-b);
+  const plain=k=>!names[k]&&!acc[k];
+  const rows=keys.filter(k=>(f==='hidden'?hid.has(k):!(hid.has(k)&&plain(k)))&&(f==='all'||f==='hidden'||(f==='named'&&names[k])||(f==='unnamed'&&!names[k])||(f==='limited'&&acc[k]))&&match(q,k,names[k],...((acc[k]||{}).issis||[])));
+  const accCell=k=>accChips(acc[k])||'<span class="mut">Open</span>';
   const where=K==='issi'?(m=>m?`<span class="st"><i></i>${esc(m.cell?m.cell.name:(m.basestation_name||'registered'))}</span>`:'<span class="st i"><i></i>not registered</span>')
     :(n=>n===undefined?'<span class="st i"><i></i>no radios</span>':`<span class="st"><i></i>${n?n+' radio'+(n===1?'':'s'):'call running'}</span>`);
-  const help=K==='issi'?'Names for ISSIs, for example the call sign and first name of a radio\'s user. They show next to the ISSI on Overview, Calls, SDS, Radios, Roaming and Routing. Radios registered right now are listed too, so you can name them. Changes apply at once, without a restart, and are written to the config file (<code>[issi_names]</code>).'
-    :'Names for groups (GSSI), for example the area or the purpose of a talkgroup. They show next to the group on Overview, Calls, Radios and Routing (a name a radio reports for its group comes first). Groups radios are on right now are listed too, so you can name them.<br><br><b>Access</b> decides who may use a group: <i>Open</i> (everyone), <i>Only these</i> (an allow list: only the listed ISSIs) or <i>Block these</i> (everyone but the listed ISSIs). <b>RX only</b> makes radios listeners: all of them with an empty list, or the listed ones; who may talk is then who is admitted and not listen-only. The server records an affiliation only for an admitted radio and drops a group call from a radio that may not talk (emergency calls always pass). A Basestation that supports it (FlowStation with <code>group-access</code>) gets the lists and refuses the attachment or the request to talk on the air itself; on other Basestations the radio can still attach and talk locally, but not across the network. Changes apply at once, without a restart, and are written to the config file (<code>[gssi_names]</code>, <code>[group_access]</code>).';
-  return `<div class="bar">${seg('dirk',[['issi','Radios (ISSI)'],['gssi','Groups (GSSI)']])}${seg('issif',[['all','All'],['named','With name'],['unnamed','Without name']].concat(K==='gssi'?[['limited','Limited']]:[]))}${searchBox('issi',d.what+' or name…')}<span class="sp"></span>
+  const help=K==='issi'?'Names for ISSIs, for example the call sign and first name of a radio\'s user. They show next to the ISSI on Overview, Calls, SDS, Radios, Roaming and Routing. The login of a bridge (Brew login in Network mode, up to 12 digits, for example a link to another network) can be named here too; the name shows under the login on Stations &amp; Cells. Terminals (apps) and base stations are named on the Accounts page. Radios registered right now are listed too, so you can name them. Changes apply at once, without a restart, and are written to the config file (<code>[issi_names]</code>).'
+    :'Names for groups (GSSI), for example the area or the purpose of a talkgroup. They show next to the group on Overview, Calls, Radios and Routing (a name a radio reports for its group comes first). Groups radios are on right now are listed too, so you can name them.<br><br><b>Access</b> decides who may use a group: <i>Open</i> (everyone), <i>Only these</i> (an allow list: only the listed ISSIs) or <i>Block these</i> (everyone but the listed ISSIs). <b>RX only</b> makes radios listeners: all of them with an empty list, or the listed ones (with <i>Only these</i>, listed listeners missing from the allow list are added to it on save); who may talk is then who is admitted and not listen-only. The server records an affiliation only for an admitted radio and drops a group call from a radio that may not talk (emergency calls always pass). A Basestation that supports it (FlowStation with <code>group-access</code>) gets the lists and refuses the attachment or the request to talk on the air itself; on other Basestations the radio can still attach and talk locally, but not across the network. <br><br>Which groups may be used at all (<b>managed talkgroups</b>) is set on the Routing page; naming a group here does not allow it, but a group with <i>Only these</i> counts as allowed there.<br><br><b>✕</b> hides a group without a name from this page while radios are on it (display only); the filter <i>Hidden</i> shows it again. Changes apply at once, without a restart, and are written to the config file (<code>[gssi_names]</code>, <code>[group_access]</code>, <code>[talkgroups]</code>).';
+  return `<div class="bar">${seg('dirk',[['issi','Radios (ISSI)'],['gssi','Groups (GSSI)']])}${seg('issif',[['all','All'],['named','With name'],['unnamed','Without name']].concat(K==='gssi'?[['limited','Limited']].concat(hid.size?[['hidden','Hidden ('+hid.size+')']]:[]):[]))}${searchBox('issi',d.what+' or name…')}<span class="sp"></span>
     ${adm?`<button class="btn" onclick="exportNames()">Export</button><button class="btn" onclick="importNames()">Import list</button><button class="btn pri" onclick="editName('')">${ic('plus')}${K==='gssi'?'Add group':'Add name'}</button>`:''}</div>
+  ${K==='issi'?csCard(adm):''}
   <div class="card"><div class="ch"><h2>${K==='issi'?'Radios':'Groups'}</h2><span class="cnt">${Object.keys(names).length} names</span>${helpBtn('dir'+K)}</div>
    ${helpNote('dir'+K,help)}
    <div class="tw"><table><thead><tr><th>${d.what}</th><th>Name</th>${K==='gssi'?'<th>Access</th>':''}<th class="hide-s">Now</th>${adm?'<th></th>':''}</tr></thead><tbody>
-   ${rows.slice(0,1000).map(k=>`<tr><td><b class="m">${k}</b></td><td>${names[k]?esc(names[k]):'<span class="mut">—</span>'}</td>${K==='gssi'?`<td>${accCell(k)}</td>`:''}<td class="hide-s">${where(seen.get(k))}</td>
-     ${adm?`<td style="text-align:right;white-space:nowrap">${names[k]?`<button class="btn" onclick="editName('${k}')">Edit</button> <button class="btn danger" onclick="delName('${k}')" aria-label="Delete name">${ic('trash')}<span class="hide-s">Delete</span></button>`:acc[k]?`<button class="btn" onclick="editName('${k}')">Edit</button>`:`<button class="btn" onclick="editName('${k}')">${ic('plus')}Name</button>`}</td>`:''}</tr>`).join('')||`<tr><td colspan="5" class="mut">${keys.length?'Nothing matches':'No names yet'}</td></tr>`}
+   ${rows.slice(0,1000).map(k=>`<tr><td><b class="m">${k}</b></td><td>${names[k]?esc(names[k]):K==='issi'&&(D.cs||{})[k]?`<span class="mut" title="From the ham callsign database (a Directory name comes first)">${esc(D.cs[k])} · database</span>`:'<span class="mut">—</span>'}</td>${K==='gssi'?`<td>${accCell(k)}</td>`:''}<td class="hide-s">${where(seen.get(k))}</td>
+     ${adm?`<td style="text-align:right;white-space:nowrap">${names[k]?`<button class="btn" onclick="editName('${k}')">Edit</button> <button class="btn danger" onclick="delName('${k}')" aria-label="Delete name">${ic('trash')}<span class="hide-s">Delete</span></button>`:acc[k]?`<button class="btn" onclick="editName('${k}')">Edit</button>`:`<button class="btn" onclick="editName('${k}')">${ic('plus')}Name</button>`}${K==='gssi'&&plain(k)?(hid.has(k)?` <button class="btn" onclick="hideGroup('${k}',false)">Show</button>`:` <button class="btn" onclick="hideGroup('${k}',true)" aria-label="Hide group ${k} from this page" title="Hide from this page">✕</button>`):''}</td>`:''}</tr>`).join('')||`<tr><td colspan="5" class="mut">${keys.length?'Nothing matches':'No names yet'}</td></tr>`}
    </tbody></table></div>${rows.length>1000?'<div class="msg mut" style="padding:10px 18px">First 1000 shown, use the search.</div>':''}${msgDiv('issi-msg','padding:10px 18px')}</div>`;
 };
-function editName(k){
-  const K=dirK(),d=DIR[K];const n=dirNames()[k]||'';const a=K==='gssi'?(D.access||{})[k]:null;
+// The Directory dialog; from the Routing page it opens with kind 'gssi' (name, access, RX only).
+function editName(k,kind){
+  const K=kind||dirK(),d=DIR[K];UI.edK=K;UI.edFrom=kind?'tg-msg':'issi-msg';const n=(D[K]||{})[k]||'';const a=K==='gssi'?(D.access||{})[k]:null;
   const am=a&&a.issis.length?a.mode:'open';
   $('sheet').innerHTML=`<div class="ch"><h3 id="sheet-title">${K==='gssi'?(k?'Group '+k:'Add group'):(k?(n?'Edit name':'Name for '+k):'Add name')}</h3></div><div class="sb">
    <div><label class="l" for="in-issi">${d.what}</label><input class="f" id="in-issi" value="${k}" ${k?'disabled':''} inputmode="numeric" placeholder="e.g. ${d.ex}"></div>
@@ -1199,6 +1328,7 @@ function editName(k){
    <div class="mut" style="font-size:12px;margin-top:4px">Separated by commas, spaces or new lines. An empty list opens the group.</div></div>
    <label style="display:flex;gap:12px;align-items:center"><button type="button" class="tog" role="switch" id="in-rx" aria-checked="${!!(a&&a.rx_only)}" onclick="const on=this.getAttribute('aria-checked')!=='true';this.setAttribute('aria-checked',on);$('in-rx-box').hidden=!on"></button><span><b style="font-size:13.5px">RX only</b><br><span class="mut" style="font-size:12px">Listen only: these radios may not talk on the group</span></span></label>
    <div id="in-rx-box" ${a&&a.rx_only?'':'hidden'}><label class="l" for="in-rx-list">Listen-only ISSIs (empty = everyone)</label>
+   <div class="mut" style="font-size:12px;margin:0 0 4px">With <i>Only these</i>, ISSIs missing above are added there when you save (a listener must be allowed on the group).</div>
    <textarea class="f" id="in-rx-list" rows="3" style="width:100%;height:auto;padding:10px;font:13px var(--mono,ui-monospace,monospace)" placeholder="empty = nobody may talk">${a?a.rx_only_issis.join(', '):''}</textarea></div>`:''}
    <div class="msg" id="sheet-msg" style="padding:0"></div></div>
    <div class="acts"><button class="btn" onclick="closeSheet()">Cancel</button><button class="btn pri" onclick="saveName()">Save</button></div>`;
@@ -1207,20 +1337,86 @@ function editName(k){
 function setAcc(v){document.querySelectorAll('#in-acc button').forEach(x=>{const on=x.dataset.v===v;x.setAttribute('aria-pressed',on);x.setAttribute('aria-checked',on);});
   $('in-acc-box').hidden=v==='open';$('in-acc-l').textContent=v==='block'?'ISSIs that may not use the group':'ISSIs that may use the group (no one else)';}
 async function saveName(){
-  const K=dirK();const m=$('sheet-msg');const issi=$('in-issi').value.trim(),name=$('in-name').value.trim();
-  let acc=null;
+  const K=UI.edK||dirK();const m=$('sheet-msg');const issi=$('in-issi').value.trim(),name=$('in-name').value.trim();
+  let acc=null,added=[];
   if(K==='gssi'){const b=document.querySelector('#in-acc button[aria-pressed="true"]');const v=b?b.dataset.v:'open';
     const rx=$('in-rx').getAttribute('aria-checked')==='true';
     acc={gssi:issi,mode:v==='block'?'block':'allow',issis:v==='open'?'':$('in-acc-list').value,rx_only:rx,rx_only_issis:rx?$('in-rx-list').value:''};
-    if(v!=='open'&&!acc.issis.trim()){m.className='msg err';m.textContent='Enter at least one ISSI, or choose Open.';return;}}
-  const had=dirNames()[issi]||'';
+    if(v!=='open'&&!acc.issis.trim()){m.className='msg err';m.textContent='Enter at least one ISSI, or choose Open.';return;}
+    // Only these + listen-only ISSIs: a listener must be admitted to listen, so add the missing ones to the allowed ISSIs.
+    if(v==='allow'&&rx){const sp=t=>t.split(/[\s,;]+/).filter(Boolean),have=sp(acc.issis),miss=sp(acc.rx_only_issis).filter(i=>!have.includes(i));
+      if(miss.length){acc.issis=have.concat(miss).join(', ');added=miss;}}}
+  const had=(D[K]||{})[issi]||'';
   if(!name&&!(K==='gssi'&&(had||acc.issis.trim()||acc.rx_only||(D.access||{})[issi]))){m.className='msg err';m.textContent='Enter a name (or delete it in the list).';return;}
   m.className='msg mut';m.textContent='Saving…';
   try{
     if(name||had)D[K]=await postJ(DIR[K].api+'/set',{issi,name});
-    if(acc)D.access=await postJ('/api/group-access/set',acc);
-    closeSheet();setMsg('issi-msg','ok',`${issi} saved.`);render(true);
+    if(acc){D.access=await postJ('/api/group-access/set',acc);D.tg=await getJ('/api/talkgroups').catch(()=>D.tg);}
+    closeSheet();setMsg(UI.edFrom||'issi-msg','ok',`${issi} saved.`+(added.length?` ${added.join(', ')} also added to the allowed ISSIs (listen only).`:''));render(true);
   }catch(e){m.className='msg err';m.textContent=e.message;}
+}
+// Managed talkgroups (Routing page): one card that folds to a thin bar. Off it starts folded (open it to
+// prepare the list), on it starts open; either way the header folds it.
+// DGNA: every talkgroup saved on the server to pick from (Directory names and access entries, allowed
+// talkgroups, pool groups), not only the allowed ones.
+function dgSaved(f){
+  const names=D.gssi||{},ks=[...new Set([...Object.keys(names),...Object.keys(D.access||{}),...((D.tg&&D.tg.allowed)||[]).map(String),...(D.pools||[]).flatMap(p=>(p.groups||[]).map(String))])].filter(k=>+k>=1&&+k<=16777215).sort((a,b)=>a-b);
+  if(!ks.length)return '';
+  return `<select class="f" aria-label="Saved talkgroups" style="max-width:220px" onchange="if(this.value){UI.dgf.gssi=this.value;UI.dgf.name=((D.gssi||{})[this.value]||'').slice(0,15);render(true)}"><option value="">Saved TGs…</option>${ks.map(k=>`<option value="${k}" ${String(f.gssi)===k?'selected':''}>${k}${names[k]?' · '+esc(names[k]):''}</option>`).join('')}</select>`;
+}
+function tgCard(adm,pools){
+  const tg=D.tg||{},open=UI.tgOpen??!!tg.managed;
+  const names=D.gssi||{},acc=D.access||{},refused=tg.refused||{};
+  const allowed=new Set((tg.allowed||[]).map(String));
+  const seen=new Map();
+  for(const m of ((D.conn&&D.conn.mobile_stations)||[]))for(const g of (m.groups||[]))if(g<=16777215)seen.set(String(g),(seen.get(String(g))||0)+1);
+  for(const c of ((D.status&&D.status.active_calls)||[]))if(c.kind==='group'&&c.destination<=16777215&&!seen.has(String(c.destination)))seen.set(String(c.destination),0);
+  // Allowed without being on the list: groups of pools / linked talkgroups, and groups with "Only these" (limited anyway).
+  const auto=new Map();
+  for(const p of (pools||[]))for(const g of (p.groups||[]))if(!allowed.has(String(g))&&!auto.has(String(g))){
+    const r=(p.remote||[])[0];auto.set(String(g),`<span class="chip b">${p.linked&&r?`Linked: ${esc(r.network)}:${r.gssi}`:`Pool: ${esc(p.name)}`}</span>`);}
+  for(const k of Object.keys(acc))if(onlyThese(acc[k])&&+k>=1&&+k<=16777215&&!allowed.has(k)&&!auto.has(k))auto.set(k,'');
+  // Name with the badges (pool / linked, access) under it.
+  const cell=(k,extra)=>{const c=[extra||'',accChips(acc[k])].filter(Boolean).join(' ');return c?`${names[k]?esc(names[k])+'<div class="tgc">':'<div class="tgc" style="margin-top:0">'}${c}</div>`:nm(k);};
+  const ed=k=>adm?(acc[k]?`<button class="btn" onclick="editName('${k}','gssi')" aria-label="Edit group ${k}">Edit</button>`:`<button class="btn" onclick="editName('${k}','gssi')" aria-label="Access rules for group ${k}" title="Who may use or talk on the group">Rules</button>`):'';
+  const now=k=>{const n=seen.get(k);return n===undefined?'<span class="st i"><i></i>no radios</span>':`<span class="st"><i></i>${n?n+' radio'+(n===1?'':'s'):'call running'}</span>`;};
+  const nm=k=>names[k]?esc(names[k]):'<span class="mut">—</span>';
+  const cols='<colgroup><col class="g"><col class="n"><col class="w hide-s"><col class="a"></colgroup>';
+  const rows=[...allowed].sort((a,b)=>a-b).map(k=>`<tr><td><b class="m">${k}</b></td><td>${cell(k)}</td><td class="hide-s">${now(k)}</td><td class="tga">${ed(k)}${adm?` <button class="btn" onclick="disallowTg(${k})" aria-label="Remove ${k} from the allowed talkgroups" title="Remove">✕</button>`:''}</td></tr>`)
+    .concat([...auto.keys()].sort((a,b)=>a-b).map(k=>`<tr class="off"><td><b class="m">${k}</b></td><td>${cell(k,auto.get(k))}</td><td class="hide-s">${now(k)}</td><td class="tga">${ed(k)}<div class="mut" style="font-size:12px" title="${auto.get(k)?'Allowed because the group is in a pool or linked talkgroup':'Allowed because only the listed ISSIs may use the group (Only these)'}">automatic</div></td></tr>`));
+  const saved=[...new Set([...Object.keys(names),...Object.keys(acc),...seen.keys(),...Object.keys(refused)])].filter(k=>+k>=1&&+k<=16777215&&!allowed.has(k)&&!auto.has(k)).sort((a,b)=>a-b);
+  const savedRows=saved.map(k=>`<tr><td><b class="m">${k}</b></td><td>${cell(k,refused[k]?`<span class="chip d">refused · ${refused[k]} radio${refused[k]===1?'':'s'} tried</span>`:'')}</td><td class="hide-s">${now(k)}</td><td class="tga">${acc[k]?ed(k)+' ':''}${adm?`<button class="btn" onclick="allowTg('${k}','')">${ic('plus')}Allow</button>`:''}</td></tr>`).join('');
+  const n=allowed.size+auto.size;
+  return `<div class="card${open?'':' shut'}"><div class="ch tgh" role="button" tabindex="0" aria-expanded="${open}" onclick="UI.tgOpen=!(${open});render(true)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}">
+    <span class="chev" aria-hidden="true">▸</span><h2>Managed talkgroups</h2><span class="cnt">${n} allowed</span>${tg.managed?'<span class="chip a">on</span>':'<span class="chip i">off</span>'}<span onclick="event.stopPropagation()">${helpBtn('tgm')}</span><span class="sp"></span>
+    <label style="display:flex;gap:10px;align-items:center;font-size:13px;font-weight:600" onclick="event.stopPropagation()"><button class="tog" role="switch" aria-checked="${!!tg.managed}" ${adm?'':'disabled'} onclick="setManaged(this.getAttribute('aria-checked')!=='true')"></button><span class="hide-s">Only allowed talkgroups</span></label></div>
+   ${helpNote('tgm','<b>Managed talkgroups</b>: a closed set of talkgroups. Switched on, radios may only use the allowed groups: the ones in this list, every group of a talkgroup pool or linked talkgroup, and every group with the access <i>Only these</i> (only the listed ISSIs may use it anyway); these are marked <i>automatic</i>. The badges show the access rules of a group (<i>Only N ISSIs</i>, <i>N blocked</i>, <i>RX only</i>); <i>Edit</i> or <i>Rules</i> opens the same dialog as on the Directory page. The server records no affiliation to any other group and drops its group calls (emergency calls pass); radios already on such a group are dropped from it, and a FlowStation with <code>group-access</code> refuses the attachment on the air. Switched off, every group is open as before and the list is kept, so it can be prepared first. A name given with <i>Allow</i> goes to the Directory. <i>Saved TGs on server</i> lists groups the server knows (with a name or access entry on the Directory page, in use now, or refused) that are not allowed yet. Written to the config file (<code>[talkgroups]</code>), no restart.')}
+   ${open?`${adm?`<div class="tgadd"><input class="f" id="tg-gssi" placeholder="GSSI" inputmode="numeric" style="width:110px" onkeydown="if(event.key==='Enter')allowTg($('tg-gssi').value,$('tg-name').value)"><input class="f" id="tg-name" maxlength="60" placeholder="Name (optional, goes to the Directory)" style="flex:1;min-width:160px" onkeydown="if(event.key==='Enter')allowTg($('tg-gssi').value,$('tg-name').value)"><button class="btn pri" onclick="allowTg($('tg-gssi').value,$('tg-name').value)">${ic('plus')}Allow</button></div>`:''}
+   ${rows.length?`<div class="tw"><table class="tgt">${cols}<thead><tr><th>GSSI</th><th>Name</th><th class="hide-s">Now</th><th></th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`:`<div class="empty">No talkgroups allowed yet${tg.managed?': radios can use none (except emergency calls)':''}.</div>`}
+   <details class="tgsaved" ${UI.tgSaved?'open':''} ontoggle="UI.tgSaved=this.open"><summary>Saved TGs on server <span class="cnt" style="font:600 11.5px var(--mono);color:var(--text3)">${saved.length} not allowed</span></summary>
+    ${saved.length?`<div class="tw"><table class="tgt">${cols}<tbody>${savedRows}</tbody></table></div>`:'<div class="empty">Every group the server knows is allowed.</div>'}</details>
+   ${msgDiv('tg-msg','padding:10px 18px')}`:''}</div>`;
+}
+async function setManaged(on){
+  const n=((D.tg&&D.tg.listed)||[]).length;
+  if(on&&!confirm(`Managed talkgroups: radios may only use the ${n} allowed group${n===1?'':'s'} (this list, the groups of pools and linked talkgroups, and groups with Only these). Radios on any other group are dropped from it. Switch on?`))return;
+  try{D.tg=await postJ('/api/talkgroups/set',{managed:on});UI.tgOpen=undefined;setMsg('tg-msg','ok',on?'Managed talkgroups on.':'Managed talkgroups off: every group is open again, the list is kept.');}catch(e){setMsg('tg-msg','err',e.message);}
+  render(true);
+}
+async function allowTg(g,name){
+  g=String(g).trim();if(!g)return;
+  try{D.tg=await postJ('/api/talkgroups/set',{allow:g,name:name||''});if(name)D.gssi=await getJ('/api/gssi-names');
+    const a=$('tg-gssi'),b=$('tg-name');if(a)a.value='';if(b)b.value='';setMsg('tg-msg','ok',`${g} allowed.`);}catch(e){setMsg('tg-msg','err',e.message);}
+  render(true);
+}
+async function disallowTg(g){
+  if(D.tg&&D.tg.managed&&!confirm(`Remove ${g} from the allowed talkgroups? Radios on it are dropped from it.`))return;
+  try{D.tg=await postJ('/api/talkgroups/set',{disallow:g});setMsg('tg-msg','ok',`${g} no longer allowed.`);}catch(e){setMsg('tg-msg','err',e.message);}
+  render(true);
+}
+async function hideGroup(k,hide){
+  try{D.tg=await postJ('/api/talkgroups/set',hide?{hide:+k}:{unhide:+k});if(!(D.tg.hidden||[]).length&&UI.filter.issif==='hidden')UI.filter.issif='all';setMsg('issi-msg','ok',hide?`${k} hidden. Filter "Hidden" shows it again.`:`${k} shown again.`);}catch(e){setMsg('issi-msg','err',e.message);}
+  render(true);
 }
 async function delName(k){
   const K=dirK();if(!confirm(`Delete the name of ${k}?`))return;
@@ -1376,5 +1572,75 @@ mod tests {
         for needle in ["Carrier / TS", "[1,2,3,4]", "c.carrier_num", "c.ts", "available"] {
             assert!(f.contains(needle), "{needle}");
         }
+    }
+
+    /// The Overview shows three pairs side by side, in this order (stacked the same way on a
+    /// phone): live calls | recent calls, stations | radios, cell changes | recent SDS.
+    #[test]
+    fn overview_pairs_in_order() {
+        let start = PAGE_HTML.find("R.overview=()=>{").expect("overview");
+        let body = &PAGE_HTML[start..];
+        let body = &body[..body.find("\n};\n").expect("end of overview")];
+        let mut at = 0;
+        for h in ["Live calls", "Recent calls", "Stations</h2>", "Radios</h2>", "Recent cell changes", "Recent SDS"] {
+            let i = body[at..].find(h).unwrap_or_else(|| panic!("{h} missing or out of order"));
+            at += i + h.len();
+        }
+        assert_eq!(body.matches("<div class=\"grid2 ov\">").count(), 3);
+        assert!(PAGE_HTML.contains(".grid2,.grid2.ov{grid-template-columns:1fr}"), "phone stacks the pairs");
+    }
+
+    /// Managed talkgroups live on the Routing page in a card that folds to a
+    /// bar (folded while off, open while on); the Directory only names groups.
+    #[test]
+    fn managed_talkgroups_card_is_on_the_routing_page() {
+        let routing = &PAGE_HTML[PAGE_HTML.find("R.routing=()=>{").unwrap()..];
+        let routing = &routing[..routing.find("\n};\n").unwrap()];
+        assert!(routing.contains("${tgCard(adm,pools)}"));
+        assert!(PAGE_HTML.contains("const tg=D.tg||{},open=UI.tgOpen??!!tg.managed;"), "folded while off, open while on");
+        assert!(PAGE_HTML.contains("Saved TGs on server"));
+        let dir = &PAGE_HTML[PAGE_HTML.find("R.issis=()=>{").unwrap()..];
+        let dir = &dir[..dir.find("\n};\n").unwrap()];
+        assert!(!dir.contains("setManaged") && !dir.contains("Refused"), "no managed switch on the Directory page");
+    }
+
+    #[test]
+    fn dgna_offers_the_saved_talkgroups() {
+        assert!(PAGE_HTML.contains("${dgSaved(f)}<input class=\"f\" id=\"dg-gssi\""));
+        assert!(PAGE_HTML.contains("maximum-scale=1"), "no zoom (test, Sebastian)");
+        assert!(PAGE_HTML.contains("main{display:block;height:auto;min-height:100vh;min-height:100dvh;overflow:visible}"), "phones: the page scrolls, not <main>");
+        assert!(PAGE_HTML.contains(",'Infrastructure'],") && !PAGE_HTML.contains(",'Network'],"), "sidebar group renamed");
+    }
+
+    #[test]
+    fn callsign_database_names_come_after_the_directory() {
+        assert!(PAGE_HTML.contains("const nameOf=issi=>(D.issi||{})[String(issi)]||(D.cs||{})[String(issi)]||'';"), "Directory name first");
+        assert!(PAGE_HTML.contains("filter(i=>!(D.issi||{})[i]&&!CS_ASKED.has(i))"), "asked only for ISSIs without a Directory name");
+        assert!(PAGE_HTML.contains("${K==='issi'?csCard(adm):''}"), "card on the Directory radios tab");
+        assert!(PAGE_HTML.contains("const open=!!UI.csOpen"), "closed by default");
+    }
+
+    #[test]
+    fn history_pages_choose_how_many_and_clear() {
+        assert!(PAGE_HTML.contains("const SHOW_N=[25,50,100,500,'all'];"));
+        for page in ["R.calls=()=>{", "R.sds=()=>{"] {
+            let body = &PAGE_HTML[PAGE_HTML.find(page).unwrap()..];
+            let body = &body[..body.find("\n};\n").unwrap()];
+            assert!(body.contains("showSel(") && body.contains("clearHistory("), "{page}: show selector and Clear button");
+            assert!(body.contains("D.who.admin?"), "{page}: Clear only for admins");
+        }
+        assert!(PAGE_HTML.contains("calls in total</div></div>`}"), "Overview: total under No active calls");
+        assert!(PAGE_HTML.contains("if(!force&&(scrollBusy||touchOn)){renderLater=true;return;}"), "no live re-render while scrolling");
+    }
+
+    #[test]
+    fn routing_talkgroups_show_access_badges_and_edit() {
+        let card = &PAGE_HTML[PAGE_HTML.find("function tgCard(").unwrap()..];
+        let card = &card[..card.find("\n}\n").unwrap()];
+        assert!(card.contains("accChips(acc[k])"), "badges of the access entry");
+        assert!(card.contains("onlyThese(acc[k])"), "Only these groups are allowed automatically");
+        assert!(card.contains("editName('${k}','gssi')") && card.contains(">Rules</button>"), "Edit / Rules opens the Directory dialog");
+        assert!(PAGE_HTML.contains("function editName(k,kind){"));
+        assert!(PAGE_HTML.contains("if(v==='allow'&&rx){"), "listen-only ISSIs are added to an allow list");
     }
 }

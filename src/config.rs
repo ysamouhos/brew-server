@@ -69,6 +69,12 @@ pub struct Config {
     /// `[group_access."GSSI"]`: which radios may use a group. No entry (or an
     /// empty list) = open to everyone. See `group_access`.
     pub group_access: std::collections::BTreeMap<String, GroupAccessConfig>,
+    /// `[talkgroups]`: managed talkgroups (only listed groups may be used)
+    /// and groups hidden from the Directory page. See `group_access`.
+    pub talkgroups: TalkgroupsConfig,
+    /// `[callsign_db]`: names for radios from a ham radio ID list (radioid.net
+    /// `dmrid.dat`). Directory names always come first. See `callsign_db`.
+    pub callsign_db: CallsignDbConfig,
     /// `[multi_network]`: other Brew networks this server connects to itself
     /// and bridges talkgroups with (see `netlink`). Edited live from the
     /// dashboard (no restart).
@@ -87,6 +93,43 @@ pub struct GroupAccessConfig {
     pub issis: Vec<u32>,
     pub rx_only: bool,
     pub rx_only_issis: Vec<u32>,
+}
+
+/// `[talkgroups]`. `managed = true`: a closed set of talkgroups. Only an
+/// allowed group may be used: one in `allowed`, one in a talkgroup pool or
+/// a linked talkgroup, or one with an allow list in `[group_access]`. An affiliation to any other group is not recorded and
+/// its group calls are dropped (emergency calls pass); a Basestation with
+/// `group-access` refuses the attachment on the air. Groups of other networks
+/// (aliases) are left to their link. `managed = false` (the default) changes
+/// nothing; `allowed` is kept, so the list can be prepared before it is
+/// switched on. Edited on the Routing page. `hidden`: groups no longer listed
+/// on the Directory page while radios are on them (display only).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct TalkgroupsConfig {
+    pub managed: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub allowed: Vec<u32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hidden: Vec<u32>,
+}
+
+/// `[callsign_db]`. Off by default. `url` is a list of `ID;CALLSIGN;...`
+/// lines (radioid.net `dmrid.dat`); `auto` fetches it again every day at
+/// 00:00 UTC. The list is kept in `cache` so it survives a restart.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct CallsignDbConfig {
+    pub enabled: bool,
+    pub url: String,
+    pub auto: bool,
+    pub cache: PathBuf,
+}
+
+impl Default for CallsignDbConfig {
+    fn default() -> Self {
+        Self { enabled: false, url: crate::callsign_db::DEFAULT_URL.into(), auto: false, cache: PathBuf::from("callsign-db.dat") }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -616,6 +659,15 @@ pub struct StorageConfig {
     pub enabled: bool,
     /// Path to the append-only binary history log.
     pub path: PathBuf,
+    /// Days a call or SDS is kept in the history (0 = no age limit). Older
+    /// entries are dropped from the log once an hour; the totals keep
+    /// counting them.
+    pub keep_days: u32,
+    /// At most this many calls are kept (newest first, 0 = no limit).
+    pub max_calls: usize,
+    /// At most this many SDS are kept, and as many telemetry SDS log entries
+    /// (newest first, 0 = no limit).
+    pub max_sds: usize,
 }
 
 impl Default for StorageConfig {
@@ -623,8 +675,18 @@ impl Default for StorageConfig {
         Self {
             enabled: true,
             path: PathBuf::from("brew-history.bin"),
+            keep_days: 7,
+            max_calls: 2000,
+            max_sds: 2000,
         }
     }
+}
+
+impl StorageConfig {
+    /// How many calls / SDS the in-memory lists hold (the limit, or 10000
+    /// without one).
+    pub fn memory_calls(&self) -> usize { if self.max_calls == 0 { 10_000 } else { self.max_calls } }
+    pub fn memory_sds(&self) -> usize { if self.max_sds == 0 { 10_000 } else { self.max_sds } }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1107,6 +1169,8 @@ impl Default for Config {
             issi_names: std::collections::BTreeMap::new(),
             gssi_names: std::collections::BTreeMap::new(),
             group_access: std::collections::BTreeMap::new(),
+            talkgroups: TalkgroupsConfig::default(),
+            callsign_db: CallsignDbConfig::default(),
             multi_network: MultiNetworkConfig::default(),
         }
     }
