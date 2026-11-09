@@ -2,7 +2,7 @@
 
 All notable changes to brew-server, newest first.
 
-Unreleased:
+Version 1.21.0 adds:
 
 - **History stays small.** `[storage] keep_days = 7`, `max_calls = 2000`,
   `max_sds = 2000` (0 = no limit): older entries and those over the limit
