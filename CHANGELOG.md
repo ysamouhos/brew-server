@@ -8,8 +8,8 @@ Version 1.20.3 adds:
   `[[federation.peers]]` path is no longer cut off, so a core that serves
   discovery at `/brew/` and redirects `/brew` to its website (TetraPack) can
   be peered with `path = "/brew/"`; a brew-server answers on both. Discovery
-  errors quote the start of the peer's reply. The idea comes from PR #54 by
-  David Harcus, MM7FDM, brought onto the current version (that PR is based on
+  errors quote the start of the peer's reply. The idea comes from PR #55 by
+  Sebastian OE4SXM and David Harcus, MM7FDM, brought onto the current version (that PR is based on
   an older one; redirects are already handled since 1.20.0).
 
 Version 1.20.2 adds:
