@@ -342,25 +342,44 @@ async fn discover(
     path: &str,
     extra: &[(&str, String)],
 ) -> anyhow::Result<String> {
-    let resp = http_get(peer, tls, path, None, extra).await?;
-    match resp.status {
-        200 => Ok(String::from_utf8(resp.body)?.trim().to_string()),
-        401 => {
-            let challenge_hdr = resp.headers.get("www-authenticate")
-                .ok_or_else(|| anyhow::anyhow!("401 with no WWW-Authenticate"))?;
-            let challenge = crate::sip::auth::parse_params(challenge_hdr);
-            let cnonce = uuid::Uuid::new_v4().simple().to_string();
-            let authz = crate::sip::auth::build_authorization(
-                &challenge, &peer.username, &peer.password, "GET", path, &cnonce, 1,
-            );
-            let resp2 = http_get(peer, tls, path, Some(&authz), extra).await?;
-            if resp2.status != 200 {
-                anyhow::bail!("digest auth rejected (HTTP {})", resp2.status);
+    let mut path = path.to_string();
+    // One same-host redirect is followed (e.g. `/brew` -> `/brew/`); anything
+    // pointing elsewhere is reported rather than chased.
+    for _ in 0..2 {
+        let resp = http_get(peer, tls, &path, None, extra).await?;
+        return match resp.status {
+            200 => Ok(body_text(&resp.body)),
+            301 | 302 | 307 | 308 => {
+                let loc = resp.headers.get("location").cloned().unwrap_or_default();
+                let next = match loc.strip_prefix("http://").or_else(|| loc.strip_prefix("https://")) {
+                    Some(rest) => rest.find('/').map(|i| rest[i..].to_string()).unwrap_or_else(|| "/".into()),
+                    None => loc.clone(),
+                };
+                if !next.starts_with('/') || next == path {
+                    anyhow::bail!("discovery redirected to {loc:?} (HTTP {}); check `path` for this peer", resp.status);
+                }
+                tracing::debug!(peer = %peer.name, from = %path, to = %next, "federation: discovery redirected");
+                path = next;
+                continue;
             }
-            Ok(String::from_utf8(resp2.body)?.trim().to_string())
-        }
-        other => anyhow::bail!("unexpected discovery status {other}"),
+            401 => {
+                let challenge_hdr = resp.headers.get("www-authenticate")
+                    .ok_or_else(|| anyhow::anyhow!("401 with no WWW-Authenticate"))?;
+                let challenge = crate::sip::auth::parse_params(challenge_hdr);
+                let cnonce = uuid::Uuid::new_v4().simple().to_string();
+                let authz = crate::sip::auth::build_authorization(
+                    &challenge, &peer.username, &peer.password, "GET", &path, &cnonce, 1,
+                );
+                let resp2 = http_get(peer, tls, &path, Some(&authz), extra).await?;
+                if resp2.status != 200 {
+                    anyhow::bail!("digest auth rejected (HTTP {}): {}", resp2.status, preview(&resp2.body));
+                }
+                Ok(body_text(&resp2.body))
+            }
+            other => anyhow::bail!("unexpected discovery status {other}: {}", preview(&resp.body)),
+        };
     }
+    anyhow::bail!("discovery redirected too many times")
 }
 
 /// Neighbour id from the 101 response when the peer accepted loop-safe mode;
@@ -422,10 +441,23 @@ async fn connect_and_run(state: &Arc<AppState>, peer: &FederationPeerConfig) -> 
     Ok(())
 }
 
+/// Leading slash only: the configured path is otherwise sent verbatim. Some
+/// cores (TetraPack among them) serve discovery at `/brew/` and answer `/brew`
+/// with a redirect to their website, so a trailing slash is significant.
 fn normalize_path(path: &str) -> String {
-    let mut p = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
-    while p.len() > 1 && p.ends_with('/') { p.pop(); }
-    p
+    if path.starts_with('/') { path.to_string() } else { format!("/{path}") }
+}
+
+/// The body as text; invalid UTF-8 is replaced rather than failing the dial,
+/// so a stray byte in an error page gives a readable message instead.
+fn body_text(body: &[u8]) -> String {
+    String::from_utf8_lossy(body).trim().to_string()
+}
+
+/// A short, printable preview of a response for error messages.
+fn preview(body: &[u8]) -> String {
+    let s = String::from_utf8_lossy(&body[..body.len().min(80)]);
+    s.replace(['\r', '\n'], " ")
 }
 
 /// Runs one established peer session: registers the peer in `inner.clients`

@@ -4,6 +4,13 @@ All notable changes to brew-server, newest first.
 
 Unreleased:
 
+- **Federation: discovery path sent verbatim, redirects followed.** The
+  configured `path` of a `[[federation.peers]]` entry is no longer stripped of
+  its trailing slash, and a same-host redirect from discovery is followed
+  once. Cores that serve discovery at `/brew/` and answer `/brew` with a 301
+  to their website (TetraPack does) can now be dialled as peers. Discovery
+  bodies are read leniently and errors quote the status and a preview of the
+  reply instead of a bare UTF-8 failure.
 - **ISSI allowlist.** A new `[allowlist]` section and a Settings panel for
   running a closed network: with `enabled = true` only the listed ISSIs may
   communicate through the server, and any other radio is barred exactly as a
