@@ -5,8 +5,13 @@
 //!
 //! Appends are durable in order and crash-safe on read: a torn trailing record
 //! (partial length or body, e.g. from a crash mid-write) is detected and the
-//! replay stops cleanly at the last complete record rather than erroring. The
-//! log keeps everything (no rotation/compaction) by design.
+//! replay stops cleanly at the last complete record rather than erroring.
+//!
+//! Retention (`[storage] keep_days`, `max_calls`, `max_sds`) and the
+//! dashboard's "Clear" buttons rewrite the log with only the records kept
+//! (`Store::compact`). What was dropped is added to `<path>.totals` (JSON), so
+//! the call / SDS totals keep counting it. Old readers still read the log: its
+//! format is unchanged.
 
 use crate::monitor::{CallRecord, SdsRecord};
 use crate::telemetry::SdsTelemetryRecord;
@@ -37,6 +42,18 @@ pub struct Store {
     /// from the HA peer that is already here (one this node wrote and the
     /// peer copied earlier) is not appended twice. See `append_replicated`.
     known: Mutex<HashSet<u64>>,
+    /// Bumped by every `compact`: byte offsets into the log from before are
+    /// no longer valid (HA replication starts over from 0, see `read_frames`).
+    generation: std::sync::atomic::AtomicU64,
+}
+
+/// Calls / SDS / voice frames dropped from the log by `compact`, kept in
+/// `<path>.totals` so the totals survive.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DroppedTotals {
+    pub calls: u64,
+    pub sds: u64,
+    pub voice_frames: u64,
 }
 
 /// FNV-1a over a record's serialized body.
@@ -82,7 +99,93 @@ impl Store {
                 known.insert(body_hash(body));
             }
         }
-        Ok(Self { path, file: Mutex::new(file), known: Mutex::new(known) })
+        Ok(Self { path, file: Mutex::new(file), known: Mutex::new(known), generation: Default::default() })
+    }
+
+    fn totals_path(&self) -> PathBuf {
+        let mut p = self.path.clone().into_os_string();
+        p.push(".totals");
+        PathBuf::from(p)
+    }
+
+    /// What earlier compactions dropped (zero without a totals file).
+    pub fn dropped_totals(&self) -> DroppedTotals {
+        std::fs::read(self.totals_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    }
+
+    /// Whether byte `offset` is the start of a record (or the end) of the
+    /// log as it is now: an offset handed out before a `compact` may not be.
+    pub fn is_boundary(&self, offset: u64) -> bool {
+        let Ok(buf) = std::fs::read(&self.path) else { return offset == 0 };
+        let mut pos = 0u64;
+        while pos < offset {
+            let p = pos as usize;
+            if p + 4 > buf.len() { return false; }
+            pos += 4 + u32::from_le_bytes([buf[p], buf[p + 1], buf[p + 2], buf[p + 3]]) as u64;
+        }
+        pos == offset
+    }
+
+    /// See `generation`.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Rewrites the log with only the records `keep` accepts (given all
+    /// records, oldest first, it returns one flag per record), atomically
+    /// (temporary file, then rename). Appends wait meanwhile. The calls / SDS
+    /// dropped are added to `<path>.totals`. Returns what was dropped now.
+    pub fn compact(&self, keep: impl FnOnce(&[StoredRecord]) -> Vec<bool>) -> std::io::Result<DroppedTotals> {
+        let mut f = self.file.lock().unwrap();
+        let buf = std::fs::read(&self.path)?;
+        let bodies = split_frames(&buf).0;
+        let mut recs = Vec::with_capacity(bodies.len());
+        for body in &bodies {
+            match bincode::deserialize::<StoredRecord>(body) {
+                Ok(r) => recs.push(r),
+                Err(_) => break,
+            }
+        }
+        let flags = keep(&recs);
+        let mut dropped = DroppedTotals::default();
+        let mut out = Vec::with_capacity(buf.len());
+        let mut known = HashSet::new();
+        for (i, rec) in recs.iter().enumerate() {
+            if flags.get(i).copied().unwrap_or(true) {
+                let body = bodies[i];
+                out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+                out.extend_from_slice(body);
+                known.insert(body_hash(body));
+                continue;
+            }
+            match rec {
+                StoredRecord::Call(c) => { dropped.calls += 1; dropped.voice_frames += c.voice_frames; }
+                StoredRecord::Sds(_) => dropped.sds += 1,
+                _ => {}
+            }
+        }
+        if out.len() == buf.len() {
+            return Ok(dropped);
+        }
+        if dropped != DroppedTotals::default() {
+            let mut t = self.dropped_totals();
+            t.calls += dropped.calls;
+            t.sds += dropped.sds;
+            t.voice_frames += dropped.voice_frames;
+            let tp = self.totals_path();
+            let tmp = tp.with_extension("totals.tmp");
+            std::fs::write(&tmp, serde_json::to_vec(&t).unwrap_or_default())?;
+            std::fs::rename(&tmp, &tp)?;
+        }
+        let mut tmp = self.path.clone().into_os_string();
+        tmp.push(".tmp");
+        let tmp = PathBuf::from(tmp);
+        std::fs::write(&tmp, &out)?;
+        std::fs::rename(&tmp, &self.path)?;
+        *f = std::fs::OpenOptions::new().create(true).append(true).read(true).open(&self.path)?;
+        *self.known.lock().unwrap() = known;
+        self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(dropped)
     }
 
     /// Appends one record, framed with a u32 length prefix, and flushes.
@@ -131,6 +234,13 @@ impl Store {
         let mut buf = Vec::new();
         (&mut f).take(max as u64).read_to_end(&mut buf)?;
         let (bodies, used) = split_frames(&buf);
+        let suspect = (bodies.is_empty() && buf.len() >= 4)
+            || bodies.first().is_some_and(|b| bincode::deserialize::<StoredRecord>(b).is_err());
+        if start > 0 && suspect && !self.is_boundary(start) {
+            // Not on a record boundary: the log was compacted since this
+            // offset was handed out. Start over (the peer skips what it has).
+            return self.read_frames(0, max);
+        }
         if bodies.is_empty() && buf.len() >= 4 {
             // A single record larger than `max`: read exactly that one.
             let need = 4 + u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
@@ -172,9 +282,59 @@ impl Store {
     }
 }
 
+/// Which records `[storage]` retention keeps (one flag per record, `recs`
+/// oldest first): calls and SDS younger than `keep_days`, the newest
+/// `max_calls` calls and `max_sds` SDS (and telemetry SDS entries), delivery
+/// reports of kept SDS. `clear_calls` / `clear_sds` drop every call / every
+/// SDS, report and telemetry SDS entry.
+pub fn retention(recs: &[StoredRecord], keep: &crate::config::StorageConfig, now_ms: u64, clear_calls: bool, clear_sds: bool) -> Vec<bool> {
+    let cut = if keep.keep_days == 0 { 0 } else { now_ms.saturating_sub(keep.keep_days as u64 * 86_400_000) };
+    let lim = |n: usize| if n == 0 { usize::MAX } else { n };
+    let (mut calls, mut sds, mut tele) = (0usize, 0usize, 0usize);
+    let mut flags = vec![false; recs.len()];
+    let mut kept_sds: HashSet<uuid::Uuid> = HashSet::new();
+    // Newest first, so the count limits keep the newest.
+    for (i, rec) in recs.iter().enumerate().rev() {
+        flags[i] = match rec {
+            StoredRecord::Call(c) => !clear_calls && c.ended_at_ms.unwrap_or(c.started_at_ms) >= cut && { calls += 1; calls <= lim(keep.max_calls) },
+            StoredRecord::Sds(r) => {
+                let k = !clear_sds && r.at_ms >= cut && { sds += 1; sds <= lim(keep.max_sds) };
+                if k { kept_sds.insert(r.uuid); }
+                k
+            }
+            StoredRecord::SdsTelemetry(t) => !clear_sds && t.at_ms >= cut && { tele += 1; tele <= lim(keep.max_sds) },
+            StoredRecord::SdsReport { .. } => false,
+        };
+    }
+    for (i, rec) in recs.iter().enumerate() {
+        if let StoredRecord::SdsReport { uuid } = rec { flags[i] = kept_sds.contains(uuid); }
+    }
+    flags
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// After a compaction an old byte offset can fall inside a record: it is
+    /// not a boundary, and reading from it starts over at 0.
+    #[test]
+    fn compaction_moves_replication_offsets_back_to_a_boundary() {
+        let p = tmp("compact");
+        let s = Store::open(&p).unwrap();
+        for v in 0..10 { s.append(&StoredRecord::Call(call(v))).unwrap(); }
+        let (_, _, end) = s.read_frames(0, 1 << 20).unwrap();
+        assert!(s.is_boundary(end) && s.generation() == 0);
+        // Drop the odd ones: the old end now points past or into a record.
+        s.compact(|r| (0..r.len()).map(|i| i % 2 == 0).collect()).unwrap();
+        assert_eq!(s.generation(), 1);
+        assert_eq!(Store::replay(&p).unwrap().len(), 5);
+        let (_, frames, _) = s.read_frames(7, 1 << 20).unwrap();
+        assert_eq!(split_frames(&frames).0.len(), 5, "an offset inside a record starts over");
+        assert!(!s.is_boundary(7));
+        std::fs::remove_file(&p).ok();
+        std::fs::remove_file(format!("{}.totals", p.display())).ok();
+    }
     use crate::monitor::{CallRecord, SdsRecord};
 
     fn tmp(name: &str) -> PathBuf {

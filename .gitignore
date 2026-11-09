@@ -1,3 +1,5 @@
 /target
 third_party/tetra-codec/build/
 /brew-history.bin
+/brew-history.bin.totals
+/callsign-db.dat

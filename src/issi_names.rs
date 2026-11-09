@@ -33,10 +33,19 @@ fn snapshot(state: &AppState, kind: Kind) -> BTreeMap<String, String> {
     kind.names(state).read().map(|n| n.clone()).unwrap_or_default()
 }
 
+/// Highest number the radio list takes: up to 12 digits, so the Brew login of
+/// a bridge (Network mode, such as 232099709) can be named too. Terminals and
+/// base stations are named on the Accounts page. Groups stay 24-bit GSSIs.
+const MAX_ISSI_KEY: u64 = 999_999_999_999;
+
 fn parse_ssi(s: &str, kind: Kind) -> Result<String, String> {
-    match s.trim().parse::<u32>() {
-        Ok(n) if (1..=0xFF_FFFF).contains(&n) => Ok(n.to_string()),
-        _ => Err(format!("'{}' is not an {} (1 to 16777215)", s.trim(), kind.label())),
+    let max = match kind { Kind::Issi => MAX_ISSI_KEY, Kind::Gssi => 0xFF_FFFF };
+    match s.trim().parse::<u64>() {
+        Ok(n) if (1..=max).contains(&n) => Ok(n.to_string()),
+        _ => Err(match kind {
+            Kind::Issi => format!("'{}' is not an ISSI (up to 12 digits for a bridge login)", s.trim()),
+            Kind::Gssi => format!("'{}' is not a GSSI (1 to 16777215)", s.trim()),
+        }),
     }
 }
 
@@ -57,7 +66,7 @@ fn parse_list(text: &str, kind: Kind) -> Result<Vec<(String, String)>, String> {
         if line.is_empty() || line.starts_with('#') { continue; }
         let split = line.find([',', ';', '\t', ' ']).unwrap_or(line.len());
         let (issi, name) = line.split_at(split);
-        if i == 0 && issi.trim().parse::<u32>().is_err() { continue; } // header
+        if i == 0 && issi.trim().parse::<u64>().is_err() { continue; } // header
         let issi = parse_ssi(issi, kind).map_err(|e| format!("line {}: {e}", i + 1))?;
         let name = name.trim_start_matches([',', ';', '\t', ' ']).trim().trim_matches('"').to_owned();
         check_name(&name).map_err(|e| format!("line {}: {e}", i + 1))?;
@@ -177,6 +186,17 @@ mod tests {
         ]);
         assert!(parse_list("2320972 ok\nabc nope", Kind::Issi).unwrap_err().starts_with("line 2"));
         assert!(parse_list("16777216 too big", Kind::Gssi).is_err());
+    }
+
+    /// The radio list also names bridge logins longer than an ISSI, up to 12 digits.
+    #[test]
+    fn radio_names_take_up_to_12_digits() {
+        assert_eq!(parse_ssi("232099709", Kind::Issi).unwrap(), "232099709");
+        assert_eq!(parse_ssi("999999999999", Kind::Issi).unwrap(), "999999999999");
+        assert!(parse_ssi("1000000000000", Kind::Issi).is_err());
+        assert!(parse_ssi("0", Kind::Issi).is_err());
+        assert!(parse_ssi("232099709", Kind::Gssi).is_err());
+        assert_eq!(parse_list("232099709,TetraPackBridge", Kind::Issi).unwrap(), vec![("232099709".into(), "TetraPackBridge".into())]);
     }
 
     #[tokio::test]

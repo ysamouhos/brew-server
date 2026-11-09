@@ -373,6 +373,14 @@ pub struct AppState {
     pub gssi_names: std::sync::RwLock<std::collections::BTreeMap<String, String>>,
     /// `[group_access]` as it is right now (see `group_access`).
     pub group_access: std::sync::RwLock<std::collections::BTreeMap<String, crate::config::GroupAccessConfig>>,
+    /// `[talkgroups]` as it is right now (managed switch, allowed and hidden groups).
+    pub talkgroups: std::sync::RwLock<crate::config::TalkgroupsConfig>,
+    /// `[callsign_db]` as it is right now, and the loaded list.
+    pub callsign_cfg: std::sync::RwLock<crate::config::CallsignDbConfig>,
+    pub callsign_db: crate::callsign_db::Db,
+    /// Groups managed talkgroups refused since the start, with the ISSIs that
+    /// tried (in memory only, for the Routing page).
+    pub refused_groups: std::sync::RwLock<std::collections::BTreeMap<u32, std::collections::BTreeSet<u32>>>,
     /// The ISSI allowlist as enforced right now (`[allowlist]`), edited live
     /// like `blocked`. `enabled` false: kept, not enforced.
     pub allowlist: std::sync::RwLock<Allowlist>,
@@ -411,14 +419,66 @@ impl Allowlist {
 }
 
 impl AppState {
-    /// May `issi` affiliate to `gssi` (`[group_access]`)?
+    /// May `issi` affiliate to `gssi` (`[group_access]`, and with managed
+    /// talkgroups only a listed group)?
     pub fn group_permits(&self, gssi: u32, issi: u32) -> bool {
-        self.group_access.read().map_or(true, |g| g.get(&gssi.to_string()).is_none_or(|a| a.permits(issi)))
+        self.group_admitted(gssi)
+            && self.group_access.read().map_or(true, |g| g.get(&gssi.to_string()).is_none_or(|a| a.permits(issi)))
     }
 
-    /// May `issi` talk on `gssi` (`[group_access]`: admitted and not RX only)?
+    /// May `issi` talk on `gssi` (`[group_access]`: admitted and not RX only;
+    /// with managed talkgroups only on a listed group)?
     pub fn group_may_talk(&self, gssi: u32, issi: u32) -> bool {
-        self.group_access.read().map_or(true, |g| g.get(&gssi.to_string()).is_none_or(|a| a.may_talk(issi)))
+        self.group_admitted(gssi)
+            && self.group_access.read().map_or(true, |g| g.get(&gssi.to_string()).is_none_or(|a| a.may_talk(issi)))
+    }
+
+    /// Whether managed talkgroups are on (`[talkgroups] managed`).
+    pub fn talkgroups_managed(&self) -> bool {
+        self.talkgroups.read().is_ok_and(|t| t.managed)
+    }
+
+    /// May `gssi` be used at all: always with managed talkgroups off, else
+    /// only a listed group (`listed_groups`). A group of another network (an
+    /// alias above the 24 GSSI bits) is left to its link.
+    pub fn group_admitted(&self, gssi: u32) -> bool {
+        gssi > 0xFF_FFFF || !self.talkgroups_managed() || self.group_listed(gssi)
+    }
+
+    /// Whether `gssi` is allowed for managed talkgroups: in
+    /// `[talkgroups] allowed`, a group of a talkgroup pool or linked
+    /// talkgroup, or a group with an allow list (`[group_access]` "Only
+    /// these": limited to the listed ISSIs anyway).
+    pub fn group_listed(&self, gssi: u32) -> bool {
+        self.talkgroups.read().is_ok_and(|t| t.allowed.contains(&gssi))
+            || self.pools.read().is_ok_and(|p| p.iter().any(|p| p.groups.contains(&gssi)))
+            || self.only_these_groups().contains(&gssi)
+    }
+
+    /// Groups with an allow list (`[group_access]` mode allow, ISSIs listed).
+    pub fn only_these_groups(&self) -> Vec<u32> {
+        self.group_access.read().map(|g| g.iter()
+            .filter(|(_, a)| a.mode == crate::config::GroupAccessMode::Allow && !a.issis.is_empty())
+            .filter_map(|(k, _)| k.parse().ok()).collect()).unwrap_or_default()
+    }
+
+    /// Every allowed group (see `group_listed`), sorted.
+    pub fn listed_groups(&self) -> Vec<u32> {
+        let mut out: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+        if let Ok(t) = self.talkgroups.read() { out.extend(t.allowed.iter().copied()); }
+        if let Ok(p) = self.pools.read() { out.extend(p.iter().flat_map(|p| p.groups.iter().copied())); }
+        out.extend(self.only_these_groups());
+        out.into_iter().collect()
+    }
+
+    /// Notes that `issi` tried to affiliate to `gssi` and managed talkgroups
+    /// refused it (shown on the Routing page so the group can be allowed).
+    pub fn note_refused_group(&self, gssi: u32, issi: u32) {
+        if let Ok(mut r) = self.refused_groups.write() {
+            if r.len() >= 1000 && !r.contains_key(&gssi) { return; }
+            let set = r.entry(gssi).or_default();
+            if set.len() < 100 { set.insert(issi); }
+        }
     }
 
     /// Whether `issi` is barred from communicating through this server, by the
@@ -499,6 +559,8 @@ impl AppState {
         if let Ok(n) = self.issi_names.read() { cfg.issi_names = n.clone(); }
         if let Ok(n) = self.gssi_names.read() { cfg.gssi_names = n.clone(); }
         if let Ok(g) = self.group_access.read() { cfg.group_access = g.clone(); }
+        if let Ok(t) = self.talkgroups.read() { cfg.talkgroups = t.clone(); }
+        if let Ok(c) = self.callsign_cfg.read() { cfg.callsign_db = c.clone(); }
         
         let (enabled, issis) = self.allowlist_snapshot();
         cfg.allowlist.enabled = enabled;
@@ -541,7 +603,7 @@ impl AppState {
             None
         };
         let monitor = match &store {
-            Some(store) => Monitor::with_store(store.clone()),
+            Some(store) => Monitor::with_store_cfg(store.clone(), &config.storage),
             None => Monitor::new(),
         };
         let telemetry = match &store {
@@ -558,6 +620,10 @@ impl AppState {
         let issi_names = config.issi_names.clone();
         let gssi_names = config.gssi_names.clone();
         let group_access = config.group_access.clone();
+        let talkgroups = config.talkgroups.clone();
+        let callsign_cfg = config.callsign_db.clone();
+        let callsign_db = crate::callsign_db::Db::default();
+        if callsign_cfg.enabled { callsign_db.load_cache(&callsign_cfg.cache); }
         let allowlist = Allowlist { enabled: config.allowlist.enabled, issis: config.allowlist.issis.iter().copied().collect() };
         let config_hash = crate::ha::config_hash(&config);
         let ha = crate::ha::HaHandle::new(&config.ha, config_hash, crate::ha::config_sections(&config, false));
@@ -583,6 +649,10 @@ impl AppState {
                 issi_names: std::sync::RwLock::new(issi_names),
                 gssi_names: std::sync::RwLock::new(gssi_names),
                 group_access: std::sync::RwLock::new(group_access),
+                talkgroups: std::sync::RwLock::new(talkgroups),
+                callsign_cfg: std::sync::RwLock::new(callsign_cfg),
+                callsign_db,
+                refused_groups: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 allowlist: std::sync::RwLock::new(allowlist),
             },
             aprs_rx,
