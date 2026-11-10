@@ -1153,7 +1153,7 @@ function conflictCard(M){
    <div class="tw"><table><thead><tr><th>Time</th><th>Network</th><th>ISSI</th><th>What</th><th></th></tr></thead><tbody>${l.slice(0,100).map(c=>`<tr><td class="m">${tmd(c.at_ms)}</td><td>${esc(c.net)}</td><td>${issiCell(c.issi)}</td><td>${esc(c.what)}</td><td>${c.never?'<span class="mut">never exported</span>':`<button class="btn" onclick="neverNet(${c.i},${c.issi})">Never export</button>`}</td></tr>`).join('')}</tbody></table></div></div>`;
 }
 function neverNet(i,issi){const c=mnPlain();const n=c.networks[i];if(!n.never_export.includes(issi))n.never_export.push(issi);saveNets(c,`${issi} is never registered in ${n.name} now.`);}
-const netPlain=n=>({name:n.name,enabled:n.enabled,mcc:n.mcc,mnc:n.mnc,remote_host:n.remote_host,path:n.path,username:n.username,password:'',user_agent:n.user_agent,bridge_issi:n.bridge_issi,register_talkers:n.register_talkers!==false,register_all:!!n.register_all,export_stations:[...(n.export_stations||[])],never_export:[...(n.never_export||[])],forward_unknown:!!n.forward_unknown,reconnect_interval_seconds:n.reconnect_interval_seconds,tls:n.tls,tls_server_name:n.tls_server_name,tls_ca_path:n.tls_ca_path,tls_pinned_cert_path:n.tls_pinned_cert_path});
+const netPlain=n=>({name:n.name,enabled:n.enabled,mcc:n.mcc,mnc:n.mnc,remote_host:n.remote_host,path:n.path,username:n.username,password:'',user_agent:n.user_agent,bridge_issi:n.bridge_issi,register_talkers:n.register_talkers!==false,register_all:!!n.register_all,export_stations:[...(n.export_stations||[])],never_export:[...(n.never_export||[])],never_forward:[...(n.never_forward||[])],forward_unknown:!!n.forward_unknown,reconnect_interval_seconds:n.reconnect_interval_seconds,tls:n.tls,tls_server_name:n.tls_server_name,tls_ca_path:n.tls_ca_path,tls_pinned_cert_path:n.tls_pinned_cert_path});
 const mnPlain=()=>({enabled:D.nets.enabled,name:D.nets.name,mcc:D.nets.mcc,mnc:D.nets.mnc,networks:D.nets.networks.map(netPlain)});
 async function saveNets(cfg,okText,sheet){
   const m=sheet?$('sheet-msg'):null;if(m){m.className='msg mut';m.textContent='Saving…';}
@@ -1173,7 +1173,7 @@ function editSelf(){const M=D.nets;
   $('scrim').classList.add('on');setTimeout(()=>$('ms-name').focus(),30);}
 function saveSelf(){const c=mnPlain();c.name=v('ms-name').trim();c.mcc=+v('ms-mcc')||0;c.mnc=+v('ms-mnc')||0;saveNets(c,'Saved.',true);}
 function editNet(i){
-  const n=i>=0?netPlain(D.nets.networks[i]):{name:'',enabled:true,mcc:0,mnc:0,remote_host:'',path:'/brew',username:'',password:'',user_agent:'',bridge_issi:0,register_talkers:true,register_all:false,export_stations:[],never_export:[],forward_unknown:false,reconnect_interval_seconds:15,tls:false,tls_server_name:'',tls_ca_path:'/etc/ssl/certs/ca-certificates.crt',tls_pinned_cert_path:''};
+  const n=i>=0?netPlain(D.nets.networks[i]):{name:'',enabled:true,mcc:0,mnc:0,remote_host:'',path:'/brew',username:'',password:'',user_agent:'',bridge_issi:0,register_talkers:true,register_all:false,export_stations:[],never_export:[],never_forward:[],forward_unknown:false,reconnect_interval_seconds:15,tls:false,tls_server_name:'',tls_ca_path:'/etc/ssl/certs/ca-certificates.crt',tls_pinned_cert_path:''};
   const hasPw=i>=0&&D.nets.networks[i].has_password;
   const hp=splitHost(n.remote_host);
   $('sheet').innerHTML=`<div class="ch"><h3 id="sheet-title">${i>=0?'Edit network':'New network'}</h3></div><div class="sb">
@@ -1189,6 +1189,7 @@ function editNet(i){
    ${fld('ne-exp','Also export the radios of these stations, and these apps (station or app logins, or app ISSIs; comma separated)',n.export_stations.join(', '),'autocomplete="off"')}
    ${fld('ne-never','Never register these ISSIs there (comma separated)',n.never_export.join(', '),'autocomplete="off" inputmode="numeric"')}
    <label style="display:flex;gap:10px;align-items:center"><button class="tog" role="switch" id="ne-fwd" aria-checked="${n.forward_unknown}" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true')"></button> Forward unknown targets: an individual call or SDS nobody here takes goes to this network</label>
+   ${fld('ne-nofwd','Do not forward these ISSIs: no individual call or SDS to or from them crosses to this network (comma separated)',n.never_forward.join(', '),'autocomplete="off" inputmode="numeric"')}
    <label style="display:flex;gap:10px;align-items:center"><button class="tog" role="switch" id="ne-tls" aria-checked="${n.tls}" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true')"></button> TLS (wss://)</label>
    ${fld('ne-sni','TLS server name (empty: host)',n.tls_server_name)}
    ${fld('ne-pin','Pinned certificate file (self-signed server, empty: off)',n.tls_pinned_cert_path)}
@@ -1207,7 +1208,7 @@ function saveNet(i){
   const c=mnPlain();const old=i>=0?c.networks[i]:{reconnect_interval_seconds:15,tls_ca_path:'/etc/ssl/certs/ca-certificates.crt'};
   const n=Object.assign({},old,{name:v('ne-name').trim(),mcc:+v('ne-mcc')||0,mnc:+v('ne-mnc')||0,remote_host,path:v('ne-path').trim()||'/brew',
     username:v('ne-user').trim(),password:v('ne-pw'),user_agent:v('ne-ua').trim(),bridge_issi:+v('ne-issi')||0,register_talkers:$('ne-reg').getAttribute('aria-checked')==='true',register_all:$('ne-all').getAttribute('aria-checked')==='true',
-    export_stations:v('ne-exp').split(',').map(x=>x.trim()).filter(Boolean),never_export:v('ne-never').split(/[\s,]+/).filter(Boolean).map(Number),forward_unknown:$('ne-fwd').getAttribute('aria-checked')==='true',
+    export_stations:v('ne-exp').split(',').map(x=>x.trim()).filter(Boolean),never_export:v('ne-never').split(/[\s,]+/).filter(Boolean).map(Number),never_forward:v('ne-nofwd').split(/[\s,]+/).filter(Boolean).map(Number),forward_unknown:$('ne-fwd').getAttribute('aria-checked')==='true',
     tls:$('ne-tls').getAttribute('aria-checked')==='true',tls_server_name:v('ne-sni').trim(),tls_pinned_cert_path:v('ne-pin').trim(),
     enabled:$('ne-on').getAttribute('aria-checked')==='true'});
   if(i>=0)c.networks[i]=n;else c.networks.push(n);

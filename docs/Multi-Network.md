@@ -138,6 +138,13 @@ SMS Center. A party that is here (a visitor, or one of this server's radios
 registered there) is never sent round the link: the far server would send
 it back over the same connection, which a Brew server does not do.
 
+`never_forward` (per network) lists ISSIs whose individual calls and SDS
+never cross that network's link, as caller or as called party, in either
+direction: a call is refused, an SDS goes nowhere (a position in it is still
+tracked). Meant for an ISSI only this server takes, such as a telemetry ISSI
+radios send their positions to, which `forward_unknown` would otherwise hand
+to that network. Group calls are not affected.
+
 A visitor that dials a bare ISSI reaches a party of its own network (the
 cell's network, TS 100 392-2 clause 14.2.3); to reach a radio or the app of
 this server's network it has to dial the full TSI.
@@ -177,6 +184,7 @@ register_all = false      # also all radios of mni stations / export_stations
 export_stations = ["bs-wien", "2320997"]   # station logins for register_all; apps by login or ISSI
 never_export = [2320002]  # ISSIs that network has itself
 forward_unknown = false   # individual calls / SDS nobody here takes go there
+never_forward = [200999]  # ISSIs whose individual calls / SDS never cross, either way
 reconnect_interval_seconds = 15
 tls = true                # wss://, settings as for [[federation.peers]]
 # tls_ca_path, tls_server_name, tls_pinned_cert_path
