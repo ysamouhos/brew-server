@@ -476,6 +476,15 @@ async fn handle_sds_header(state: &Arc<AppState>, source: ClientId, id: uuid::Uu
             forwarded = true;
         }
     }
+    // `never_forward`: no individual SDS with a listed party crosses that
+    // network's link, in either direction.
+    let from_barred_link = crate::netlink::never_forward(state, &inner, source, source_issi, destination);
+    if from_barred_link { targets.clear(); }
+    let before = targets.len();
+    targets.retain(|t| !crate::netlink::never_forward(state, &inner, *t, source_issi, destination));
+    if from_barred_link || targets.len() != before {
+        info!(%source, uuid=%id, source_issi, destination, "SDS not passed across a network link (never_forward)");
+    }
     // Always remember the UUID -> source ISSI mapping so a following
     // SDS_TRANSFER can be attributed (and its position decoded) even when the
     // destination is not a registered Brew subscriber — position beacons are
@@ -486,6 +495,7 @@ async fn handle_sds_header(state: &Arc<AppState>, source: ClientId, id: uuid::Uu
     let store_offline = !lip_only
         && !multi_network
         && !forwarded
+        && !from_barred_link
         && targets.is_empty()
         && !inner.group_clients.contains_key(&destination)
         && state.sms_center.wants(destination);
@@ -739,7 +749,18 @@ async fn handle_private_setup(state: &Arc<AppState>, source: ClientId, id: uuid:
         }
         None => None,
     };
-    let Some(target_client) = decided.or_else(|| inner.subscribers.get(&destination).map(|s| s.client_id)) else {
+    let target_client = decided.or_else(|| inner.subscribers.get(&destination).map(|s| s.client_id));
+    // `never_forward`: no individual call with a listed party crosses that
+    // network's link, in either direction.
+    if crate::netlink::never_forward(state, &inner, source, source_issi, destination)
+        || target_client.is_some_and(|t| crate::netlink::never_forward(state, &inner, t, source_issi, destination))
+    {
+        drop(inner);
+        info!(%source, uuid=%id, source_issi, destination, "private SETUP_REQUEST not passed across a network link (never_forward); rejected");
+        reject_setup(state, source, id).await;
+        return;
+    }
+    let Some(target_client) = target_client else {
         drop(inner);
         // The destination is not a registered Brew subscriber. Before giving up,
         // offer it to the SIP subsystem: a voice route may bridge this TETRA

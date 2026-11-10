@@ -309,6 +309,10 @@ pub fn individual_route(state: &AppState, inner: &mut Inner, source: ClientId, i
         }
     }
     match inner.netlinks.get(&slot).copied() {
+        Some(link) if netlink::never_forward(state, inner, link, calling, called) => {
+            info!(network = slot, uuid = %id, calling, called, "multi network: party on the never_forward list; refused");
+            Some(Decision::Refuse)
+        }
         Some(link) => {
             // The caller should be known there, as a Basestation's radio is
             // (not a visitor from that network: it is registered there).
@@ -344,7 +348,8 @@ fn forwarded_to_visitor(state: &AppState, inner: &Inner, source: ClientId, calli
 /// "Forward unknown targets": an individual call or SDS from a station that
 /// nobody here takes goes once to the first linked network that has it
 /// switched on. Never from a link (so never back), and a second time for
-/// the same pair within [`FORWARD_GUARD`] is taken for a loop.
+/// the same pair within [`FORWARD_GUARD`] is taken for a loop. Never for a
+/// party on that network's `never_forward` list.
 pub fn forward_unknown(state: &AppState, inner: &mut Inner, source: ClientId, calling: u32, called: u32) -> Option<ClientId> {
     if inner.clients.get(&source).is_none_or(|c| c.mode == ClientMode::Network) { return None; }
     let cfg = state.networks.read().map(|c| c.clone()).unwrap_or_default();
@@ -354,6 +359,10 @@ pub fn forward_unknown(state: &AppState, inner: &mut Inner, source: ClientId, ca
         .find_map(|n| slots.get(&n.name).and_then(|s| inner.netlinks.get(s).copied().map(|l| (l, *s))))?;
     let now = Instant::now();
     inner.visitors.forwarded.retain(|_, at| now.duration_since(*at) < FORWARD_GUARD);
+    if netlink::never_forward(state, inner, link.0, calling, called) {
+        info!(calling, called, network = link.1, "multi network: unknown target not forwarded (never_forward)");
+        return None;
+    }
     if inner.visitors.forwarded.contains_key(&(calling, called)) {
         warn!(calling, called, "multi network: unknown target came back within the loop guard; not forwarded again");
         return None;

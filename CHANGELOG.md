@@ -2,6 +2,17 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.21.1 adds:
+
+- **Do not forward SDS and calls to other networks.** New `never_forward` list
+  per network (dashboard: Infrastructure, Edit network, under "Forward
+  unknown targets"): no individual call or SDS to or from a listed ISSI
+  crosses that network's link, in either direction. A call is refused, an
+  SDS goes nowhere (a position in it is still tracked). For an ISSI that
+  only this server takes, e.g. a telemetry ISSI that positions are sent to,
+  which "forward unknown targets" would otherwise hand to that network.
+  Group calls are not affected.
+
 Version 1.21.0 adds:
 
 - **History stays small.** `[storage] keep_days = 7`, `max_calls = 2000`,

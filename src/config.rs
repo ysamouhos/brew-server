@@ -302,6 +302,12 @@ pub struct NetworkConfig {
     /// ISSIs never registered there (an ISSI that network has itself).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub never_export: Vec<u32>,
+    /// ISSIs whose individual calls and SDS never cross to or from this
+    /// network, either as caller or as called party (e.g. a telemetry ISSI
+    /// that only this server takes, which "forward unknown targets" would
+    /// otherwise send there). Group calls are not affected.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub never_forward: Vec<u32>,
     /// "Forward unknown targets": an individual call or SDS from a station
     /// that nobody here takes goes once to this network (loop guard 5 s).
     pub forward_unknown: bool,
@@ -330,6 +336,7 @@ impl Default for NetworkConfig {
             register_all: false,
             export_stations: Vec::new(),
             never_export: Vec::new(),
+            never_forward: Vec::new(),
             forward_unknown: false,
             reconnect_interval_seconds: 15,
             tls: false,
