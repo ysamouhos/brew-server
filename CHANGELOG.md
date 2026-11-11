@@ -4,6 +4,13 @@ All notable changes to brew-server, newest first.
 
 Unreleased:
 
+- **Multi Network: radios registered there, listed.** On the Multi Network
+  page, "N radios registered there" opens a list under the network: ISSI with
+  its Directory name, the station / cell here, the groups there and since
+  when. `/api/networks` has the same as `exported_detail`. Each registration
+  and deregistration there is logged (`multi network: ISSI … registered in
+  …`). Brew does not confirm a registration, so this is what this server
+  sent; whether the other network took it shows only on its side.
 - **Dashboard users** (Server settings -> Dashboard users): any number of
   admins and users, each user with the pages they see; pages without rights
   are left out of the menu. Viewer (not logged in) has its own page ticks,

@@ -76,6 +76,25 @@ across networks.
   Only a network whose settings changed reconnects; no restart. An empty
   password on save keeps the saved one.
 
+## Checking what is registered there
+
+- The Multi Network page shows "N radios registered there" under the bridge
+  ISSI of a connected network. Clicking it opens the list: ISSI and its name
+  from the Directory, the station / cell the radio is on here, its groups in
+  that network (that network's GSSIs) and since when. Admins only, like the
+  page. `/api/networks` has the same per network as `exported_detail`
+  (`issi`, `groups`, `since_ms`); `exported` stays the plain ISSI list.
+- The log has one line per change: `multi network: ISSI 2320972 registered
+  in TetraPack`, `… deregistered in TetraPack`, and on a deliberate stop
+  `deregistered N radios in TetraPack (link stopped)`. Taken ISSIs and
+  conflicts are logged as before.
+- **Brew does not answer a registration** (`SUB_REGISTER` has no
+  acknowledgement), so the list is what this server sent, not a confirmation.
+  Whether the other network took a radio shows only on its side: its
+  dashboard, or a call or SDS from there reaching the radio. A brew-server
+  there with `issi-check` is asked before a radio is registered; a taken
+  ISSI is not registered and shows under "ISSI conflicts".
+
 ## Visitors (extension `mni`)
 
 - A station with Multi Network (it announces the `mni` capability; FlowStation
