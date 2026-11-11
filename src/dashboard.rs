@@ -62,13 +62,13 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
                 cfg.tls.key_path.display()
             )
         })?;
-        tracing::info!(listen=%listen, auth=!cfg.users.is_empty(), tls=true, "dashboard listening (TLS)");
+        tracing::info!(listen=%listen, auth=state.dash_users.enabled(), tls=true, "dashboard listening (TLS)");
         axum_server::bind_rustls(listen, rustls_config)
             .serve(app.into_make_service())
             .await?;
     } else {
         let listener = tokio::net::TcpListener::bind(listen).await?;
-        tracing::info!(listen=%listen, auth=!cfg.users.is_empty(), tls=false, "dashboard listening");
+        tracing::info!(listen=%listen, auth=state.dash_users.enabled(), tls=false, "dashboard listening");
         axum::serve(listener, app).await?;
     }
     Ok(())
@@ -116,12 +116,16 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/history/clear", axum::routing::post(history_clear))
         .route("/api/callsign-db/set", axum::routing::post(crate::callsign_db::set))
         .route("/api/callsign-db/update", axum::routing::post(crate::callsign_db::update_now))
+        .route("/api/accounts/auth", axum::routing::put(crate::accounts::set_auth))
         .route("/api/accounts/{username}", axum::routing::delete(crate::accounts::remove))
         .route("/api/ha/active", axum::routing::post(ha_make_active))
         .route("/api/ha/standby", axum::routing::post(ha_make_standby))
         .route("/api/ha/persist", axum::routing::post(ha_set_persist))
         .route("/api/ha/apply", axum::routing::post(ha_apply))
         .route("/api/config/ha", get(ha_config_get).put(ha_config_put))
+        .route("/api/dashboard-users", get(crate::dash_users::list).post(crate::dash_users::upsert))
+        .route("/api/dashboard-users/viewer", axum::routing::post(crate::dash_users::viewer))
+        .route("/api/dashboard-users/{name}", axum::routing::delete(crate::dash_users::remove))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_admin));
 
     Router::new()
@@ -159,6 +163,7 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/sip", get(sip_snapshot))
         .route("/api/sip/config", get(sip_config))
         .route("/api/whoami", get(whoami))
+        .route("/api/password", axum::routing::post(crate::dash_users::change_password))
         .route("/sms-center", get(sms_center_page))
         .route("/ha", get(ha_page))
         .route("/api/ha", get(ha_status))
@@ -185,23 +190,28 @@ fn app(state: Arc<AppState>) -> Router {
 /// present a valid credential just to view, the original behavior.
 async fn require_basic(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
     let cfg = &state.config.dashboard;
-    if cfg.ui.open {
-        return next.run(request).await;
+    let a = access(&state, request.headers());
+    let path = request.uri().path().to_owned();
+    if a.auth && a.user.is_none() && !cfg.ui.open {
+        // The new dashboard's page and `whoami` load without a login: the page
+        // then opens its own login window.
+        if path == "/ui" || path == "/api/whoami" || (path == "/" && !cfg.legacy_ui) {
+            return next.run(request).await;
+        }
+        if crate::dashboard_auth::from_ui(request.headers()) {
+            return (StatusCode::UNAUTHORIZED, "login required").into_response();
+        }
+        return basic_challenge(&cfg.realm);
     }
-    let users = &cfg.users;
-    if users.is_empty() || dashboard_user(users, request.headers()).is_some() {
-        return next.run(request).await;
+    // Pages and their data only for those who see the page (Server
+    // settings -> Users); admin routes are checked by `require_admin`.
+    let needed = need(&path);
+    if needed != Need::Admin && !allowed(&a, needed) {
+        return denied(&a, &cfg.realm, request.headers());
     }
-    // The new dashboard's page and `whoami` load without a login: the page
-    // then opens its own login window.
-    let path = request.uri().path();
-    if path == "/ui" || path == "/api/whoami" || (path == "/" && !cfg.legacy_ui) {
-        return next.run(request).await;
-    }
-    if crate::dashboard_auth::from_ui(request.headers()) {
-        return (StatusCode::UNAUTHORIZED, "login required").into_response();
-    }
-    basic_challenge(&cfg.realm)
+    let admin = a.admin;
+    let res = next.run(request).await;
+    if admin { res } else { scrub(&path, res).await }
 }
 
 /// Guards the privileged sub-router (see `run`): only usernames listed in
@@ -218,16 +228,132 @@ async fn require_basic(State(state): State<Arc<AppState>>, request: Request, nex
 /// closed mode `require_basic` has already authenticated the caller, so the
 /// `None` arm isn't reached there.)
 async fn require_admin(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
-    let cfg = &state.config.dashboard;
-    if cfg.users.is_empty() {
-        return next.run(request).await; // auth disabled: everyone is an admin
+    let a = access(&state, request.headers());
+    if a.admin {
+        return next.run(request).await;
     }
-    match dashboard_user(&cfg.users, request.headers()) {
-        Some(user) if cfg.admins.is_empty() || cfg.admins.iter().any(|a| a == &user) => next.run(request).await,
-        Some(_) => (StatusCode::FORBIDDEN, "Forbidden: this dashboard user is not listed in [dashboard].admins\n").into_response(),
+    // Reading a page's data that sits next to its admin routes (Accounts).
+    let path = request.uri().path().to_owned();
+    if request.method() == axum::http::Method::GET && need(&path) != Need::Admin && allowed(&a, need(&path)) {
+        let res = next.run(request).await;
+        return scrub(&path, res).await;
+    }
+    match a.user {
+        Some(_) => (StatusCode::FORBIDDEN, "Forbidden: this needs an admin of the dashboard\n").into_response(),
         None if crate::dashboard_auth::from_ui(request.headers()) => (StatusCode::UNAUTHORIZED, "login required").into_response(),
-        None => basic_challenge(&cfg.realm),
+        None => basic_challenge(&state.config.dashboard.realm),
     }
+}
+
+/// Which pages a dashboard route belongs to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Need {
+    /// Everyone who may open the dashboard (names, the page itself, emergencies).
+    Any,
+    /// Who sees one of these pages.
+    Pages(&'static [&'static str]),
+    /// Admins only (every route not listed).
+    Admin,
+}
+
+/// The pages each read route serves (the dashboard's page ids, see
+/// `dash_users::PAGES`). Routes not listed are for admins.
+fn need(path: &str) -> Need {
+    const ANY: &[&str] = &[
+        "/", "/ui", "/api/whoami", "/api/live", "/api/names", "/api/issi-names", "/api/gssi-names", "/api/callsigns",
+        "/api/callsign-db", "/api/talkgroups", "/api/pools", "/api/emergencies", "/api/ha", "/api/password",
+    ];
+    if ANY.contains(&path) {
+        return Need::Any;
+    }
+    Need::Pages(match path {
+        "/api/status" => &["overview", "calls", "sds", "routing"],
+        "/calls" => &["calls"],
+        "/sds" => &["sds"],
+        "/classic" => &["overview"],
+        "/api/connections" | "/connections" => &["overview", "stations", "radios", "roaming", "routing", "map", "telemetry", "issis"],
+        "/api/telemetry" => &["overview", "stations", "telemetry", "tsds", "map"],
+        "/telemetry-sds" => &["tsds"],
+        "/api/radios" => &["overview", "radios", "routing", "issis", "roaming"],
+        "/api/rssi" | "/api/ms-cells" => &["overview", "stations", "radios", "roaming", "map"],
+        "/api/registrations" | "/registrations" => &["radios"],
+        "/api/positions" | "/api/bts-locations" | "/map" => &["map", "stations", "overview"],
+        "/api/group-access" => &["routing", "issis", "radios"],
+        "/api/accounts" => &["accounts"],
+        "/sip" | "/api/sip" => &["sip"],
+        "/sip-config" | "/api/sip/config" => &["sipcfg"],
+        "/sms-center" | "/api/sms-center" => &["sms"],
+        "/ha" => &["ha"],
+        _ => return Need::Admin,
+    })
+}
+
+fn allowed(a: &crate::dash_users::Access, needed: Need) -> bool {
+    match needed {
+        Need::Any => true,
+        Need::Pages(p) => p.iter().any(|p| a.sees(p)),
+        Need::Admin => a.admin,
+    }
+}
+
+/// The read routes the new dashboard polls, for `whoami` (`allowed`).
+const POLLED: &[&str] = &[
+    "/api/status", "/api/connections", "/api/telemetry", "/api/radios", "/api/rssi", "/api/ms-cells", "/api/registrations",
+    "/api/positions", "/api/bts-locations", "/api/group-access", "/api/accounts", "/api/sip", "/api/sip/config", "/api/sms-center",
+    "/api/control", "/api/networks",
+];
+
+/// A page the request may not see: the login dialog for a classic page
+/// opened without a login, else a plain refusal (the new dashboard does not
+/// ask for these and must not pop its login window for them).
+fn denied(a: &crate::dash_users::Access, realm: &str, headers: &HeaderMap) -> Response {
+    if a.user.is_none() && !crate::dashboard_auth::from_ui(headers) {
+        return basic_challenge(realm);
+    }
+    (StatusCode::FORBIDDEN, "Forbidden: this page is not open for this dashboard user\n").into_response()
+}
+
+/// Addresses only admins see: the network address of stations, peers and
+/// SIP endpoints, by route.
+fn hidden_keys(path: &str) -> &'static [&'static str] {
+    match path {
+        "/api/connections" => &["remote_addr", "basestation_addr"],
+        "/api/bts-locations" | "/api/telemetry" => &["ip"],
+        "/api/sip" => &["source", "contact", "peer_addr", "remote_host"],
+        "/api/sip/config" => &["remote_host", "username"],
+        "/api/ha" => &["ip", "vip", "real_ip", "peer_ip", "vip_interface", "check_gateway"],
+        _ => &[],
+    }
+}
+
+fn strip(v: &mut serde_json::Value, keys: &[&str]) {
+    match v {
+        serde_json::Value::Object(m) => {
+            m.retain(|k, _| !keys.contains(&k.as_str()));
+            m.values_mut().for_each(|x| strip(x, keys));
+        }
+        serde_json::Value::Array(a) => a.iter_mut().for_each(|x| strip(x, keys)),
+        _ => {}
+    }
+}
+
+/// Removes `hidden_keys` from a JSON answer for someone who is not an admin.
+async fn scrub(path: &str, res: Response) -> Response {
+    let keys = hidden_keys(path);
+    if keys.is_empty() || !res.status().is_success() {
+        return res;
+    }
+    let (parts, body) = res.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 32 << 20).await else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Response::from_parts(parts, axum::body::Body::from(bytes));
+    };
+    strip(&mut v, keys);
+    let mut res = Json(v).into_response();
+    *res.status_mut() = parts.status;
+    res
 }
 
 /// The header Login button's target. It sits behind `require_admin`, so by
@@ -250,36 +376,42 @@ async fn login(Query(q): Query<HashMap<String, String>>) -> Redirect {
 /// this is purely a UI convenience.
 async fn whoami(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Json<serde_json::Value> {
     let cfg = &state.config.dashboard;
-    let username = dashboard_user(&cfg.users, &headers);
-    let admin = match &username {
-        _ if cfg.users.is_empty() => true, // auth disabled: everyone is effectively admin
-        Some(user) => cfg.admins.is_empty() || cfg.admins.iter().any(|a| a == user),
-        None => false,
-    };
-    // A Login button is useful only in open mode, when nobody is signed in
-    // yet and there's actually a credential to sign in with.
-    let can_login = cfg.ui.open && username.is_none() && !cfg.users.is_empty();
-    // Closed dashboard and nobody signed in: the new dashboard shows its
-    // login window and nothing else.
-    let need_login = !cfg.ui.open && username.is_none() && !cfg.users.is_empty();
-    Json(serde_json::json!({ "username": username, "admin": admin, "open": cfg.ui.open, "can_login": can_login, "need_login": need_login }))
+    let a = access(&state, &headers);
+    let anonymous = a.auth && a.user.is_none();
+    // A Login button is useful only in open mode, when nobody is signed in.
+    let can_login = cfg.ui.open && anonymous;
+    // Closed dashboard (or Viewer sees no page) and nobody signed in: the
+    // new dashboard shows its login window and nothing else.
+    let need_login = anonymous && (!cfg.ui.open || a.pages.is_empty());
+    let allowed: Vec<&str> = POLLED.iter().copied().filter(|p| allowed(&a, need(p))).collect();
+    Json(serde_json::json!({
+        "username": a.user, "admin": a.admin, "open": cfg.ui.open, "can_login": can_login, "need_login": need_login,
+        "auth": a.auth, "pages": a.pages, "allowed": allowed,
+    }))
+}
+
+/// What the request may do: its dashboard user (HTTP Basic, or the session
+/// cookie of the new dashboard's login window) and that user's rights, or
+/// Viewer's.
+pub(crate) fn access(state: &AppState, headers: &HeaderMap) -> crate::dash_users::Access {
+    state.dash_users.access(dashboard_user(&state.dash_users, headers).as_deref())
 }
 
 /// The signed-in dashboard user: HTTP Basic credentials, or the session
 /// cookie of the new dashboard's login window.
-fn dashboard_user(users: &HashMap<String, String>, headers: &HeaderMap) -> Option<String> {
-    basic_username(users, headers).or_else(|| crate::dashboard_auth::session_user(users, headers))
+fn dashboard_user(users: &crate::dash_users::DashUsers, headers: &HeaderMap) -> Option<String> {
+    basic_username(users, headers).or_else(|| crate::dashboard_auth::session_user(|u| users.exists(u), headers))
 }
 
 /// Validates the request's HTTP Basic credentials against `users` and
 /// returns the authenticated username, or `None` if missing/invalid.
-fn basic_username(users: &HashMap<String, String>, headers: &HeaderMap) -> Option<String> {
+fn basic_username(users: &crate::dash_users::DashUsers, headers: &HeaderMap) -> Option<String> {
     let value = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok())?;
     let b64 = value.strip_prefix("Basic ")?;
     let decoded = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
     let text = String::from_utf8(decoded).ok()?;
     let (user, pass) = text.split_once(':')?;
-    if users.get(user).map(|p| p == pass).unwrap_or(false) {
+    if users.check(user, pass) {
         Some(user.to_string())
     } else {
         None
@@ -2220,23 +2352,28 @@ mod tests {
 
     #[test]
     fn basic_username_accepts_matching_credentials() {
-        let mut users = HashMap::new();
-        users.insert("alice".to_string(), "secret".to_string());
+        let users = users_of(&[("alice", "secret")]);
         let headers = basic_auth_header("alice", "secret");
         assert_eq!(basic_username(&users, &headers), Some("alice".to_string()));
     }
 
+    fn users_of(list: &[(&str, &str)]) -> crate::dash_users::DashUsers {
+        let mut c = crate::config::DashboardConfig::default();
+        for (u, p) in list { c.users.insert(u.to_string(), p.to_string()); }
+        c.users_file = std::env::temp_dir().join(format!("brew-users-{}.json", uuid::Uuid::new_v4().simple()));
+        crate::dash_users::DashUsers::open(&c)
+    }
+
     #[test]
     fn basic_username_rejects_wrong_password() {
-        let mut users = HashMap::new();
-        users.insert("alice".to_string(), "secret".to_string());
+        let users = users_of(&[("alice", "secret")]);
         let headers = basic_auth_header("alice", "wrong");
         assert_eq!(basic_username(&users, &headers), None);
     }
 
     #[test]
     fn basic_username_rejects_missing_header() {
-        let users: HashMap<String, String> = HashMap::new();
+        let users = users_of(&[]);
         assert_eq!(basic_username(&users, &HeaderMap::new()), None);
     }
 
@@ -2333,6 +2470,104 @@ mod tests {
         let mut out = String::new();
         c.read_to_string(&mut out).await.unwrap();
         out
+    }
+
+    /// Server settings -> Users: each user sees only its pages (the data of
+    /// the others is refused), Viewer sees its pages on the open dashboard,
+    /// station addresses go to admins only, at least one admin stays, and
+    /// Brew authentication is switched live. 10 stations, 25 radios.
+    #[tokio::test]
+    async fn users_see_only_their_pages_and_addresses_stay_with_admins() {
+        use crate::state::{Client, ClientMode, Subscriber};
+        let dir = std::env::temp_dir().join(format!("brew-mu-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut c = config::Config::default();
+        c.storage.enabled = false;
+        c.sms_center.enabled = false;
+        c.auth.enabled = true;
+        c.dashboard.ui.open = true;
+        c.dashboard.users = HashMap::from([("admin".into(), "adminpw".into()), ("bob".into(), "bobpw1".into())]);
+        c.dashboard.admins = vec!["admin".into()];
+        c.dashboard.users_file = dir.join("dashboard-users.json");
+        let cfg_path = dir.join("brew-server.toml");
+        std::fs::write(&cfg_path, c.to_toml_pretty().unwrap()).unwrap();
+        let state = Arc::new(AppState::new(c, cfg_path.clone()).0);
+        {
+            let mut inner = state.inner.write().await;
+            let mut issi = 2_320_001;
+            for s in 0..10u16 {
+                let id = uuid::Uuid::new_v4();
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                inner.clients.insert(id, Client { tx, mode: ClientMode::Basestation, version: crate::protocol::ConnVersion::V0, version_announced: false,
+                    remote_addr: Some(format!("198.51.100.{}:40000", 10 + s).parse().unwrap()), connected_at_ms: 0, username: Some(format!("{}", 1_000_001 + s as u32)) });
+                for _ in 0..if s < 5 { 3 } else { 2 } {
+                    inner.subscribers.insert(issi, Subscriber { client_id: id, groups: std::collections::HashSet::new(), mode: ClientMode::Basestation, route: Default::default() });
+                    issi += 1;
+                }
+            }
+            assert_eq!(inner.subscribers.len(), 25);
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn({ let s = state.clone(); async move { axum::serve(listener, app(s)).await.unwrap() } });
+        let basic = |u: &str, p: &str| format!("Authorization: Basic {}\r\nx-brew-ui: 1\r\n", base64::engine::general_purpose::STANDARD.encode(format!("{u}:{p}")));
+        let get = |path: &str, extra: &str| format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n{extra}\r\n");
+        let send = |m: &str, path: &str, extra: &str, body: &str| format!("{m} {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n{extra}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+        let (adm, bob) = (basic("admin", "adminpw"), basic("bob", "bobpw1"));
+
+        // The admin gives bob Calls only, and Viewer the Map.
+        let r = http(addr, send("POST", "/api/dashboard-users", &adm, r#"{"name":"bob","password":"","admin":false,"pages":["calls"]}"#)).await;
+        assert!(r.starts_with("HTTP/1.1 200"), "{r}");
+        assert!(http(addr, send("POST", "/api/dashboard-users/viewer", &adm, r#"{"pages":["map"]}"#)).await.starts_with("HTTP/1.1 200"));
+        let file = std::fs::read_to_string(dir.join("dashboard-users.json")).unwrap();
+        assert!(!file.contains("adminpw") && !file.contains("bobpw1"), "hashes only");
+
+        let who = http(addr, get("/api/whoami", &bob)).await;
+        assert!(who.contains(r#""pages":["calls"]"#) && who.contains(r#""allowed":["/api/status"]"#), "{who}");
+        assert!(http(addr, get("/api/status", &bob)).await.starts_with("HTTP/1.1 200"));
+        for path in ["/api/connections", "/api/accounts", "/api/telemetry", "/api/dashboard-users", "/api/config/blacklist", "/sip"] {
+            assert!(http(addr, get(path, &bob)).await.starts_with("HTTP/1.1 403"), "bob may not read {path}");
+        }
+        assert!(http(addr, send("POST", "/api/dashboard-users/viewer", &bob, r#"{"pages":[]}"#)).await.starts_with("HTTP/1.1 403"));
+
+        // Viewer (open dashboard, not logged in): the map and its stations, without addresses.
+        let anon = "x-brew-ui: 1\r\n";
+        assert!(http(addr, get("/api/status", anon)).await.starts_with("HTTP/1.1 403"));
+        let classic = http(addr, get("/calls", "")).await;
+        assert!(classic.starts_with("HTTP/1.1 401") && classic.to_lowercase().contains("www-authenticate"), "a classic page asks for a login");
+        let v = http(addr, get("/api/connections", anon)).await;
+        assert!(v.starts_with("HTTP/1.1 200") && v.contains("1000001") && !v.contains("198.51.100") && !v.contains("remote_addr"), "{v}");
+        let a = http(addr, get("/api/connections", &adm)).await;
+        assert!(a.contains("198.51.100.10:40000") && a.contains("basestation_addr"), "the admin sees addresses");
+
+        // Bob changes his own password; the admin sets it again.
+        assert!(http(addr, send("POST", "/api/password", anon, r#"{"current":"x","new":"whatever"}"#)).await.starts_with("HTTP/1.1 401"));
+        assert!(http(addr, send("POST", "/api/password", &bob, r#"{"current":"wrong","new":"bobpw22"}"#)).await.starts_with("HTTP/1.1 400"));
+        assert!(http(addr, send("POST", "/api/password", &bob, r#"{"current":"bobpw1","new":"bobpw22"}"#)).await.starts_with("HTTP/1.1 204"));
+        assert!(http(addr, get("/api/status", &bob)).await.starts_with("HTTP/1.1 403"), "old password no longer works");
+        let bob2 = basic("bob", "bobpw22");
+        assert!(http(addr, get("/api/status", &bob2)).await.starts_with("HTTP/1.1 200"));
+        assert!(http(addr, send("POST", "/api/dashboard-users", &bob2, r#"{"name":"bob","password":"selfadmin","admin":true,"pages":[]}"#)).await.starts_with("HTTP/1.1 403"), "no rights for himself");
+        assert!(http(addr, send("POST", "/api/dashboard-users", &adm, r#"{"name":"bob","password":"bobpw1","admin":false,"pages":["calls"]}"#)).await.starts_with("HTTP/1.1 200"));
+        assert!(http(addr, get("/api/status", &bob)).await.starts_with("HTTP/1.1 200") && !http(addr, get("/api/status", &bob2)).await.starts_with("HTTP/1.1 200"));
+
+        // At least one admin stays.
+        assert!(http(addr, send("DELETE", "/api/dashboard-users/admin", &adm, "")).await.starts_with("HTTP/1.1 400"));
+        assert!(http(addr, send("POST", "/api/dashboard-users", &adm, r#"{"name":"admin","password":"","admin":false,"pages":[]}"#)).await.starts_with("HTTP/1.1 400"));
+        // A removed user is out at once.
+        assert!(http(addr, send("DELETE", "/api/dashboard-users/bob", &adm, "")).await.starts_with("HTTP/1.1 200"));
+        assert!(http(addr, get("/api/status", &bob)).await.starts_with("HTTP/1.1 403"), "bob is Viewer now");
+
+        // Brew authentication: off live and in the config file, then on again.
+        let r = http(addr, send("PUT", "/api/accounts/auth", &adm, r#"{"enabled":false}"#)).await;
+        assert!(r.starts_with("HTTP/1.1 200") && r.contains(r#""brew":{"enabled":true,"open":true}"#), "{r}");
+        assert!(!state.brew_auth_enabled());
+        assert!(!config::Config::load(&cfg_path).unwrap().auth.enabled);
+        assert!(http(addr, send("PUT", "/api/accounts/auth", &bob, r#"{"enabled":true}"#)).await.starts_with("HTTP/1.1 401"), "only admins (bob is gone: Viewer)");
+        assert!(http(addr, send("PUT", "/api/accounts/auth", &adm, r#"{"enabled":true}"#)).await.starts_with("HTTP/1.1 200"));
+        assert!(state.brew_auth_enabled() && config::Config::load(&cfg_path).unwrap().auth.enabled);
+        crate::CONFIG_WRITE_APPLIED_LIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]

@@ -348,6 +348,8 @@ pub struct AppState {
     pub aprs_tx: mpsc::UnboundedSender<crate::aprs::PositionReport>,
     /// Store-and-forward queue for SDS to offline subscribers.
     pub sms_center: crate::sms_center::SmsCenter,
+    /// Dashboard users, admins and the pages each one sees.
+    pub dash_users: crate::dash_users::DashUsers,
     /// Active/standby role and dashboard commands (see `ha`). Always reports
     /// Active when `[ha]` is disabled.
     pub ha: crate::ha::HaHandle,
@@ -389,6 +391,8 @@ pub struct AppState {
     /// The ISSI allowlist as enforced right now (`[allowlist]`), edited live
     /// like `blocked`. `enabled` false: kept, not enforced.
     pub allowlist: std::sync::RwLock<Allowlist>,
+    /// `[auth] enabled` as it is now (switched live on the Accounts page).
+    pub brew_auth: std::sync::atomic::AtomicBool,
 }
 
 /// Username -> password of one listener, shared with the dashboard.
@@ -552,6 +556,11 @@ impl AppState {
     /// The startup config with the live blacklist and allowlist applied: what
     /// is saved when a settings edit rewrites the file, so it never reverts
     /// edits made to either list.
+    /// Stations and apps need a Brew login (`[auth] enabled`).
+    pub fn brew_auth_enabled(&self) -> bool {
+        self.brew_auth.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub fn config_snapshot(&self) -> Config {
         let mut cfg = self.config.clone();
         cfg.blacklist.issis = self.blocked_list();
@@ -567,6 +576,7 @@ impl AppState {
         if let Ok(t) = self.talkgroups.read() { cfg.talkgroups = t.clone(); }
         if let Ok(c) = self.callsign_cfg.read() { cfg.callsign_db = c.clone(); }
         
+        cfg.auth.enabled = self.brew_auth_enabled();
         let (enabled, issis) = self.allowlist_snapshot();
         cfg.allowlist.enabled = enabled;
         cfg.allowlist.issis = issis;
@@ -617,6 +627,7 @@ impl AppState {
         };
         let (aprs_tx, aprs_rx) = mpsc::unbounded_channel();
         let sms_center = crate::sms_center::SmsCenter::open(config.sms_center.clone());
+        let dash_users = crate::dash_users::DashUsers::open(&config.dashboard);
         let blocked: HashSet<u32> = config.blacklist.issis.iter().copied().collect();
         let pools = config.talkgroup_pools.clone();
         let networks = config.multi_network.clone();
@@ -629,6 +640,7 @@ impl AppState {
         let callsign_cfg = config.callsign_db.clone();
         let callsign_db = crate::callsign_db::Db::default();
         if callsign_cfg.enabled { callsign_db.load_cache(&callsign_cfg.cache); }
+        let brew_auth = config.auth.enabled;
         let allowlist = Allowlist { enabled: config.allowlist.enabled, issis: config.allowlist.issis.iter().copied().collect() };
         let config_hash = crate::ha::config_hash(&config);
         let ha = crate::ha::HaHandle::new(&config.ha, config_hash, crate::ha::config_sections(&config, false));
@@ -643,6 +655,7 @@ impl AppState {
                 sip: RwLock::new(None),
                 aprs_tx,
                 sms_center,
+                dash_users,
                 ha,
                 store,
                 blocked: std::sync::RwLock::new(blocked),
@@ -659,6 +672,7 @@ impl AppState {
                 callsign_db,
                 refused_groups: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 allowlist: std::sync::RwLock::new(allowlist),
+                brew_auth: std::sync::atomic::AtomicBool::new(brew_auth),
             },
             aprs_rx,
         )

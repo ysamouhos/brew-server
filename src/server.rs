@@ -43,7 +43,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
             )
         })?;
         let listen = state.service_bind(state.config.listen);
-        info!(%listen, websocket_path=%base, auth=state.config.auth.enabled, tls=true, "Brew server listening (TLS)");
+        info!(%listen, websocket_path=%base, auth=state.brew_auth_enabled(), tls=true, "Brew server listening (TLS)");
         // TCP_NODELAY: see `nodelay_listener` below; axum-server's default
         // acceptor leaves Nagle on.
         let acceptor = axum_server::tls_rustls::RustlsAcceptor::new(rustls_config)
@@ -55,7 +55,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
     } else {
         let listen = state.service_bind(state.config.listen);
         let listener = nodelay_listener(tokio::net::TcpListener::bind(listen).await?);
-        info!(%listen, websocket_path=%base, auth=state.config.auth.enabled, tls=false, "Brew server listening");
+        info!(%listen, websocket_path=%base, auth=state.brew_auth_enabled(), tls=false, "Brew server listening");
         axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     }
     Ok(())
@@ -201,7 +201,7 @@ pub(crate) async fn brew_discovery(
     // same User-Agent, as FlowStation's does, so another client behind the
     // same NAT never inherits it. With no hint this is the upgrade's own
     // headers, as before.
-    if is_upgrade && !state.config.auth.enabled {
+    if is_upgrade && !state.brew_auth_enabled() {
         let hint = {
             let mut inner = state.inner.write().await;
             let agent = user_agent(&parts.headers);
@@ -212,7 +212,7 @@ pub(crate) async fn brew_discovery(
         return upgrade_from_parts(state, &mut parts, mode, seed_version, remote_addr, None).await;
     }
 
-    if state.config.auth.enabled {
+    if state.brew_auth_enabled() {
         let Some(username) = verify_digest(&state, &parts.headers, "GET", &request_uri).await else {
             return digest_challenge(&state).await;
         };
@@ -265,7 +265,7 @@ async fn brew_session_endpoint(
     request: Request<axum::body::Body>,
 ) -> Response {
     state.purge_ephemeral().await;
-    if !state.config.auth.enabled { return StatusCode::NOT_FOUND.into_response(); }
+    if !state.brew_auth_enabled() { return StatusCode::NOT_FOUND.into_response(); }
     let valid = state.inner.read().await.auth_sessions.contains_key(&token);
     if !valid { return StatusCode::UNAUTHORIZED.into_response(); }
 

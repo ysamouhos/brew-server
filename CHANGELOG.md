@@ -4,6 +4,17 @@ All notable changes to brew-server, newest first.
 
 Unreleased:
 
+- **Dashboard users** (Server settings -> Dashboard users): any number of
+  admins and users, each user with the pages they see; pages without rights
+  are left out of the menu. Viewer (not logged in) has its own page ticks,
+  which decide what an open dashboard shows. Saving and editing need an admin
+  (the login window opens with a note otherwise). Station logins stay visible,
+  IP addresses are for admins only. Everyone changes their own password in the
+  menu at the top right; admins set other users' passwords. Stored as Argon2
+  hashes in `[dashboard] users_file`; the config users are the start of a new
+  installation, and deleting the file gets them back when locked out. Accounts
+  has an **Authentication required** switch (`[auth] enabled`, live, asks
+  before switching off). See docs/Dashboard-Users.md.
 - **Dashboard: SIP / VoIP, SIP Config, SMS Center, Telemetry SDS, High
   Availability and Server settings are native pages** in the look of the
   rest (cards, labelled fields, light and dark, phone width) instead of

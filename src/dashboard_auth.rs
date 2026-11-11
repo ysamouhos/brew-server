@@ -62,12 +62,12 @@ fn cookie_token(headers: &HeaderMap) -> Option<String> {
 }
 
 /// The user of the request's session cookie, if the session is alive and the
-/// user still exists in `users`.
-pub fn session_user(users: &HashMap<String, String>, headers: &HeaderMap) -> Option<String> {
+/// user still exists (`exists`).
+pub fn session_user(exists: impl Fn(&str) -> bool, headers: &HeaderMap) -> Option<String> {
     let token = cookie_token(headers)?;
     let mut s = SESSIONS.lock().unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
-    let alive = s.get(&token).is_some_and(|v| now.duration_since(v.last) < IDLE && users.contains_key(&v.user));
+    let alive = s.get(&token).is_some_and(|v| now.duration_since(v.last) < IDLE && exists(&v.user));
     if !alive {
         s.remove(&token);
         return None;
@@ -75,6 +75,14 @@ pub fn session_user(users: &HashMap<String, String>, headers: &HeaderMap) -> Opt
     let v = s.get_mut(&token)?;
     v.last = now;
     Some(v.user.clone())
+}
+
+/// Ends every session of `user` except the one of this request (a new
+/// password signs the user out elsewhere).
+pub fn end_sessions(user: &str, headers: &HeaderMap) {
+    let keep = cookie_token(headers);
+    SESSIONS.lock().unwrap_or_else(|e| e.into_inner())
+        .retain(|t, v| v.user != user || keep.as_deref() == Some(t.as_str()));
 }
 
 /// Whether the request comes from the new dashboard's own scripts.
@@ -97,18 +105,17 @@ fn cookie(state: &AppState, value: &str, max_age: Option<u64>) -> HeaderValue {
 
 /// `POST /api/login`: checks the dashboard user and sets the session cookie.
 pub async fn login(State(state): State<Arc<AppState>>, Json(req): Json<LoginRequest>) -> Response {
-    let cfg = &state.config.dashboard;
-    let ok = cfg.users.get(&req.username).is_some_and(|p| *p == req.password);
+    let ok = state.dash_users.check(&req.username, &req.password);
     if !ok {
         tracing::warn!(user = %req.username, "dashboard login failed");
         // Slows down guessing; the real protection is a good password.
         tokio::time::sleep(Duration::from_millis(600)).await;
         return (StatusCode::UNAUTHORIZED, "Wrong username or password").into_response();
     }
-    let admin = cfg.admins.is_empty() || cfg.admins.iter().any(|a| a == &req.username);
-    tracing::info!(user = %req.username, admin, "dashboard login");
+    let a = state.dash_users.access(Some(&req.username));
+    tracing::info!(user = %req.username, admin = a.admin, "dashboard login");
     let token = create(&req.username);
-    let mut res = Json(serde_json::json!({ "username": req.username, "admin": admin })).into_response();
+    let mut res = Json(serde_json::json!({ "username": req.username, "admin": a.admin, "pages": a.pages })).into_response();
     res.headers_mut().insert(header::SET_COOKIE, cookie(&state, &token, None));
     res
 }
@@ -138,10 +145,24 @@ mod tests {
         let users = HashMap::from([("admin".to_string(), "pw".to_string())]);
         let token = create("admin");
         let h = with_cookie(&format!("theme=dark; {COOKIE}={token}"));
-        assert_eq!(session_user(&users, &h).as_deref(), Some("admin"));
-        assert_eq!(session_user(&users, &with_cookie(&format!("{COOKIE}=nope"))), None);
-        assert_eq!(session_user(&users, &HeaderMap::new()), None);
-        assert_eq!(session_user(&HashMap::new(), &h), None, "user gone: session ends");
-        assert_eq!(session_user(&users, &h), None, "and stays ended");
+        let exists = |u: &str| users.contains_key(u);
+        assert_eq!(session_user(exists, &h).as_deref(), Some("admin"));
+        assert_eq!(session_user(exists, &with_cookie(&format!("{COOKIE}=nope"))), None);
+        assert_eq!(session_user(exists, &HeaderMap::new()), None);
+        assert_eq!(session_user(|_| false, &h), None, "user gone: session ends");
+        assert_eq!(session_user(exists, &h), None, "and stays ended");
+    }
+
+    #[test]
+    fn a_new_password_ends_the_users_other_sessions() {
+        let all = |_: &str| true;
+        let (here, there, other) = (create("pwuser"), create("pwuser"), create("pwother"));
+        let h = |t: &str| with_cookie(&format!("{COOKIE}={t}"));
+        end_sessions("pwuser", &h(&here));
+        assert_eq!(session_user(all, &h(&here)).as_deref(), Some("pwuser"), "this session stays");
+        assert_eq!(session_user(all, &h(&there)), None, "the other one ends");
+        assert_eq!(session_user(all, &h(&other)).as_deref(), Some("pwother"), "other users stay");
+        end_sessions("pwuser", &HeaderMap::new());
+        assert_eq!(session_user(all, &h(&here)), None, "an admin's change ends them all");
     }
 }

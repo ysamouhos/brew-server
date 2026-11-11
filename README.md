@@ -78,6 +78,7 @@ dashboard's `/healthz` (port 9003) answers on both, with the node's role.
 
 ## More documentation
 
+- [Dashboard users](docs/Dashboard-Users.md) -- admins, users and Viewer, per-page rights, own passwords, the way back in when locked out
 - [Roaming](docs/Roaming.md) -- kick stale registrations on old Basestations
 - [Handover](docs/Handover.md) -- radios keep group and individual calls when they move between Basestations
 - [Brew extensions](docs/Brew-Extensions.md) -- the protocol behind it, for other server and Basestation implementations

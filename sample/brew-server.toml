@@ -86,10 +86,19 @@ servername = "Tetra Network Monitor"
 # Both stay reachable under /classic and /ui.
 legacy_ui = false
 admins = ["admin"]
+# Dashboard users made on Server settings -> Dashboard users. Until the first
+# change there, [dashboard.users] / admins are the users; afterwards this file.
+# Locked out: delete the file and restart, the config users are back.
+# See docs/Dashboard-Users.md.
+users_file = "dashboard-users.json"
 
+# open = true: the dashboard can be watched without a login. Which pages that
+# shows is set by Viewer (Server settings -> Dashboard users).
 [dashboard.ui]
 open = false
 
+# Users of a new installation (admins: see `admins` above; "viewer" here is a
+# normal user that only reads, not the Viewer of the open dashboard).
 [dashboard.users]
 "admin" = "change-me-admin"
 "viewer" = "change-me-viewer"

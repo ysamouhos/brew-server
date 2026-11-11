@@ -798,6 +798,13 @@ pub struct DashboardConfig {
     /// set this once you want to split "can view" from "can change config".
     /// Has no effect when `users` itself is empty (auth disabled entirely).
     pub admins: Vec<String>,
+    /// Users file of the dashboard's user management (Server settings ->
+    /// Users): users, admins, the pages each one sees and the Viewer pages,
+    /// passwords as argon2 hashes. Written on the first change in the
+    /// dashboard; from then on it is used instead of `users` / `admins`.
+    /// Without it (never changed, or deleted to get back in) `users` /
+    /// `admins` above are the dashboard users.
+    pub users_file: PathBuf,
     pub realm: String,
     /// Name of this server: the main dashboard heading and the browser tab
     /// title of every dashboard page.
@@ -819,6 +826,7 @@ impl Default for DashboardConfig {
             listen: "0.0.0.0:9003".parse().unwrap(),
             users: HashMap::new(),
             admins: Vec::new(),
+            users_file: PathBuf::from("dashboard-users.json"),
             realm: "brew-server-dashboard".into(),
             servername: "Tetra Network Monitor".into(),
             ui: DashboardUiConfig::default(),
@@ -832,6 +840,10 @@ impl Default for DashboardConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DashboardUiConfig {
+    /// The pages anyone sees without logging in are the ones ticked for
+    /// "Viewer" in Server settings -> Users (default: every page that is not
+    /// for admins).
+    ///
     /// When `true` (`ui.open = true`), the dashboard is viewable by anyone
     /// without logging in and is read-only for visitors who aren't signed in
     /// as an admin: a Login button in the header lets an admin authenticate
