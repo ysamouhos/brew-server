@@ -40,8 +40,9 @@ const MAX_NAME: usize = 40;
 /// The legs of one running pool call, keyed by the call that started them.
 #[derive(Debug, Clone)]
 pub struct PoolRun {
-    /// Pool (name) that put the first leg up.
-    pub pool: String,
+    /// Every switched-on pool that copies this call (a group can be in
+    /// several pools: a call on it is heard on all of them).
+    pub pools: Vec<String>,
     /// Group the call is on.
     pub origin_gssi: u32,
     /// Connection the call came in on (its talker's station).
@@ -90,6 +91,16 @@ pub fn targets_for(pools: &[TalkgroupPoolConfig], slots: &HashMap<String, u8>, g
         }
     }
     out
+}
+
+/// Names of the switched-on pools that copy a call on `gssi` to at least one
+/// of `targets` (the groups it really goes to), in config order.
+pub fn pools_copying(pools: &[TalkgroupPoolConfig], slots: &HashMap<String, u8>, gssi: u32, targets: &BTreeMap<u32, String>) -> Vec<String> {
+    pools.iter().filter(|p| p.enabled).filter(|p| {
+        let groups = members(p, slots);
+        let copies = if p.both_ways { groups.contains(&gssi) } else { groups.first() == Some(&gssi) };
+        copies && groups.iter().any(|t| *t != gssi && targets.contains_key(t))
+    }).map(|p| p.name.clone()).collect()
 }
 
 /// Checks a pool list from the dashboard; the error says what is wrong.
@@ -274,7 +285,7 @@ fn start_leg(state: &AppState, inner: &mut Inner, origin: Uuid, gssi: u32, out: 
         r.legs.insert(gssi, leg);
         r.waiting.remove(&gssi);
     }
-    info!(origin=%origin, leg=%leg, from_gssi=run.origin_gssi, gssi, pool=%run.pool, targets=peers.len(), "talkgroup pool: leg set up");
+    info!(origin=%origin, leg=%leg, from_gssi=run.origin_gssi, gssi, pools=%run.pools.join(", "), targets=peers.len(), "talkgroup pool: leg set up");
     Some(leg)
 }
 
@@ -301,9 +312,9 @@ pub async fn on_group_tx(state: &Arc<AppState>, source: ClientId, id: Uuid, sour
         // A group that does not admit the talker gets no copy (`group_access`).
         wanted.retain(|t, _| state.group_permits(*t, source_issi));
         if wanted.is_empty() && !inner.pools.runs.contains_key(&id) { return; }
-        let pool = wanted.values().next().cloned().unwrap_or_default();
+        let names = pools_copying(&pools, &slots, gssi, &wanted);
         let run = inner.pools.runs.entry(id).or_insert_with(|| PoolRun {
-            pool, origin_gssi: gssi, owner: source, source_issi, priority,
+            pools: names, origin_gssi: gssi, owner: source, source_issi, priority,
             legs: BTreeMap::new(), waiting: BTreeSet::new(), answer: None,
         });
         run.owner = source;
@@ -465,11 +476,16 @@ pub struct LiveView {
 /// The pools with their running calls, for `/api/pools`.
 pub async fn snapshot(state: &Arc<AppState>) -> Vec<PoolView> {
     let pools = state.pools.read().map(|p| p.clone()).unwrap_or_default();
+    let slots = crate::netlink::slots(state);
     let inner = state.inner.read().await;
     pools.into_iter().map(|p| {
+        // A call heard on several pools shows on each of them, with that pool's own legs.
+        let own = members(&p, &slots);
         let live = inner.pools.runs.values()
-            .find(|r| r.pool == p.name)
-            .map(|r| LiveView { gssi: r.origin_gssi, talker: r.source_issi, legs: r.legs.keys().copied().collect(), waiting: r.waiting.iter().copied().collect() });
+            .find(|r| r.pools.contains(&p.name))
+            .map(|r| LiveView { gssi: r.origin_gssi, talker: r.source_issi,
+                legs: r.legs.keys().copied().filter(|g| own.contains(g)).collect(),
+                waiting: r.waiting.iter().copied().filter(|g| own.contains(g)).collect() });
         PoolView { pool: p, live }
     }).collect()
 }
@@ -497,6 +513,25 @@ mod tests {
         let p = [pool("Info", false, &[9, 2321, 2322])];
         assert_eq!(targets_for(&p, &none(), 9).keys().copied().collect::<Vec<_>>(), vec![2321, 2322]);
         assert!(targets_for(&p, &none(), 2321).is_empty());
+    }
+
+    /// A group in several pools (232 in all three): a call on it is copied to every pool and
+    /// carries all their names; a call on a group of one pool names only that pool.
+    #[test]
+    fn group_in_several_pools_names_the_pools_that_copy() {
+        let pools = vec![pool("TGP1", true, &[232, 2321, 2323]), pool("TG Pool", true, &[232, 2327, 2328]), pool("North", true, &[92, 93, 94, 232])];
+        let t = targets_for(&pools, &none(), 232);
+        assert_eq!(t.keys().copied().collect::<Vec<_>>(), vec![92, 93, 94, 2321, 2323, 2327, 2328]);
+        assert_eq!(pools_copying(&pools, &none(), 232, &t), vec!["TGP1", "TG Pool", "North"]);
+        let t = targets_for(&pools, &none(), 2327);
+        assert_eq!(t.keys().copied().collect::<Vec<_>>(), vec![232, 2328]);
+        assert_eq!(pools_copying(&pools, &none(), 2327, &t), vec!["TG Pool"], "not TGP1, which only shares 232");
+        let t = targets_for(&pools, &none(), 93);
+        assert_eq!(pools_copying(&pools, &none(), 93, &t), vec!["North"]);
+        // A pool whose only target is refused (group access) is not named.
+        let mut t = targets_for(&pools, &none(), 232);
+        t.retain(|g, _| ![2321, 2323].contains(g));
+        assert_eq!(pools_copying(&pools, &none(), 232, &t), vec!["TG Pool", "North"]);
     }
 
     #[test]

@@ -3,7 +3,7 @@
 Run a closed network: only the ISSIs on the allowlist may communicate through
 this brew-server, every other radio is barred. It is the counterpart of the
 [ISSI blacklist](ISSI-Blacklist.md), which bars a few radios on an otherwise
-open network. Manage it under **Settings -> ISSI Allowlist** (admin only) or in
+open network. Manage it on the dashboard under **System -> Server settings -> ISSI allow list** (admin only; classic dashboard: Settings -> ISSI Allowlist) or in
 `brew-server.toml`:
 
 ```toml
@@ -12,7 +12,7 @@ enabled = true
 issis = [4013, 4014, 4015]
 ```
 
-Changes made in the Settings page apply **immediately and without a restart**
+Changes made on Server settings apply **immediately and without a restart**
 (a restart would drop every call). The config file is updated at the same time.
 Editing the file by hand, or saving the raw config, restarts the server as any
 other config change does.
@@ -61,10 +61,10 @@ barred ISSI the same way for both.
 
 - With `enabled = false` (the default) the list is kept but not enforced: every
   radio may communicate. Build the list while the network runs, then turn
-  enforcement on from the Settings page; nothing is dropped in between.
+  enforcement on from Server settings; nothing is dropped in between.
 - With `enabled = true` and an **empty** list every radio is barred. The server
   says so at startup (`ISSI allowlist enforced with an EMPTY list`) and the
-  Settings page shows it in red text, rather than guessing that an open network
+  dashboard shows it ("Enforced, empty", and asks before enforcing an empty list), rather than guessing that an open network
   was meant.
 - Every change is logged (`ISSI allowlist changed`, `ISSI allowlist enforcement
   changed`, with who asked).
@@ -89,7 +89,7 @@ see it.
 
 ## API
 
-The Settings page uses these admin endpoints, which scripts can use too:
+Server settings uses these admin endpoints, which scripts can use too:
 
 | Method | Path | Effect |
 |---|---|---|
