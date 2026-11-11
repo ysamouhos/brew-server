@@ -3,6 +3,7 @@ mod aprs;
 mod blacklist;
 mod call_restore;
 mod carriers;
+mod dash_users;
 mod config;
 mod control;
 mod accounts;

@@ -277,6 +277,7 @@ tr.exp td{background:var(--bg3);border-top:0}
 .lcard .eye{position:absolute;right:6px;bottom:6px;width:30px;height:30px;border:0;background:none;color:var(--text3);cursor:pointer;border-radius:7px;display:grid;place-items:center}
 .lcard .eye svg{width:17px;height:17px}
 .lcard .go{width:100%;height:42px;justify-content:center;font-size:14px;margin-top:4px}
+.lcard .lnote{font-size:13px;line-height:1.4;padding:9px 11px;border-radius:8px;margin:4px 0 10px;color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent);border:1px solid color-mix(in srgb,var(--warn) 30%,transparent)}
 .lcard .lerr{color:var(--danger);font-size:13px;min-height:18px;margin:2px 0 8px;display:flex;gap:6px;align-items:center}
 .lcard .lerr svg{width:15px;height:15px;flex-shrink:0}
 .lcard .x{position:absolute;right:12px;top:12px;width:32px;height:32px;border:0;background:none;color:var(--text3);border-radius:8px;cursor:pointer;display:grid;place-items:center}
@@ -399,6 +400,7 @@ body{touch-action:manipulation}
   <div class="menu" id="menu" role="menu"><div class="who"><b id="menu-name"></b><span id="menu-role"></span></div>
     <button role="menuitem" class="acc-only" onclick="go('accounts');closeMenu()" id="menu-acc"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M15 8l2 2"/></svg>Accounts</button>
     <button role="menuitem" class="mob acc-only" onclick="location.href='/classic'"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg>Classic dashboard</button>
+    <button role="menuitem" class="acc-only" onclick="closeMenu();changePw()" id="menu-pw"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Change password</button>
     <button role="menuitem" class="acc-only" onclick="doLogout()"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l-5-5 5-5M5 12h11"/></svg>Log out</button>
     <div class="thm"><div class="k">Appearance</div><div class="seg" role="radiogroup" aria-label="Appearance" id="thm"></div></div>
   </div>
@@ -419,6 +421,7 @@ body{touch-action:manipulation}
     <div class="logo" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><path d="M12 11v10M8 21h8M9.5 21l2.5-10 2.5 10"/><circle cx="12" cy="9" r="1.4"/><path d="M7.8 5.8a6 6 0 0 0 0 6.4M16.2 5.8a6 6 0 0 1 0 6.4M5 3.5a10 10 0 0 0 0 11M19 3.5a10 10 0 0 1 0 11"/></svg></div>
     <h2 id="login-title">Sign in</h2>
     <div class="lsub">__SERVERNAME__</div>
+    <div class="lnote" id="lnote" role="status" hidden></div>
     <div class="fld"><label for="lu">Username</label><input id="lu" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" required></div>
     <div class="fld"><label for="lp">Password</label><input id="lp" name="password" type="password" autocomplete="current-password" required style="padding-right:42px">
       <button type="button" class="eye" onclick="const p=$('lp');p.type=p.type==='password'?'text':'password';this.setAttribute('aria-pressed',p.type==='text')" aria-pressed="false" title="Show password"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg><span class="sr">Show password</span></button></div>
@@ -468,12 +471,19 @@ const PAGES=[
  ['overview','Overview','home','Monitor'],['calls','Calls','call','Monitor'],['sds','SDS','sds','Monitor'],
  ['radios','Radios','radios','Monitor'],['issis','Directory','book','Monitor'],['map','Map','map','Monitor','/map'],
  ['stations','Stations & Cells','bts','Infrastructure'],['routing','Routing','routing','Infrastructure'],['roaming','Roaming','roam','Infrastructure'],['multinet','Multi Network','globe','Infrastructure',null,true],
- ['telemetry','Telemetry','tele','Infrastructure'],['control','Control','ctl','Infrastructure',null,true],['accounts','Accounts','key','Infrastructure',null,true],
+ ['telemetry','Telemetry','tele','Infrastructure'],['control','Control','ctl','Infrastructure',null,true],['accounts','Accounts','key','Infrastructure'],
  ['sip','SIP / VoIP','sip','Integrations'],['sipcfg','SIP Config','sipcfg','Integrations'],
  ['sms','SMS Center','sms','Integrations'],['tsds','Telemetry SDS','tsds','Integrations'],
  ['ha','High Availability','ha','System'],['config','Config file','file','System',null,true],['settings','Server settings','set','System',null,true]
 ];
 const PG=Object.fromEntries(PAGES.map(p=>[p[0],p]));
+// Pages this login sees (Server settings -> Users): an admin all of them, any other login the ones
+// ticked for it, someone not logged in the Viewer pages. The server refuses the rest anyway.
+const can=p=>!!PG[p]&&(D.who.admin||(!PG[p][5]&&(D.who.pages||[]).includes(p)));
+const canAny=(...ps)=>ps.some(can);
+// A read route this login may ask (whoami 'allowed'); asking others would only be refused.
+const mayGet=u=>D.who.admin||(D.who.allowed||[]).includes(u.split('?')[0]);
+const firstPage=()=>PAGES.map(p=>p[0]).find(can);
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const tm=ms=>ms?new Date(ms).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}):'';
@@ -487,9 +497,12 @@ const isToday=ms=>new Date(ms).toDateString()===new Date().toDateString();
 // making the browser pop its own dialog.
 async function api(u,opt){opt=opt||{};opt.headers=Object.assign({'x-brew-ui':'1'},opt.headers||{});opt.cache='no-store';
   const r=await fetch(u,opt);const t=await r.text();
+  // Saving and editing are for admins: ask for an admin login, also when a user that only reads is signed in.
+  if((r.status===401||r.status===403)&&opt.method&&opt.method!=='GET'){openLogin(false,ADMIN_NOTE);throw new Error(ADMIN_NOTE);}
   if(r.status===401){needAuth();throw new Error('Log in first');}
   if(!r.ok)throw new Error(t||String(r.status));try{return JSON.parse(t)}catch(e){return t}}
 const getJ=u=>api(u);
+const ADMIN_NOTE='For saving or editing please log in with an admin user.';
 const postJ=(u,body)=>api(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
 function doLogin(){openLogin(false);}
 let authAsk=null;
@@ -497,8 +510,8 @@ function needAuth(){
   if($('login').classList.contains('on')||authAsk)return;
   authAsk=fetch('/api/whoami',{cache:'no-store',headers:{'x-brew-ui':'1'}}).then(r=>r.json()).then(w=>{D.who=w;openLogin(!!w.need_login);}).catch(()=>{}).finally(()=>{authAsk=null;});
 }
-function openLogin(must){
-  closeMenu();$('login').classList.add('on');$('login').classList.toggle('solid',must);document.body.classList.toggle('locked',must);
+function openLogin(must,note){
+  closeMenu();const n=$('lnote');n.hidden=!note;n.textContent=note||'';$('login').classList.add('on');$('login').classList.toggle('solid',must);document.body.classList.toggle('locked',must);
   $('login-x').hidden=must;$('lerr').textContent='';$('lgo').disabled=false;setTimeout(()=>($('lu').value?$('lp'):$('lu')).focus(),30);
 }
 function closeLogin(){if(document.body.classList.contains('locked'))return;$('login').classList.remove('on');}
@@ -543,11 +556,13 @@ let ok=true;
 function buildNav(){
   let h='',g='';
   for(const [id,t,icn,grp,emb,adm] of PAGES){
+    if(!can(id))continue;
     if(grp!==g){h+=`<div class="grp">${grp}</div>`;g=grp;}
     h+=`<button class="nv" data-go="${id}">${ic(icn)}<span>${t}</span>${adm?`<span class="lock" title="Admins only">${ic('lock')}<span class="sr">admins only</span></span>`:''}<span class="badge${id==='sms'?' w':''}" id="b-${id}"></span></button>`;
   }
   $('nav').innerHTML=h;
-  document.querySelectorAll('.tab').forEach(t=>{const id=t.dataset.tab;const p=id==='more'?['more','More','more']:PG[id];t.innerHTML=ic(p[2])+'<span>'+(id==='stations'?'Stations':p[1])+'</span>';});
+  document.querySelectorAll('.tab').forEach(t=>{const id=t.dataset.tab;const p=id==='more'?['more','More','more']:PG[id];t.hidden=id!=='more'&&!can(id);t.innerHTML=ic(p[2])+'<span>'+(id==='stations'?'Stations':p[1])+'</span>';});
+  UI.navKey=navKey();
 }
 document.addEventListener('click',e=>{
   const g=e.target.closest('[data-go]');if(g){go(g.dataset.go);return;}
@@ -556,8 +571,13 @@ document.addEventListener('click',e=>{
 });
 function go(p){if(!PG[p])p='overview';if(location.hash!=='#'+p)location.hash=p;else show(p);}
 window.addEventListener('hashchange',()=>show(location.hash.slice(1)));
+const navKey=()=>JSON.stringify([D.who.admin,D.who.pages]);
 function show(p){
-  if(!PG[p])p='overview';UI.page=p;document.body.classList.remove('sbopen');
+  if(!PG[p])p='overview';
+  // A page this login does not see: the first one it does (or the login window).
+  if(D.whoLoaded&&!can(p)){const f=firstPage();if(f){if(PG[p][5]&&!D.who.admin&&D.who.can_login)openLogin(false);p=f;}}
+  if(UI.navKey!==navKey())buildNav();
+  UI.page=p;document.body.classList.remove('sbopen');
   document.querySelectorAll('.nv').forEach(n=>n.classList.toggle('on',n.dataset.go===p));
   document.querySelectorAll('.tab').forEach(n=>n.classList.toggle('on',n.dataset.tab===p));
   $('title').textContent=PG[p][1];
@@ -574,7 +594,7 @@ function show(p){
   loadPageData(p,true);
   // Lists only this page shows: ask for them now, not at the next slow refresh (up to 5 s of "Loading…").
   if(p==='radios')getJ('/api/registrations').then(v=>{D.regs=v;if(UI.page===p)render();}).catch(()=>{});
-  if(p==='accounts'&&D.who.admin)getJ('/api/accounts').then(v=>{D.acc=v;if(UI.page===p)render();}).catch(()=>{});
+  if(p==='accounts'&&mayGet('/api/accounts'))getJ('/api/accounts').then(v=>{D.acc=v;if(UI.page===p)render();}).catch(()=>{});
 }
 function fitFrame(){const f=document.querySelector('iframe.embed');if(!f)return;f.onload=()=>{try{const d=f.contentDocument;const fit=()=>{f.style.height=Math.max(window.innerHeight-130,d.documentElement.scrollHeight+20)+'px';};fit();new ResizeObserver(fit).observe(d.body);}catch(e){}};}
 function helpBtn(key){return `<button class="help" aria-expanded="${!!UI.help[key]}" aria-controls="h-${key}" onclick="UI.help['${key}']=!UI.help['${key}'];render(true)" title="What is this?">?<span class="sr">Explain</span></button>`;}
@@ -584,26 +604,27 @@ function helpNote(key,text){return `<div class="note" id="h-${key}" ${UI.help[ke
 async function refreshFast(){
   if(document.body.classList.contains('locked'))return;
   try{
-    const [st,pools,emg]=await Promise.all([getJ(statusUrl()),getJ('/api/pools'),getJ('/api/emergencies')]);
+    const [st,pools,emg]=await Promise.all([mayGet('/api/status')?getJ(statusUrl()):Promise.resolve(D.status),getJ('/api/pools'),getJ('/api/emergencies')]);
     D.status=st;D.pools=pools;D.emg=emg;ok=true;
   }catch(e){ok=false;}
   $('live').className='pill'+(ok?'':' d');$('live').lastChild.textContent=ok?'Live':'Offline';
-  if(['sip','sms','ha'].includes(UI.page))loadPageData(UI.page,false);
+  if(['sip','sms','ha'].includes(UI.page)&&can(UI.page))loadPageData(UI.page,false);
   $('emg').classList.toggle('on',D.emg.length>0);
   $('emg-list').innerHTML=D.emg.map(e=>`<span class="c">ISSI ${e.issi}${e.destination!=null?' → '+e.destination:''}${e.bts?' · '+esc(e.bts):''}</span>`).join('');
   render();
 }
 async function refreshSlow(){
   if(document.body.classList.contains('locked'))return;
-  const tasks=[getJ('/api/connections').then(v=>D.conn=v),getJ('/api/telemetry').then(v=>D.tele=v),getJ('/api/radios').then(v=>D.radios=v),
-    getJ('/api/ha').then(v=>D.ha=v),getJ('/api/whoami').then(v=>{const was=D.who.admin,first=!D.whoLoaded;D.who=v;D.whoLoaded=true;
-      if(was!==v.admin)show(UI.page);else if(first&&PG[UI.page][5]&&!v.admin&&!v.need_login)openLogin(false);
+  const opt=(u,f)=>mayGet(u)?getJ(u).then(f).catch(()=>{}):Promise.resolve();
+  const tasks=[opt('/api/connections',v=>D.conn=v),opt('/api/telemetry',v=>D.tele=v),opt('/api/radios',v=>D.radios=v),
+    getJ('/api/ha').then(v=>D.ha=v),getJ('/api/whoami').then(v=>{const was=navKey(),first=!D.whoLoaded;D.who=v;D.whoLoaded=true;
+      if(was!==navKey()||first)show(UI.page);else if(first&&PG[UI.page][5]&&!v.admin&&!v.need_login)openLogin(false);
       // Admin-only route: asking it without a login answers 401 and opens the login window,
       // so an open (read-only) dashboard would get it every 5 s. Ask only once whoami says admin.
       if(v.admin)return getJ('/api/networks').then(n=>D.nets=n).catch(()=>{});})];
-  if(UI.page==='radios')tasks.push(getJ('/api/registrations').then(v=>D.regs=v));
-  if(UI.page==='accounts'&&D.who.admin)tasks.push(getJ('/api/accounts').then(v=>D.acc=v));
-  if(UI.page==='sipcfg')loadPageData('sipcfg',false);
+  if(UI.page==='radios')tasks.push(opt('/api/registrations',v=>D.regs=v));
+  if(UI.page==='accounts')tasks.push(opt('/api/accounts',v=>D.acc=v));
+  if(UI.page==='sipcfg'&&can('sipcfg'))loadPageData('sipcfg',false);
   tasks.push(getJ('/api/names').then(v=>D.names=v).catch(()=>{}));
   tasks.push(getJ('/api/issi-names').then(v=>D.issi=v).catch(()=>{}));
   tasks.push(getJ('/api/gssi-names').then(v=>D.gssi=v).catch(()=>{}));
@@ -664,10 +685,12 @@ function chrome(){
   if(w.need_login&&!$('login').classList.contains('on'))openLogin(true);
   $('loginbtn').hidden=!(w.can_login&&!w.username);$('acctbtn').hidden=!w.username;$('themebtn').hidden=!!w.username;$('rochip').hidden=w.admin||!!w.need_login;
   if(w.username){$('acct-av').textContent=w.username[0];$('acct-name').textContent=w.username;$('menu-name').textContent=w.username;
-    $('menu-role').textContent=w.admin?'Admin':'Viewer (read only)';$('menu-acc').hidden=!w.admin;}
-  if(st){$('b-calls').textContent=st.active_calls.filter(x=>!legIds().has(x.uuid)).length||'';}
-  $('b-radios').textContent=(c&&c.mobile_stations.length)||'';
-  $('b-routing').textContent=D.pools.filter(p=>p.enabled).length||'';
+    $('menu-role').textContent=w.admin?'Admin':'User (read only)';$('menu-acc').hidden=!w.admin;}
+  // Badges of pages hidden for this user are not in the nav.
+  const badge=(id,v)=>{const e=$(id);if(e)e.textContent=v;};
+  if(st)badge('b-calls',st.active_calls.filter(x=>!legIds().has(x.uuid)).length||'');
+  badge('b-radios',(c&&c.mobile_stations.length)||'');
+  badge('b-routing',D.pools.filter(p=>p.enabled).length||'');
 }
 
 /* ---------- pools ---------- */
@@ -1249,7 +1272,7 @@ function saveNet(i){
 const svcChip=(name,s)=>!s?'':`<span class="chip ${!s.enabled?'':s.open?'w':'a'}">${name}: ${!s.enabled?'switched off':s.open?'open, no login needed':'login required'}</span>`;
 const yn=b=>b?'<span class="yes yn" title="yes">✓<span class="hide-s"> yes</span><span class="sr">yes</span></span>':'<span class="no yn" title="no">—<span class="hide-s"> no</span><span class="sr">no</span></span>';
 R.accounts=()=>{
-  if(!D.who.admin)return `<div class="card"><div class="empty">Accounts are for admins. <button class="btn" onclick="openLogin(false)">Log in</button></div></div>`;
+  const adm=D.who.admin;
   const a=D.acc;
   if(!a)return '<div class="card"><div class="empty">Loading…</div></div>';
   const q=UI.filter.acc||'';
@@ -1258,13 +1281,14 @@ R.accounts=()=>{
   return `<div class="card"><div class="ch"><h2>Station and terminal logins</h2><span class="mut">${a.accounts.length}</span>${helpBtn('acc')}<span class="sp"></span>
     ${seg('accv',[['login','Login'],['info','Info']])}
     <div class="search">${ic('search')}<input class="f" placeholder="Login or info…" value="${esc(q)}" oninput="UI.filter.acc=this.value;render(true);const i=document.querySelector('.search input');i.focus();i.setSelectionRange(i.value.length,i.value.length)" aria-label="Filter logins"></div>
-    <button class="btn pri" onclick="editAcc(-1)">${ic('plus')}New login</button></div>
+    ${adm?`<button class="btn pri" onclick="editAcc(-1)">${ic('plus')}New login</button>`:''}</div>
+   ${adm?`<div class="svc" style="justify-content:space-between"><label style="display:flex;gap:10px;align-items:center;font-size:13px;font-weight:600"><button class="tog" role="switch" id="acc-auth" aria-checked="${!a.brew.open}" onclick="setBrewAuth(this.getAttribute('aria-checked')!=='true')"></button> Authentication required</label><span class="mut" style="font-size:12px">${a.brew.open?'<span class="chip d">Off</span> Any station or app connects without a login.':'Stations and apps connect only with a Brew login from this list.'}</span></div>`:''}
    ${helpNote('acc','The logins Basestations and terminals (apps, consoles) use to connect to this server. <b>Brew</b> carries calls and SDS; the login is the station\'s or terminal\'s number (1 to 7 digits). <b>Telemetry</b> and <b>control</b> are the FlowStation links for status reports and commands (DGNA, kick, restart). One login can be on all three. Changes apply to the next connection at once, without a restart, and are written to the config file. Connections that are already up stay until they reconnect. Careful: while the telemetry or control list is empty, that link needs no login; the first login you add there turns the login on, and stations without one are refused from then on.')}
    <div class="svc">${svcChip('Brew',a.brew)}${svcChip('Telemetry',a.telemetry)}${svcChip('Control',a.control)}</div>
    <div class="tw acc"><table><thead><tr><th>${byInfo?'Info':'Login'}</th><th>Brew</th><th>Telemetry</th><th>Control</th><th class="hide-s">Position</th><th></th></tr></thead><tbody>
    ${rows.map(x=>{const i=a.accounts.indexOf(x);const first=byInfo&&x.info?`<b>${esc(x.info)}</b>`:`<b class="m">${esc(x.username)}</b>`;
      return `<tr><td>${first}${byInfo?(x.info?`<span class="sub m">${esc(x.username)}</span>`:'<span class="sub">no info</span>'):''}</td><td>${yn(x.brew)}</td><td>${yn(x.telemetry)}</td><td>${yn(x.control)}</td><td class="hide-s">${x.lat!=null?`<span class="m" style="font-size:12px">${x.lat.toFixed(4)}, ${x.lon.toFixed(4)}</span>`:'<span class="no">—</span>'}</td>
-     <td style="text-align:right;white-space:nowrap"><button class="btn" onclick="editAcc(${i})">Edit</button> <button class="btn danger hide-s" onclick="delAcc(${i})">Delete</button></td></tr>`;}).join('')||'<tr><td colspan="6" class="mut">No logins</td></tr>'}
+     <td style="text-align:right;white-space:nowrap">${adm?`<button class="btn" onclick="editAcc(${i})">Edit</button> <button class="btn danger hide-s" onclick="delAcc(${i})">Delete</button>`:''}</td></tr>`;}).join('')||'<tr><td colspan="6" class="mut">No logins</td></tr>'}
    </tbody></table></div>${msgDiv('acc-msg','padding:12px 18px')}</div>`;
 };
 function editAcc(i){
@@ -1290,6 +1314,28 @@ function hereFix(){
   navigator.geolocation.getCurrentPosition(p=>{$('ac-pos').value=p.coords.latitude.toFixed(5)+', '+p.coords.longitude.toFixed(5);m.textContent='';},
     e=>{m.className='msg err';m.textContent='No position: '+(e.code===1?'permission denied':e.message)+'. Over plain HTTP browsers refuse; paste it instead.';},{enableHighAccuracy:true,timeout:15000});
 }
+function changePw(){
+  const f=(id,l,ac)=>`<div><label class="l" for="${id}">${l}</label><input class="f" id="${id}" type="password" autocomplete="${ac}" spellcheck="false"></div>`;
+  $('sheet').innerHTML=`<div class="ch"><h3 id="sheet-title">Change password</h3></div><div class="sb">
+   <div class="mut" style="font-size:12.5px">For <b>${esc(D.who.username||'')}</b>. You stay signed in here; other browsers signed in as you are signed out.</div>
+   ${f('pw-cur','Current password','current-password')}${f('pw-new','New password (at least 6 characters)','new-password')}${f('pw-rep','New password again','new-password')}
+   <div class="msg" id="sheet-msg" style="padding:0"></div></div>
+   <div class="acts"><button class="btn" onclick="closeSheet()">Cancel</button><button class="btn pri" onclick="savePw()">Change</button></div>`;
+  $('scrim').classList.add('on');setTimeout(()=>$('pw-cur').focus(),30);
+}
+async function savePw(){
+  const m=$('sheet-msg'),cur=$('pw-cur').value,nw=$('pw-new').value;
+  const bad=t=>{m.className='msg err';m.textContent=t;};
+  if(nw.length<6)return bad('The new password needs at least 6 characters.');
+  if(nw!==$('pw-rep').value)return bad('The new passwords do not match.');
+  m.className='msg mut';m.textContent='Saving…';
+  try{
+    const r=await fetch('/api/password',{method:'POST',cache:'no-store',headers:{'x-brew-ui':'1','content-type':'application/json'},body:JSON.stringify({current:cur,new:nw})});
+    if(!r.ok)return bad((await r.text())||String(r.status));
+  }catch(e){return bad(e.message);}
+  m.className='msg ok';m.textContent='Password changed.';
+  document.querySelector('#sheet .acts').innerHTML='<button class="btn pri" onclick="closeSheet()">Close</button>';
+}
 function genPw(){const c='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';const a=new Uint32Array(16);crypto.getRandomValues(a);return [...a].map(n=>c[n%c.length]).join('');}
 const on=id=>$(id).getAttribute('aria-checked')==='true';
 async function saveAcc(i){
@@ -1299,6 +1345,13 @@ async function saveAcc(i){
   const body={username:$('ac-user').value.trim(),password:$('ac-pw').value,brew:on('ac-b'),telemetry:on('ac-t'),control:on('ac-c'),info:$('ac-info').value.trim(),lat,lon};m.className='msg mut';m.textContent='Saving…';
   try{D.acc=await postJ('/api/accounts',body);closeSheet();setMsg('acc-msg','ok',`${body.username} saved. It works for the next connection.`);render(true);}
   catch(e){m.className='msg err';m.textContent=e.message;}
+}
+async function setBrewAuth(on){
+  if(!on&&!confirm('Switch authentication off?\n\nAny station or app can then connect to this server without a login, and stations appear without their name (login). Connected stations stay connected.'))return render(true);
+  try{D.acc=await api('/api/accounts/auth',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({enabled:on})});
+    setMsg('acc-msg',on?'ok':'err',on?'Authentication on: stations and apps need a login from the next connection.':'Authentication off: any station or app can connect without a login.');}
+  catch(e){setMsg('acc-msg','err',e.message);}
+  render(true);
 }
 async function delAcc(i){
   const x=D.acc.accounts[i];if(!confirm(`Delete login "${x.username}" from Brew, telemetry and control?`))return;
@@ -1531,7 +1584,7 @@ function loadPageData(p,first){
   if(p==='sms')set('smsc','/api/sms-center');
   if(p==='tsds'&&first)set('tele','/api/telemetry');
   if(p==='ha'){set('ha','/api/ha');if(first&&D.who.admin)set('haCfg','/api/config/ha');}
-  if(p==='settings'&&first&&D.who.admin){set('blk','/api/config/blacklist');set('allow','/api/config/allowlist');set('btsLocs','/api/bts-locations?config_only=1');}
+  if(p==='settings'&&first&&D.who.admin){set('dusers','/api/dashboard-users');set('blk','/api/config/blacklist');set('allow','/api/config/allowlist');set('btsLocs','/api/bts-locations?config_only=1');}
   if(t.length)Promise.all(t).then(()=>{if(UI.page===p)render(first);});
 }
 const adminOnly=what=>`<div class="card"><div class="empty">${what} is for admins. <button class="btn" onclick="openLogin(false)">Log in</button></div></div>`;
@@ -1753,8 +1806,59 @@ R.settings=()=>{
    <div class="card"><div class="ch"><h2>Station positions (static)</h2><span class="cnt">${l.length}</span>${helpBtn('btsl')}<span class="sp"></span><a data-go="accounts" href="#accounts">Accounts ›</a></div>${helpNote('btsl','Configured names and positions of stations by Brew login (<code>[bts_locations]</code>), shown on the map. A position a station reports over telemetry, or one relayed by another server, comes first. Usually set together with the login on the <a data-go="accounts" href="#accounts">Accounts</a> page. Saving restarts the server.')}
     <div class="tw"><table><thead><tr><th>Login</th><th>Name</th><th>Position</th><th></th></tr></thead><tbody>
     ${l.map(x=>`<tr><td class="m"><b>${esc(x.username)}</b></td><td>${esc(x.name)}</td><td class="m" style="font-size:12px">${(+x.lat).toFixed(4)}, ${(+x.lon).toFixed(4)}</td><td style="text-align:right"><button class="btn danger" onclick="btsLocDel('${esc(x.username)}')">Delete</button></td></tr>`).join('')||'<tr><td colspan="4" class="mut">No static station positions</td></tr>'}
-    </tbody></table></div>${msgDiv('btsl-msg','padding:12px 18px')}</div>`;
+    </tbody></table></div>${msgDiv('btsl-msg','padding:12px 18px')}</div>
+   ${usersCard()}`;
 };
+// Dashboard users (Server settings, admins): who logs in, who is admin, which pages each one sees.
+const pageName=id=>PG[id]?PG[id][1]:id;
+const pageChips=(list,all)=>all?'<span class="chip a">Every page · edits</span>':(list.length?list.map(p=>`<span class="chip">${esc(pageName(p))}</span>`).join(' '):'<span class="mut">no page</span>');
+function usersCard(){
+  const u=D.dusers;if(!u)return loading;
+  const adminPages=PAGES.filter(p=>p[5]).map(p=>p[1]).join(', ');
+  return `<div class="card"><div class="ch"><h2>Dashboard users</h2><span class="cnt">${u.users.length}</span>${helpBtn('dusr')}<span class="sp"></span><button class="btn pri" onclick="editUser(-1)">${ic('plus')}New user</button></div>
+   ${helpNote('dusr',`Who may log in to this dashboard. An <b>admin</b> sees every page and may change everything. Any other user only sees the pages ticked for it and changes nothing. ${esc(adminPages)} are for admins only. <b>Viewer</b> is whoever is not logged in: with the open dashboard (<code>[dashboard.ui] open = true</code>) it sees the pages ticked for Viewer, with a closed dashboard nothing. Passwords are stored as hashes in <code>${esc(u.file)}</code>. Until the first change here the users come from <code>[dashboard] users</code> / <code>admins</code> in the config; to get back in after losing the admin password, delete that file and restart: the users of the config are back.`)}
+   ${!D.who.auth?`<div class="svc"><span class="chip w">No users</span> There is no login: anyone who opens this dashboard is an admin. Add an admin user.</div>`:''}
+   ${D.who.auth&&!u.from_file?`<div class="svc mut" style="font-size:12.5px">From the config (<code>[dashboard] users</code>) until the first change here.</div>`:''}
+   <div class="tw"><table><thead><tr><th>User</th><th>Sees</th><th></th></tr></thead><tbody>
+   ${u.users.map((x,i)=>`<tr><td><b class="m">${esc(x.name)}</b>${x.admin?' <span class="chip a">Admin</span>':''}${x.name===D.who.username?' <span class="mut" style="font-size:12px">(you)</span>':''}</td><td>${pageChips(x.pages,x.admin)}</td><td style="text-align:right;white-space:nowrap"><button class="btn" onclick="editUser(${i})">Edit</button> <button class="btn danger hide-s" onclick="delUser(${i})">Delete</button></td></tr>`).join('')||'<tr><td colspan="3" class="mut">No users</td></tr>'}
+   <tr><td><b>Viewer</b><span class="sub">not logged in · ${D.who.open?'open dashboard':'closed dashboard: sees nothing'}</span></td><td>${pageChips(u.viewer,false)}</td><td style="text-align:right"><button class="btn" onclick="editUser('viewer')">Edit</button></td></tr>
+   </tbody></table></div>${msgDiv('dusr-msg','padding:12px 18px')}</div>`;
+}
+function editUser(i){
+  const u=D.dusers,viewer=i==='viewer';
+  const x=viewer?{name:'Viewer',admin:false,pages:u.viewer}:i>=0?u.users[i]:{name:'',admin:false,pages:u.viewer};
+  const boxes=PAGES.filter(p=>!p[5]).map(p=>`<label style="display:flex;gap:8px;align-items:center;font-size:13px"><input type="checkbox" class="chk du-pg" value="${p[0]}" ${x.admin||x.pages.includes(p[0])?'checked':''} ${x.admin?'disabled':''}> ${esc(p[1])}</label>`).join('');
+  $('sheet').innerHTML=`<div class="ch"><h3 id="sheet-title">${viewer?'Viewer (not logged in)':i>=0?'Edit user '+esc(x.name):'New user'}</h3></div><div class="sb">
+   ${viewer?`<div class="mut" style="font-size:12.5px">What anyone sees without logging in${D.who.open?'':' once the dashboard is open (<code>[dashboard.ui] open = true</code>; it is closed now, so nobody sees anything without logging in)'}.</div>`:`
+   <div><label class="l" for="du-name">User name</label><input class="f" id="du-name" value="${esc(x.name)}" ${i>=0?'disabled':''} placeholder="e.g. oe4sxm" autocomplete="off" spellcheck="false" autocapitalize="off"></div>
+   <div><label class="l" for="du-pw">${i>=0?'New password (empty: unchanged; signs the user out elsewhere)':'Password'}</label><div style="display:flex;gap:8px"><input class="f" id="du-pw" type="text" autocomplete="new-password" spellcheck="false" placeholder="${i>=0?'unchanged':'at least 6 characters'}" style="flex:1"><button type="button" class="btn" onclick="$('du-pw').value=genPw()">Generate</button></div></div>
+   <label style="display:flex;gap:12px;align-items:center"><button type="button" class="tog" role="switch" id="du-admin" aria-checked="${x.admin}" onclick="duAdmin(this)"></button><span><b style="font-size:13.5px">Admin</b><br><span class="mut" style="font-size:12px">Every page, and may change everything</span></span></label>`}
+   <div><span class="l" style="display:block">Pages ${viewer?'Viewer':'this user'} sees</span><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-top:6px">${boxes}</div>
+   <div class="mut" style="font-size:12px;margin-top:6px">${esc(PAGES.filter(p=>p[5]).map(p=>p[1]).join(', '))}: admins only. Station addresses are shown to admins only.</div></div>
+   <div class="msg" id="sheet-msg" style="padding:0"></div></div>
+   <div class="acts">${!viewer&&i>=0?`<button class="btn danger" style="margin-right:auto" onclick="closeSheet();delUser(${i})">${ic('trash')}Delete</button>`:''}<button class="btn" onclick="closeSheet()">Cancel</button><button class="btn pri" onclick="saveUser(${viewer?"'viewer'":i})">Save</button></div>`;
+  $('scrim').classList.add('on');setTimeout(()=>{const f=$(i>=0?'du-pw':'du-name');if(f)f.focus();},30);
+}
+function duAdmin(b){const on=b.getAttribute('aria-checked')!=='true';b.setAttribute('aria-checked',on);
+  document.querySelectorAll('.du-pg').forEach(c=>{c.disabled=on;if(on)c.checked=true;});}
+async function saveUser(i){
+  const m=$('sheet-msg');const pages=[...document.querySelectorAll('.du-pg')].filter(c=>c.checked).map(c=>c.value);
+  m.className='msg mut';m.textContent='Saving…';
+  try{
+    if(i==='viewer'){D.dusers=await postJ('/api/dashboard-users/viewer',{pages});closeSheet();setMsg('dusr-msg','ok','Viewer pages saved.');}
+    else{const name=$('du-name').value.trim(),first=!D.who.auth;
+      D.dusers=await postJ('/api/dashboard-users',{name,password:$('du-pw').value,admin:on('du-admin'),pages});closeSheet();
+      setMsg('dusr-msg','ok',`${name} saved.${first?' The dashboard now needs a login.':''}`);
+      if(first){await refreshSlow();openLogin(false);}}
+    await refreshSlow();
+  }catch(e){m.className='msg err';m.textContent=e.message;return;}
+  render(true);
+}
+async function delUser(i){
+  const x=D.dusers.users[i];if(!confirm(`Delete dashboard user "${x.name}"? It is logged out at once.`))return;
+  try{D.dusers=await api('/api/dashboard-users/'+encodeURIComponent(x.name),{method:'DELETE'});setMsg('dusr-msg','ok',`${x.name} deleted.`);}catch(e){setMsg('dusr-msg','err',e.message);}
+  render(true);
+}
 async function issiList(which,method,v){const i=parseInt(String(v).trim(),10);const msg=which==='blacklist'?'blk-msg':'al-msg';
   if(!(i>0&&i<=16777215)){setMsg(msg,'err','An ISSI is a number from 1 to 16777215.');render(true);return;}
   try{await api(`/api/config/${which}/${i}`,{method});setMsg(msg,'ok','Applied at once.');}catch(e){setMsg(msg,'err',e.message);}

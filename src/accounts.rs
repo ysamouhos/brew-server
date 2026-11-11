@@ -87,7 +87,7 @@ fn view(state: &AppState) -> AccountsView {
     }
     let cfg = &state.config;
     AccountsView {
-        brew: ServiceView { enabled: true, open: !cfg.auth.enabled },
+        brew: ServiceView { enabled: true, open: !state.brew_auth_enabled() },
         telemetry: ServiceView { enabled: cfg.telemetry.enabled, open: t.is_empty() },
         control: ServiceView { enabled: cfg.control.enabled, open: c.is_empty() },
         accounts: all.into_values().collect(),
@@ -188,6 +188,34 @@ pub async fn upsert(State(state): State<Arc<AppState>>, Json(mut req): Json<Acco
     match save(&state).await {
         Ok(()) => Json(view(&state)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AuthRequest {
+    pub enabled: bool,
+}
+
+/// `PUT /api/accounts/auth` (admins): `[auth] enabled`, whether stations and
+/// apps need a Brew login. Applies to the next connection at once (no
+/// restart; connected stations stay) and is written to the config file.
+pub async fn set_auth(State(state): State<Arc<AppState>>, Json(req): Json<AuthRequest>) -> Response {
+    let was = state.brew_auth.swap(req.enabled, std::sync::atomic::Ordering::SeqCst);
+    if was != req.enabled {
+        if req.enabled {
+            tracing::warn!("Brew authentication switched on from the dashboard: stations and apps need a login");
+        } else {
+            tracing::warn!("Brew authentication switched OFF from the dashboard: any station or app can connect without a login");
+        }
+    }
+    let cfg = state.config_snapshot();
+    crate::CONFIG_WRITE_APPLIED_LIVE.store(true, std::sync::atomic::Ordering::SeqCst);
+    match crate::dashboard::save_config(&state, &cfg).await {
+        Ok(()) => Json(view(&state)).into_response(),
+        Err(e) => {
+            crate::CONFIG_WRITE_APPLIED_LIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("applied, but saving the config file failed: {e}")).into_response()
+        }
     }
 }
 
