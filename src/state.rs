@@ -153,6 +153,11 @@ pub struct SdsRoute {
     /// header is held until the `SDS_TRANSFER` arrives.
     pub lip_only: bool,
     pub held_header: Option<Vec<u8>>,
+    /// Links of networks with "Forward LIP" off among the targets: a LIP
+    /// payload does not go to them (the header is held until it shows).
+    pub no_lip: HashSet<ClientId>,
+    /// Came in over such a link: a LIP payload is dropped.
+    pub from_no_lip: bool,
 }
 
 #[derive(Default)]

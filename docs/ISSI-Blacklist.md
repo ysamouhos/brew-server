@@ -1,14 +1,14 @@
 # ISSI Blacklist
 
 Bar an ISSI from communicating through this brew-server. Manage it under
-**Settings -> ISSI Blacklist** (admin only) or in `brew-server.toml`:
+**System -> Server settings -> ISSI block list** on the dashboard (admin only; classic dashboard: Settings -> ISSI Blacklist) or in `brew-server.toml`:
 
 ```toml
 [blacklist]
 issis = [4013, 4014]
 ```
 
-Changes made in the Settings page apply **immediately and without a restart**
+Changes made on Server settings apply **immediately and without a restart**
 (a restart would drop every call). The config file is updated at the same time.
 Editing the file by hand, or saving the raw config, restarts the server as any
 other config change does.
@@ -28,7 +28,7 @@ console_users = ["9990001"]   # the username the console logs in with ([auth.use
 - With `console_users` empty (the default) a console sees the list but cannot
   change it; its card says so.
 - The change applies at once, is written to the config file without a restart,
-  and is pushed to every connected console and shown on the Settings page.
+  and is pushed to every connected console and shown on Server settings.
 - Every change is logged on the server (`ISSI blacklist changed`, with the
   console's username).
 

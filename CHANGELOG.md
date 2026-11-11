@@ -2,6 +2,40 @@
 
 All notable changes to brew-server, newest first.
 
+Unreleased:
+
+- **Dashboard: SIP / VoIP, SIP Config, SMS Center, Telemetry SDS, High
+  Availability and Server settings are native pages** in the look of the
+  rest (cards, labelled fields, light and dark, phone width) instead of
+  frames of the classic pages. SIP extensions, trunks and voice routes are
+  added, edited and deleted on SIP Config (admin; read only for others);
+  Server settings keeps the ISSI block and allow lists and the static
+  station positions. High Availability: settings in a dialog. The classic
+  dashboard (`/classic`) is unchanged; only the map is still a frame.
+- **Kind of each SDS** from its protocol identifier (ETSI TS 100 392-2
+  table 29.21): Text, Position, WAP / data, Multi-part, Security, System,
+  App or Other, on Overview, SDS and Telemetry SDS, with a Kind filter
+  (hover for the value). Saved with the networks in `<storage path>.nets`;
+  `/api/status` has `protocol_id` on SDS entries.
+- **Forward LIP per network** (Multi Network, Edit network): off, position
+  reports (protocol identifier 0x03, 0x0A, 0x83) do not cross that link in
+  either direction; text and other SDS still pass. On by default
+  (`forward_lip`). The dialog now says that "Forward unknown targets"
+  bypasses the SMS Center.
+- **Phones:** a table that scrolls sideways no longer widens the whole page.
+- **Fix: talkgroup pools sharing a group.** A call is named by the pool
+  that really carries it, not by the first pool its group is listed in: with
+  232 in three pools, a call on 2327 shows "TG Pool" (its pool), a call on
+  232 itself (heard on all three) "TGP1 + TG Pool + North", on Overview,
+  Calls and the Routing page; each pool card shows only its own legs.
+- **Fix: networks of calls and SDS survive a restart.** The "→ / ← network"
+  of Recent calls and Recent SDS is saved in `<storage path>.nets` next to
+  the history file (unchanged, still readable by older versions); before,
+  every older entry lost it on a restart.
+- **Fix: live updates on phones.** After the first touch the dashboard no
+  longer stopped fetching calls, SDS and emergencies (until a reload); the
+  scroll handling cleared the live refresh timer by mistake (since 1.21.0).
+
 Version 1.21.1 adds:
 
 - **Do not forward SDS and calls to other networks.** New `never_forward` list

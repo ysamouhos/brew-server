@@ -1051,6 +1051,13 @@ pub fn never_forward(state: &AppState, inner: &crate::state::Inner, link: Client
         .is_some_and(|n| n.never_forward.contains(&calling) || n.never_forward.contains(&called)))
 }
 
+/// Connection `link` is the link of a network with "Forward LIP" off: no
+/// position report crosses it. False for a connection that is not a link.
+pub fn lip_barred(state: &AppState, inner: &crate::state::Inner, link: ClientId) -> bool {
+    let Some(name) = link_name(state, inner, link) else { return false };
+    state.networks.read().is_ok_and(|cfg| cfg.networks.iter().any(|n| n.name == name && !n.forward_lip))
+}
+
 /// Name of the network whose link is connection `id` (`None`: not a link).
 pub fn link_name(state: &AppState, inner: &crate::state::Inner, id: ClientId) -> Option<String> {
     if inner.clients.get(&id)?.mode != ClientMode::Network { return None; }
@@ -1187,6 +1194,7 @@ pub struct NetworkView {
     pub never_export: Vec<u32>,
     pub never_forward: Vec<u32>,
     pub forward_unknown: bool,
+    pub forward_lip: bool,
     /// That network answers the ISSI check (a brew-server).
     pub checks: bool,
     /// Radios registered there by the link right now.
@@ -1233,7 +1241,7 @@ pub async fn snapshot(state: &AppState) -> MultiNetworkView {
             remote_host: n.remote_host.clone(), path: n.path.clone(), username: n.username.clone(),
             has_password: !n.password.is_empty(), user_agent: n.user_agent.clone(), bridge_issi: n.bridge_issi,
             register_talkers: n.register_talkers, register_all: n.register_all,
-            export_stations: n.export_stations.clone(), never_export: n.never_export.clone(), never_forward: n.never_forward.clone(), forward_unknown: n.forward_unknown,
+            export_stations: n.export_stations.clone(), never_export: n.never_export.clone(), never_forward: n.never_forward.clone(), forward_unknown: n.forward_unknown, forward_lip: n.forward_lip,
             checks: s.connected && s.members.as_ref().is_some_and(|e| export_lock(e).checks),
             exported: if s.connected { s.members.as_ref().map(|e| { let mut v: Vec<u32> = export_lock(e).have.keys().copied().collect(); v.sort_unstable(); v }).unwrap_or_default() } else { Vec::new() },
             conflicts: s.members.as_ref().map(|e| export_lock(e).conflicts.iter().cloned().collect()).unwrap_or_default(),
@@ -2302,6 +2310,67 @@ mod e2e {
         let k = Uuid::new_v4();
         far.send(setup(&k, 1234, 2_320_050)).await.unwrap();
         assert!(next_call(&mut stations[0], protocol::CALL_SETUP_REQUEST, 2000).await.is_some_and(|x| (x.1, x.2) == (1234, 2_320_050)));
+    }
+
+    /// Sends one SDS: header, then its payload (`data` starts with the
+    /// protocol identifier).
+    async fn send_sds(ws: &mut Ws, src: u32, dst: u32, data: &[u8]) {
+        let id = Uuid::new_v4();
+        ws.send(Message::Binary(protocol::build_short_transfer(&id, src, dst).into())).await.unwrap();
+        ws.send(Message::Binary(protocol::build_sds_transfer_frame(&id, (data.len() * 8) as u16, data).into())).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn forward_lip_off_keeps_position_reports_off_the_link() {
+        let (tp, tp_addr) = serve(base_config()).await;
+        let mut cfg = base_config();
+        cfg.multi_network.mcc = 901;
+        cfg.multi_network.mnc = 9999;
+        cfg.multi_network.networks.push(NetworkConfig {
+            name: "TP".into(), mcc: 901, mnc: 1234, remote_host: tp_addr.to_string(), bridge_issi: 9_000_001, reconnect_interval_seconds: 5,
+            forward_unknown: true, forward_lip: false, ..Default::default()
+        });
+        let (main, main_addr) = serve(cfg).await;
+        run(main.clone()).await;
+        wait_until("link up", async || main.inner.read().await.netlinks.len() == 1).await;
+        // 10 stations, 25 radios; station 0 has the mni extension.
+        let mut stations = Vec::new();
+        let mut issi = 2_320_001;
+        for s in 0..10u32 {
+            let n = if s < 5 { 3 } else { 2 };
+            let radios: Vec<u32> = (0..n).map(|k| issi + k).collect();
+            issi += n;
+            let mut st = station(main_addr, &radios, &[2321]).await;
+            if s == 0 {
+                st.send(Message::Binary(protocol::build_service(protocol::SERVICE_BTS_INFO, r#"{"mcc":901,"mnc":9999,"cells":[],"capabilities":["mni"]}"#).into())).await.unwrap();
+                next_service(&mut st, protocol::SERVICE_NETWORKS, 2000).await.expect("networks");
+            }
+            stations.push(st);
+        }
+        wait_until("all radios registered", async || main.inner.read().await.subscribers.len() == 25).await;
+        let mut far = station(tp_addr, &[1234, 5678], &[909]).await;
+        stations[0].send(svc(protocol::SERVICE_MS_NETWORK, serde_json::json!({"issi": 2_320_050, "mcc": 901, "mnc": 1234}))).await.unwrap();
+        stations[0].send(Message::Binary(protocol::build_subscriber_message(protocol::SUB_REGISTER, 2_320_050, &[]).into())).await.unwrap();
+        wait_until("visitor at TetraPack", async || tp.inner.read().await.subscribers.contains_key(&2_320_050)).await;
+
+        // Out: LIP short report (0x0A), simple location (0x03) and location
+        // system (0x83) stay here; a text SDS (0x82) is forwarded.
+        send_sds(&mut stations[3], 2_320_010, 1234, &[0x0A, 0x00, 0x11, 0x22]).await;
+        send_sds(&mut stations[3], 2_320_011, 1234, &[0x03, 0x00, 0x11]).await;
+        send_sds(&mut stations[3], 2_320_012, 1234, &[0x83, 0x00, 0x11]).await;
+        send_sds(&mut stations[3], 2_320_010, 5678, &[0x82, 0x04, 0x01, 0x01, b'H', b'i']).await;
+        assert!(next_call(&mut far, protocol::CALL_SHORT_TRANSFER, 2000).await.is_some_and(|x| (x.1, x.2) == (2_320_010, 5678)), "only the text SDS crosses");
+        assert!(next_call(&mut far, protocol::CALL_SHORT_TRANSFER, 300).await.is_none(), "no position report crosses");
+
+        // In: a position report from TetraPack is dropped, a text passes.
+        send_sds(&mut far, 1234, 2_320_050, &[0x0A, 0x00, 0x11, 0x22]).await;
+        send_sds(&mut far, 5678, 2_320_050, &[0x82, 0x04, 0x01, 0x01, b'H', b'i']).await;
+        assert!(next_call(&mut stations[0], protocol::CALL_SHORT_TRANSFER, 2000).await.is_some_and(|x| (x.1, x.2) == (5678, 2_320_050)), "only the text SDS comes in");
+        assert!(next_call(&mut stations[0], protocol::CALL_SHORT_TRANSFER, 300).await.is_none());
+
+        // Between our own stations nothing changes: a LIP report is delivered.
+        send_sds(&mut stations[3], 2_320_010, 2_320_001, &[0x0A, 0x00, 0x11, 0x22]).await;
+        assert!(next_call(&mut stations[0], protocol::CALL_SHORT_TRANSFER, 2000).await.is_some_and(|x| (x.1, x.2) == (2_320_010, 2_320_001)), "local LIP still delivered");
     }
 
     #[tokio::test]

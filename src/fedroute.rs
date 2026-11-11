@@ -1317,6 +1317,7 @@ mod tests {
         inner.sds_routes.insert(id, SdsRoute {
             source_client: a, targets: HashSet::new(), source_issi: 1001, destination: 2002,
             created_at: Instant::now(), store_offline: false, lip_only: false, held_header: None,
+            no_lip: HashSet::new(), from_no_lip: false,
         });
         assert!(is_duplicate(&inner, id, 1001, b, Instant::now()));
         assert!(!is_duplicate(&inner, id, 1001, a, Instant::now()));

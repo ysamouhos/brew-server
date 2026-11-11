@@ -485,6 +485,11 @@ async fn handle_sds_header(state: &Arc<AppState>, source: ClientId, id: uuid::Uu
     if from_barred_link || targets.len() != before {
         info!(%source, uuid=%id, source_issi, destination, "SDS not passed across a network link (never_forward)");
     }
+    // "Forward LIP" off for a network: whether this is a position report
+    // shows only in the payload, so the header waits for it.
+    let from_no_lip = crate::netlink::lip_barred(state, &inner, source);
+    let no_lip: HashSet<ClientId> = targets.iter().copied().filter(|t| crate::netlink::lip_barred(state, &inner, *t)).collect();
+    let hold = lip_only || from_no_lip || !no_lip.is_empty();
     // Always remember the UUID -> source ISSI mapping so a following
     // SDS_TRANSFER can be attributed (and its position decoded) even when the
     // destination is not a registered Brew subscriber — position beacons are
@@ -499,7 +504,7 @@ async fn handle_sds_header(state: &Arc<AppState>, source: ClientId, id: uuid::Uu
         && targets.is_empty()
         && !inner.group_clients.contains_key(&destination)
         && state.sms_center.wants(destination);
-    inner.sds_routes.insert(id, SdsRoute { source_client: source, targets: targets.clone(), source_issi, destination, created_at: Instant::now(), store_offline, lip_only, held_header: lip_only.then(|| raw.clone()) });
+    inner.sds_routes.insert(id, SdsRoute { source_client: source, targets: targets.clone(), source_issi, destination, created_at: Instant::now(), store_offline, lip_only, held_header: hold.then(|| raw.clone()), no_lip, from_no_lip });
     if targets.is_empty() {
         drop(inner);
         if store_offline {
@@ -510,8 +515,8 @@ async fn handle_sds_header(state: &Arc<AppState>, source: ClientId, id: uuid::Uu
         return;
     }
     drop(inner);
-    if lip_only {
-        debug!(%source, uuid=%id, source_issi, destination, "SDS involving a barred ISSI held until its payload shows whether it is LIP");
+    if hold {
+        debug!(%source, uuid=%id, source_issi, destination, lip_only, "SDS header held until its payload shows whether it is LIP");
         return;
     }
     let inner = state.inner.read().await;
@@ -542,6 +547,21 @@ async fn handle_sds_transfer(state: &Arc<AppState>, source: ClientId, id: uuid::
                 info!(%source, uuid=%id, source_issi = r.source_issi, destination = r.destination, "SDS involving a barred ISSI dropped (not LIP)");
             }
             return;
+        }
+        // "Forward LIP" off: a position report does not cross that link.
+        let location = sds_pid(&raw).is_some_and(is_location_pid);
+        if let Some(r) = inner.sds_routes.get_mut(&id).filter(|r| r.source_client == source && location) {
+            if r.from_no_lip {
+                let r = inner.sds_routes.remove(&id).expect("route present");
+                info!(%source, uuid=%id, source_issi = r.source_issi, destination = r.destination, "LIP from a network with Forward LIP off dropped");
+                return;
+            }
+            if !r.no_lip.is_empty() {
+                let barred = std::mem::take(&mut r.no_lip);
+                r.targets.retain(|t| !barred.contains(t));
+                info!(%source, uuid=%id, source_issi = r.source_issi, destination = r.destination, "LIP not passed to a network with Forward LIP off");
+                if r.targets.is_empty() { inner.sds_routes.remove(&id); return; }
+            }
         }
         match inner.sds_routes.get_mut(&id) {
             Some(route) if route.source_client == source => {
@@ -582,6 +602,12 @@ async fn handle_sds_transfer(state: &Arc<AppState>, source: ClientId, id: uuid::
         state.monitor.note_networks(id, from_net, to_nets).await;
     }
     for tx in &txs { let _ = tx.send(raw.clone()); }
+    // The kind of SDS (text, position, WAP ...) for the dashboard: the
+    // protocol identifier, first byte of the type 4 user data (ETSI TS 100
+    // 392-2 clause 29.4.3.9).
+    if source_issi != 0 {
+        if let Some(pid) = sds_pid(&raw) { state.monitor.note_protocol(id, pid).await; }
+    }
 
     if let Some(destination) = store_for {
         store_offline_sds(state, source, id, source_issi, destination, &raw).await;
@@ -638,6 +664,19 @@ fn hex_dump(bytes: &[u8]) -> String {
     }
     s
 }
+
+/// Protocol identifier of an SDS_TRANSFER frame: the first byte of its type 4
+/// user data (ETSI TS 100 392-2 clause 29.4.3.9).
+fn sds_pid(raw: &[u8]) -> Option<u8> {
+    match protocol::parse(raw) {
+        Ok(BrewMessage::Frame(f)) => f.data.first().copied(),
+        _ => None,
+    }
+}
+
+/// A location protocol identifier (table 29.21): simple location system
+/// 0x03, location information protocol 0x0A, location system 0x83.
+fn is_location_pid(pid: u8) -> bool { matches!(pid, 0x03 | 0x0A | 0x83) }
 
 /// Quick check whether a raw SDS_TRANSFER/SHORT_TRANSFER frame carries a LIP
 /// position payload: either the short-report PID 0x0A or the MTH-style long

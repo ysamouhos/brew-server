@@ -311,6 +311,11 @@ pub struct NetworkConfig {
     /// "Forward unknown targets": an individual call or SDS from a station
     /// that nobody here takes goes once to this network (loop guard 5 s).
     pub forward_unknown: bool,
+    /// "Forward LIP": position reports (SDS whose protocol identifier is a
+    /// location one, 0x03 / 0x0A / 0x83, ETSI TS 100 392-2 table 29.21) cross
+    /// to and from this network. Off: they stay on this side of the link,
+    /// other SDS still pass. Default on.
+    pub forward_lip: bool,
     pub reconnect_interval_seconds: u64,
     /// TLS settings, as for `[[federation.peers]]`.
     pub tls: bool,
@@ -338,6 +343,7 @@ impl Default for NetworkConfig {
             never_export: Vec::new(),
             never_forward: Vec::new(),
             forward_unknown: false,
+            forward_lip: true,
             reconnect_interval_seconds: 15,
             tls: false,
             tls_ca_path: "/etc/ssl/certs/ca-certificates.crt".into(),
