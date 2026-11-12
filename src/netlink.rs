@@ -176,7 +176,7 @@ pub fn ensure_registered(state: &AppState, slot: u8, issi: u32) {
     let mut e = export_lock(&members);
     if issi == 0 || issi > GSSI_MASK || e.have.contains_key(&issi) || e.visitors.contains(&issi) || e.have.len() >= MAX_TALKERS { return; }
     match e.allow(issi, Instant::now()) {
-        Allow::Yes => { let _ = up.send(protocol::build_subscriber_message(protocol::SUB_REGISTER, issi, &[])); e.have.insert(issi, BTreeSet::new()); }
+        Allow::Yes => { let _ = up.send(protocol::build_subscriber_message(protocol::SUB_REGISTER, issi, &[])); e.have.insert(issi, BTreeSet::new()); e.settle(); }
         Allow::Ask => { let _ = up.send(build_check(&[issi])); e.asked(&[issi], Instant::now()); }
         Allow::No => {}
     }
@@ -486,6 +486,7 @@ pub async fn sync_members(state: &AppState) {
         }
         let Export { have, .. } = &mut *e;
         for msg in member_changes(have, &want, &talking) { let _ = up.send(msg); }
+        e.settle();
     }
 }
 
@@ -558,6 +559,20 @@ pub struct Export {
     pub visitors: HashSet<u32>,
     /// Last conflict per ISSI (rate limit).
     last_conflict: HashMap<u32, Instant>,
+    /// Name of the network, for the log.
+    pub network: String,
+    /// When each radio in `have` was registered there (ms since the epoch),
+    /// kept in step by [`Export::settle`].
+    pub since: HashMap<u32, u64>,
+}
+
+/// One radio a link registered in the other network, for the dashboard.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportedView {
+    pub issi: u32,
+    /// Its groups there (that network's GSSIs).
+    pub groups: Vec<u32>,
+    pub since_ms: u64,
 }
 
 /// One ISSI collision seen on a link, for the dashboard.
@@ -602,6 +617,34 @@ impl Export {
         for i in taken { self.pending.remove(i); self.verdict.insert(*i, (true, now)); }
         if self.verdict.len() > 4 * MAX_TALKERS { self.verdict.retain(|_, (_, at)| now.duration_since(*at) < TAKEN_FOR); }
         taken.to_vec()
+    }
+
+    /// Brings `since` in step with `have` after a change and logs each radio
+    /// registered there or deregistered there. Brew has no answer to a
+    /// registration, so this is what this server sent, not a confirmation.
+    pub fn settle(&mut self) {
+        let now = crate::telemetry::now_ms();
+        let mut gone: Vec<u32> = self.since.keys().filter(|i| !self.have.contains_key(i)).copied().collect();
+        gone.sort_unstable();
+        for issi in gone {
+            self.since.remove(&issi);
+            info!(network = %self.network, issi, "multi network: ISSI {issi} deregistered in {}", self.network);
+        }
+        let mut new: Vec<u32> = self.have.keys().filter(|i| !self.since.contains_key(i)).copied().collect();
+        new.sort_unstable();
+        for issi in new {
+            self.since.insert(issi, now);
+            info!(network = %self.network, issi, "multi network: ISSI {issi} registered in {}", self.network);
+        }
+    }
+
+    /// The radios registered there, by ISSI, for the dashboard.
+    pub fn exported_view(&self) -> Vec<ExportedView> {
+        let mut v: Vec<ExportedView> = self.have.iter().map(|(issi, groups)| ExportedView {
+            issi: *issi, groups: groups.iter().copied().collect(), since_ms: self.since.get(issi).copied().unwrap_or(0),
+        }).collect();
+        v.sort_unstable_by_key(|x| x.issi);
+        v
     }
 
     /// Notes a conflict (at most one a minute per ISSI).
@@ -736,6 +779,7 @@ impl Outbound {
                             Allow::Yes => {
                                 out.push(protocol::build_subscriber_message(protocol::SUB_REGISTER, talker, &[]));
                                 e.have.insert(talker, BTreeSet::new());
+                                e.settle();
                             }
                             // Asked first; the talker passes unregistered
                             // until the answer says it is free there.
@@ -867,6 +911,7 @@ async fn run_session(
         let mut e = export_lock(&talkers);
         e.checks = checks;
         e.never = net.never_export.iter().copied().collect();
+        e.network = net.name.clone();
     }
     set_status(state, &net.name, gen, |s| {
         // Conflicts seen before stay on the dashboard.
@@ -981,6 +1026,7 @@ async fn run_session(
         if net.bridge_issi != 0 {
             let _ = up_tx.send(protocol::build_subscriber_message(protocol::SUB_DEREGISTER, net.bridge_issi, &[]));
         }
+        if !registered.is_empty() { info!(network = %name, count = registered.len(), "multi network: deregistered {} radios in {name} (link stopped)", registered.len()); }
         if net.bridge_issi != 0 || !registered.is_empty() { tokio::time::sleep(Duration::from_millis(200)).await; }
     }
     drop(up_tx);
@@ -1199,6 +1245,8 @@ pub struct NetworkView {
     pub checks: bool,
     /// Radios registered there by the link right now.
     pub exported: Vec<u32>,
+    /// The same radios with their groups there and since when.
+    pub exported_detail: Vec<ExportedView>,
     pub conflicts: Vec<Conflict>,
     /// Radios of that network on this server's stations (extension `mni`).
     pub visitors: Vec<crate::visitors::VisitorView>,
@@ -1243,6 +1291,7 @@ pub async fn snapshot(state: &AppState) -> MultiNetworkView {
             register_talkers: n.register_talkers, register_all: n.register_all,
             export_stations: n.export_stations.clone(), never_export: n.never_export.clone(), never_forward: n.never_forward.clone(), forward_unknown: n.forward_unknown, forward_lip: n.forward_lip,
             checks: s.connected && s.members.as_ref().is_some_and(|e| export_lock(e).checks),
+            exported_detail: if s.connected { s.members.as_ref().map(|e| export_lock(e).exported_view()).unwrap_or_default() } else { Vec::new() },
             exported: if s.connected { s.members.as_ref().map(|e| { let mut v: Vec<u32> = export_lock(e).have.keys().copied().collect(); v.sort_unstable(); v }).unwrap_or_default() } else { Vec::new() },
             conflicts: s.members.as_ref().map(|e| export_lock(e).conflicts.iter().cloned().collect()).unwrap_or_default(),
             visitors: slots.get(&n.name).and_then(|s| visitors.get(s)).cloned().unwrap_or_default(),
@@ -1335,6 +1384,24 @@ mod tests {
         assert!(member_changes(&mut have, &HashMap::new(), &HashSet::from([100])).is_empty());
         assert_eq!(kinds(&member_changes(&mut have, &HashMap::new(), &HashSet::new())), vec![(protocol::SUB_DEREGISTER, 100)]);
         assert!(have.is_empty());
+    }
+
+    #[test]
+    fn settle_keeps_since_in_step_with_the_registered_radios() {
+        let mut e = Export { network: "TP".into(), ..Default::default() };
+        let want = HashMap::from([(100, BTreeSet::from([909])), (101, BTreeSet::new())]);
+        member_changes(&mut e.have, &want, &HashSet::new());
+        e.settle();
+        let first = e.since[&100];
+        assert!(first > 0 && e.since.contains_key(&101));
+        let v = e.exported_view();
+        assert_eq!(v.iter().map(|x| (x.issi, x.groups.clone())).collect::<Vec<_>>(), vec![(100, vec![909]), (101, vec![])]);
+        // A radio that stays keeps its time; one that leaves is dropped.
+        member_changes(&mut e.have, &HashMap::from([(100, BTreeSet::from([909, 910]))]), &HashSet::new());
+        e.settle();
+        assert_eq!(e.since.len(), 1);
+        assert_eq!(e.since[&100], first);
+        assert_eq!(e.exported_view()[0].groups, vec![909, 910]);
     }
 
     #[test]
@@ -1679,6 +1746,14 @@ mod e2e {
         wait_until("left TG 909 there", async || !tp.inner.read().await.subscribers.contains_key(&2_320_003)).await;
         stations[0].send(Message::Binary(protocol::build_subscriber_message(protocol::SUB_AFFILIATE, 2_320_003, &[9]).into())).await.unwrap();
         wait_until("back on TG 909 there", async || tp.inner.read().await.subscribers.get(&2_320_003).is_some_and(|s| s.groups.contains(&909))).await;
+        // The dashboard lists the radios registered there, with their groups
+        // there and since when, the same set the far server has.
+        let view = snapshot(&main).await;
+        let detail = &view.networks[0].exported_detail;
+        let far_has: Vec<u32> = { let t = tp.inner.read().await; let mut v: Vec<u32> = t.subscribers.keys().copied().filter(|i| (2_320_001..2_320_026).contains(i)).collect(); v.sort_unstable(); v };
+        assert_eq!(detail.iter().map(|x| x.issi).collect::<Vec<_>>(), far_has);
+        assert!(detail.iter().all(|x| x.groups == vec![909] && x.since_ms > 0), "{detail:?}");
+        assert_eq!(view.networks[0].exported, far_has);
 
         // A radio on station 0 talks on TG 9: heard on TG 909 over there,
         // talker ISSI 1:1.

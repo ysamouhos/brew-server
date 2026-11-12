@@ -645,6 +645,7 @@ async function csLookup(){
   for(const c of [...(st.active_calls||[]),...(st.recent_calls||[])]){add(c.source);if(c.kind!=='group')add(c.destination);}
   for(const x of (st.recent_sds||[])){add(x.source);add(x.destination);}
   for(const m of ((D.conn&&D.conn.mobile_stations)||[]))add(m.issi);
+  for(const n of ((D.nets&&D.nets.networks)||[]))for(const i of n.exported||[])add(i);
   for(const r of ((D.conn&&D.conn.roaming_log)||[]))add(r.issi);
   for(const r of (D.regs||[]))add(r.issi);
   const ask=[...want].filter(i=>!(D.issi||{})[i]&&!CS_ASKED.has(i)).slice(0,500);
@@ -1178,8 +1179,8 @@ R.multinet=()=>{
     return `<tr${n.enabled?'':' class="off"'}><td><button class="tog" role="switch" aria-checked="${n.enabled}" aria-label="Network ${esc(n.name)} on" onclick="toggleNet(${i})"></button></td>
      <td><b>${esc(n.name)}</b><div class="mut" style="font-size:12px">MNI ${mni(n.mcc,n.mnc)}</div></td><td>${st}</td>
      <td><code>${esc(n.remote_host)}${esc(n.path)}</code>${n.tls?' <span class="chip">TLS</span>':''}<div class="mut" style="font-size:12px">login ${esc(n.username)||'—'} · as “${esc(n.user_agent||M.default_user_agent)}”</div></td>
-     <td>${n.bridge_issi||'<span class="mut">—</span>'}${n.register_talkers&&n.connected?`<div class="mut" style="font-size:12px">${n.exported.length} radio${n.exported.length===1?'':'s'} registered there${n.register_all?' (all)':''}${n.checks?' · ISSIs checked':''}</div>`:''}${n.visitors.length?`<div class="mut" style="font-size:12px">${n.visitors.length} visitor${n.visitors.length===1?'':'s'} here</div>`:''}</td><td>${n.bridged.map(g=>`<span class="tg">${g}</span>`).join(' ')||'<span class="mut">none</span>'}</td>
-     <td style="white-space:nowrap"><button class="btn" onclick="editNet(${i})">Edit</button><button class="btn danger" onclick="delNet(${i})">Delete</button></td></tr>`;}).join('');
+     <td>${n.bridge_issi||'<span class="mut">—</span>'}${n.register_talkers&&n.connected?`<div style="font-size:12px;margin-top:2px">${n.exported.length?`<button class="chip a" style="cursor:pointer" aria-expanded="${!!UI.open['net'+i]}" onclick="UI.open['net'+${i}]=!UI.open['net'+${i}];render(true)">${UI.open['net'+i]?'▾':'▸'} ${n.exported.length} radio${n.exported.length===1?'':'s'} registered there</button>`:'<span class="mut">no radios registered there</span>'}<span class="mut">${n.register_all?' (all)':''}${n.checks?' · ISSIs checked':''}</span></div>`:''}${n.visitors.length?`<div class="mut" style="font-size:12px">${n.visitors.length} visitor${n.visitors.length===1?'':'s'} here</div>`:''}</td><td>${n.bridged.map(g=>`<span class="tg">${g}</span>`).join(' ')||'<span class="mut">none</span>'}</td>
+     <td style="white-space:nowrap"><button class="btn" onclick="editNet(${i})">Edit</button><button class="btn danger" onclick="delNet(${i})">Delete</button></td></tr>${UI.open['net'+i]&&n.connected&&n.exported.length?exportedRow(n):''}`;}).join('');
   return `<div class="card"><div class="ch"><h2>This server</h2>${helpBtn('mnself')}<span class="sp"></span><label style="display:flex;gap:8px;align-items:center;font-size:13px"><button class="tog" role="switch" aria-checked="${M.enabled}" aria-label="Multi Network on" onclick="toggleMn()"></button>Multi Network ${M.enabled?'on':'off'}</label><button class="btn" onclick="editSelf()">Edit</button></div>
    <div class="row"><div class="rm"><div class="rt">${esc(M.name)||'<span class="mut">no name</span>'}</div><div class="rs">MNI (MCC/MNC) ${mni(M.mcc,M.mnc)}</div></div></div>
    ${helpNote('mnself','The switch closes (off) or opens (on) all links to other networks at once; their settings and the pools stay. The network of this server: the stations connected here belong to it. The MNI is for the overview and for the next steps of Multi Network (radios of other networks on a station).')}</div>
@@ -1188,6 +1189,15 @@ R.multinet=()=>{
    ${M.networks.length?`<div class="tw"><table><thead><tr><th style="width:52px">On</th><th>Network</th><th>Link</th><th>Server</th><th>Bridge ISSI</th><th>Bridged groups</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`:'<div class="empty">No other networks yet.</div>'}
    ${msgDiv('net-msg')}</div>${visitorCard(M)}${conflictCard(M)}`;
 };
+// The radios a link registered in that network (expanded under its row). Brew has no answer to a
+// registration: this is what this server sent there, not a confirmation from that network.
+function exportedRow(n){
+  const at=new Map(((D.conn&&D.conn.mobile_stations)||[]).map(m=>[m.issi,m]));
+  const l=n.exported_detail||n.exported.map(issi=>({issi,groups:[],since_ms:0}));
+  return `<tr class="exp"><td colspan="7"><div class="tw"><table><thead><tr><th>ISSI</th><th>Station here</th><th>Groups in ${esc(n.name)}</th><th>Registered there</th></tr></thead><tbody>${l.map(x=>{const m=at.get(x.issi);
+   return `<tr><td>${issiCell(x.issi)}</td><td>${m?`${m.cell&&m.cell.name?`<span class="chip">${esc(m.cell.name)}</span>`:`<b class="m">${esc(m.basestation_name||'—')}</b>`}${infoOf(m.basestation_name)?`<span class="sub">${esc(infoOf(m.basestation_name))}</span>`:''}`:'<span class="mut">—</span>'}</td><td>${x.groups.map(g=>`<span class="tg">${g}</span>`).join(' ')||'<span class="mut">none</span>'}</td><td class="m">${x.since_ms?`${tmd(x.since_ms)} <span class="mut">(${ago(x.since_ms)})</span>`:'—'}</td></tr>`;}).join('')}</tbody></table></div>
+   <div class="mut" style="font-size:12px;margin-top:6px">What this server registered in ${esc(n.name)}. Brew does not confirm a registration, so whether that network took it shows only on its side (its dashboard, or a call from there reaching the radio).</div></td></tr>`;
+}
 // Radios of other networks on this server's stations (extension mni).
 function visitorCard(M){
   const l=M.networks.flatMap(n=>n.visitors.map(v=>({...v,net:n.name})));
