@@ -221,6 +221,21 @@ pub fn forget_foreign(inner: &mut Inner, source: ClientId, issi: Option<u32>) {
     inner.visitors.foreign.retain(|(s, i, _), _| *s != source || issi.is_some_and(|x| x != *i));
 }
 
+/// Groups a registration keeps when the radio registers on connection `to` after `from`
+/// (a cell change): none across networks (the cells' MNIs differ, so the new cell
+/// affiliates its own groups), otherwise all but the groups of linked networks, which were
+/// `from`'s (aliases, see [`group_alias`]).
+pub fn groups_carried_over(inner: &Inner, groups: &HashSet<u32>, from: ClientId, to: ClientId) -> HashSet<u32> {
+    let networks = |id: ClientId| -> Option<BTreeSet<(u16, u16)>> {
+        let cells = &inner.carriers.info(id)?.cells;
+        (!cells.is_empty()).then(|| cells.iter().map(|c| (c.key.mcc, c.key.mnc)).collect())
+    };
+    if let (Some(a), Some(b)) = (networks(from), networks(to)) {
+        if a != b { return HashSet::new(); }
+    }
+    groups.iter().copied().filter(|g| split_alias(*g).is_none()).collect()
+}
+
 /// The group of a `GROUP_TX` from `source`: the other network's group (an
 /// alias) if a `SERVICE_CALL_NETWORK` announced it, else `None`. A call
 /// keeps its alias for its later overs.

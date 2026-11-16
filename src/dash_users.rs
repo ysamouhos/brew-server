@@ -27,19 +27,29 @@ use std::{
 
 /// Pages that can be ticked for a user or Viewer (the dashboard's page ids).
 /// Multi Network, Control, Config file and Server settings are for admins only.
+/// `fleet` is "Fleet Control visibility" (see the Fleet Manager), `fleet_manage`
+/// "Fleet Control management" (includes visibility; logged-in users only).
 pub const PAGES: &[&str] = &[
     "overview", "calls", "sds", "radios", "issis", "map", "stations", "routing", "roaming", "telemetry",
-    "accounts", "sip", "sipcfg", "sms", "tsds", "ha",
+    "accounts", "sip", "sipcfg", "sms", "tsds", "ha", "fleet", "fleet_manage",
 ];
+
+/// Pages that are never given without asking: Accounts and Fleet Control.
+const NOT_DEFAULT: &[&str] = &["accounts", "fleet", "fleet_manage"];
 
 /// What Viewer and users taken over from the config see: every page that
 /// used to be open to anyone who is not an admin.
 pub fn default_pages() -> BTreeSet<String> {
-    PAGES.iter().filter(|p| **p != "accounts").map(|p| p.to_string()).collect()
+    PAGES.iter().filter(|p| !NOT_DEFAULT.contains(p)).map(|p| p.to_string()).collect()
 }
 
 fn pages_of(list: &[String]) -> BTreeSet<String> {
-    list.iter().filter(|p| PAGES.contains(&p.as_str())).cloned().collect()
+    let mut pages: BTreeSet<String> = list.iter().filter(|p| PAGES.contains(&p.as_str())).cloned().collect();
+    // Management includes visibility.
+    if pages.contains("fleet_manage") {
+        pages.insert("fleet".into());
+    }
+    pages
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -111,7 +121,12 @@ pub struct Access {
 
 impl Access {
     pub fn sees(&self, page: &str) -> bool {
-        self.admin || self.pages.contains(page)
+        self.admin || self.pages.contains(page) || (page == "fleet" && self.pages.contains("fleet_manage"))
+    }
+
+    /// "Fleet Control management": admins, and users with that right (never Viewer).
+    pub fn manages_fleet(&self) -> bool {
+        self.admin || (self.user.is_some() && self.pages.contains("fleet_manage"))
     }
 }
 
@@ -300,6 +315,8 @@ impl DashUsers {
         let mut d = self.data.write().unwrap_or_else(|e| e.into_inner());
         let mut next = clone_data(&d);
         next.viewer = pages_of(pages);
+        // Viewer (not logged in) may see the Fleet Manager but never manage it.
+        next.viewer.remove("fleet_manage");
         self.save(&mut next)?;
         *d = next;
         tracing::warn!(pages = ?d.viewer, "dashboard viewer pages changed");
@@ -543,5 +560,18 @@ mod tests {
         u.upsert("admin", "adminpw", true, &[]).unwrap();
         assert!(u.enabled() && !u.access(None).admin);
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn fleet_rights_management_includes_visibility_and_not_for_viewer() {
+        assert!(!default_pages().contains("fleet") && !default_pages().contains("fleet_manage"), "never given without asking");
+        let pages = pages_of(&["fleet_manage".to_string()]);
+        assert!(pages.contains("fleet") && pages.contains("fleet_manage"));
+        let user = Access { user: Some("bob".into()), admin: false, pages: pages.clone(), auth: true };
+        assert!(user.sees("fleet") && user.manages_fleet());
+        let viewer = Access { user: None, admin: false, pages, auth: true };
+        assert!(!viewer.manages_fleet(), "Viewer never manages");
+        let looker = Access { user: Some("eve".into()), admin: false, pages: pages_of(&["fleet".to_string()]), auth: true };
+        assert!(looker.sees("fleet") && !looker.manages_fleet());
     }
 }

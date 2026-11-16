@@ -582,7 +582,7 @@ pub async fn handle_bts_info(state: &Arc<AppState>, source: ClientId, json: &str
     crate::visitors::announce(state, Some(source)).await;
 }
 
-fn directory_entries(inner: &crate::state::Inner) -> Vec<DirectoryEntry> {
+pub fn directory_entries(inner: &crate::state::Inner) -> Vec<DirectoryEntry> {
     inner.carriers.directory(|id| station_name(id, inner.clients.get(&id).and_then(|c| c.username.as_deref())))
 }
 

@@ -173,6 +173,9 @@ pub enum TelemetryEvent {
     /// The Basestation's configured position (`[telemetry]` latitude/longitude),
     /// sent periodically and only when it has one -- never (0, 0).
     SiteLocation { name: Option<String>, lat: f64, lon: f64 },
+    /// Multi Network: the radio registered on (V)ASSI `issi` is `home_issi` of network
+    /// `mcc`/`mnc` (`network`: its name, empty when unknown). Sent right after its registration.
+    MsVisitor { issi: u32, mcc: u16, mnc: u16, home_issi: u32, network: String },
 }
 
 /// The RF events an additional cell reports inside `CellRf`.
@@ -334,6 +337,10 @@ pub struct TelemetryBts {
     /// Multi-cell stations only: cell each registered ISSI is on (0 = primary).
     #[serde(skip)]
     pub ms_cell: HashMap<u32, u8>,
+    /// Multi Network: (V)ASSI -> home ISSI of the visitor on it (`MsVisitor`), so the
+    /// registration log names the radio as the rest of the server knows it.
+    #[serde(skip)]
+    pub visitor_home: HashMap<u32, u32>,
     /// Serialized view of `ms_cell` as sorted `[issi, cell]` pairs.
     pub ms_cell_out: Vec<(u32, u8)>,
     /// Latest `CellsSnapshot`: the station's cells, primary first (empty until one arrives).
@@ -426,6 +433,7 @@ impl TelemetryBts {
             recent_regs: VecDeque::new(),
             recent_regs_out: Vec::new(),
             ms_cell: HashMap::new(),
+            visitor_home: HashMap::new(),
             ms_cell_out: Vec::new(),
             cells: Vec::new(),
             site_name: None,
@@ -543,7 +551,25 @@ impl TelemetryBts {
     /// Appends a registration lifecycle event to the rolling log (newest
     /// first, capped at 50 like `recent_sds`).
     fn push_reg(&mut self, issi: u32, kind: &'static str) {
+        let issi = self.visitor_home.get(&issi).copied().unwrap_or(issi);
         self.push_reg_entry(RegLogEntry { at_ms: now_ms(), issi, kind, roamed_to: None, cell: None, carrier: None });
+    }
+
+    /// `MsVisitor`: later log entries of `vassi` name `home`, and so does its registration,
+    /// which the Basestation reports just before.
+    fn note_visitor(&mut self, vassi: u32, home: u32, now_ms: u64) {
+        if self.visitor_home.len() >= 4096 && !self.visitor_home.contains_key(&vassi) {
+            self.visitor_home.clear();
+        }
+        self.visitor_home.insert(vassi, home);
+        let mut changed = false;
+        for e in self.recent_regs.iter_mut().filter(|e| e.issi == vassi && now_ms.saturating_sub(e.at_ms) <= VISITOR_NOTE_MS) {
+            e.issi = home;
+            changed = true;
+        }
+        if changed {
+            self.recent_regs_out = self.recent_regs.iter().cloned().collect();
+        }
     }
 
     fn push_reg_entry(&mut self, entry: RegLogEntry) {
@@ -554,6 +580,10 @@ impl TelemetryBts {
         self.recent_regs_out = self.recent_regs.iter().cloned().collect();
     }
 }
+
+/// How far back an `MsVisitor` renames log entries of its (V)ASSI: the registration it
+/// follows comes milliseconds before it.
+const VISITOR_NOTE_MS: u64 = 10_000;
 
 #[derive(Default)]
 pub struct TelemetryState {
@@ -819,6 +849,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         subprotocol: "bluestation-telemetry-v2",
         users: state.logins.telemetry.clone(),
         tls: state.config.telemetry.tls.clone(),
+        extensions: None,
     };
     fsnet::serve(cfg, move |socket, identity, peer| {
         let state = state.clone();
@@ -948,6 +979,7 @@ async fn handle_event(state: &Arc<AppState>, id: &str, data: &[u8]) {
             bts.registrations.remove(&issi); bts.sync_registrations();
             bts.push_reg(issi, "timeout");
         }
+        TelemetryEvent::MsVisitor { issi, home_issi, .. } => bts.note_visitor(issi, home_issi, now_ms()),
         TelemetryEvent::GroupCallStarted { call_id, gssi, caller_issi, carrier_num, ts, priority } => {
             bts.active_calls.insert(call_id, TelemetryCall {
                 call_id, is_group: true, gssi_or_called: gssi, source_issi: caller_issi,
@@ -1510,6 +1542,28 @@ mod roaming_tests {
         assert!(serde_json::to_string(&roamed).unwrap().contains("\"roamed_to\":\"1000001\""));
         let plain = RegLogEntry { at_ms: 1, issi: 7, kind: "register", roamed_to: None, cell: None, carrier: None };
         assert!(!serde_json::to_string(&plain).unwrap().contains("roamed_to"));
+    }
+
+    #[tokio::test]
+    async fn a_visitor_is_logged_with_its_home_issi() {
+        // Field 2026-11-15: the log showed the MTP's (V)ASSIs 15728641 / 15728649 next to
+        // its ISSI 2320972. The JSON is what FlowStation sends.
+        let mut config = crate::config::Config::default();
+        config.storage.enabled = false;
+        let (state, _rx) = AppState::new(config, std::path::PathBuf::from("test.toml"));
+        let state = Arc::new(state);
+        state.telemetry.write().await.stations.insert("1000002".into(), TelemetryBts::new("1000002".into(), None));
+        let msg = |v: serde_json::Value| serde_json::to_vec(&v).unwrap();
+        handle_event(&state, "1000002", &msg(serde_json::json!({"MsRegistration": {"issi": 15_728_641}}))).await;
+        handle_event(&state, "1000002", &msg(serde_json::json!({"MsVisitor": {"issi": 15_728_641, "mcc": 901, "mnc": 9999, "home_issi": 2_320_972, "network": ""}}))).await;
+        handle_event(&state, "1000002", &msg(serde_json::json!({"MsTimeoutDrop": {"issi": 15_728_641}}))).await;
+        handle_event(&state, "1000002", &msg(serde_json::json!({"MsRegistration": {"issi": 2_320_001}}))).await;
+        let log = state.telemetry.read().await.registration_log();
+        let rows: Vec<(u32, &str)> = log.iter().map(|r| (r.entry.issi, r.entry.kind)).collect();
+        assert_eq!(rows.len(), 3);
+        for row in [(2_320_972, "register"), (2_320_972, "timeout"), (2_320_001, "register")] {
+            assert!(rows.contains(&row), "{row:?} missing in {rows:?}");
+        }
     }
 }
 

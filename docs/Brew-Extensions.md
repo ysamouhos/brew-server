@@ -68,6 +68,10 @@ X-Brew-Extensions: bts-info, handover-v1, ms-cell, ms-moved, ms-reselection, cal
 - A server may offer a subset; each extension below names what it needs.
 - brew-server offers `mni` only while Multi Network is switched on and has
   networks configured.
+- brew-server offers `fleet-control` while its control channel (`[control]`)
+  is on. It is not a Brew message: Fleet Control runs over the control
+  channel, which carries the same offer in its own 101 (section 12c and
+  `docs/Fleet-Control.md`).
 
 ### 3.2 Basestation capability: `capabilities` in `SERVICE_BTS_INFO`
 
@@ -1096,6 +1100,15 @@ the parties, each only where it is not the server's own network:
   app) it registered in the visitor's network, are delivered here. The far
   server would send the call back over the same connection, which a Brew
   server does not do.
+
+## 12c. Fleet Control (`fleet-control`)
+
+Not a Brew message type. A server that offers `fleet-control` lets
+Basestations be managed over the Basestation control channel (WebSocket,
+subprotocol `bluestation-control-v1`): `StationHello`, `CommandResult` and
+the Fleet Control commands. The offer on the Brew connection only tells the
+Basestation to show its local switch; the station acts on the offer in the
+control channel's 101. Full protocol: `docs/Fleet-Control.md`.
 
 ## 13. Implementation checklist
 

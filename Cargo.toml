@@ -1,6 +1,6 @@
 [package]
 name = "brew-server"
-version = "1.21.1"
+version = "1.21.2"
 edition = "2021"
 license = "Apache-2.0"
 description = "Multi-Basestation TETRA Brew protocol hub"
@@ -33,3 +33,7 @@ blake2 = "0.10"
 
 [build-dependencies]
 cc = "1"
+
+[dev-dependencies]
+# Paused clock for the Fleet Control update-run simulations (no new crate).
+tokio = { version = "1", features = ["full", "test-util"] }

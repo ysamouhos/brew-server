@@ -288,6 +288,24 @@ async fn brew_session_endpoint(
     upgrade_from_parts(state, &mut parts, mode, seed_version, remote_addr, username).await
 }
 
+/// `X-Brew-Extensions` for a Basestation: `mni` only while Multi Network is on;
+/// `fleet-control` while the control channel is on (Fleet Control runs over it,
+/// and the station shows its switch even before its channel is set up).
+fn brew_offer(mni_on: bool, control_on: bool) -> String {
+    let mut offer = crate::carriers::EXTENSIONS.to_owned();
+    if mni_on { offer = format!("{offer}, {}", crate::visitors::CAPABILITY); }
+    if control_on { offer = format!("{offer}, {}", crate::fleet::CAPABILITY); }
+    offer
+}
+
+#[cfg(test)]
+#[test]
+fn fleet_control_offered_only_with_the_control_channel() {
+    assert!(!brew_offer(false, false).contains("fleet-control"));
+    assert!(brew_offer(false, true).ends_with(", fleet-control"));
+    assert!(brew_offer(true, true).contains(", mni, fleet-control"));
+}
+
 async fn upgrade_from_parts(state: Arc<AppState>, parts: &mut axum::http::request::Parts, mode: ClientMode, seed_version: Option<ConnVersion>, remote_addr: SocketAddr, username: Option<String>) -> Response {
     // Decided on the upgrade's own headers, which every brew-server that
     // speaks it sends whether or not [auth] put a discovery GET in between.
@@ -309,6 +327,7 @@ async fn upgrade_from_parts(state: Arc<AppState>, parts: &mut axum::http::reques
             debug!(requested_subprotocol=requested, mode=mode.as_str(), seed_version=?seed_version.map(ConnVersion::as_u8), loop_safe=fed_neighbour.is_some(), "WebSocket upgrade request");
             let protocol = state.config.websocket_subprotocol.clone();
             let state_mn_enabled = state.networks.read().map(|c| c.enabled && !c.networks.is_empty()).unwrap_or(false);
+            let control_on = state.config.control.enabled;
             let mut response = ws.protocols([protocol])
                 .on_upgrade(move |socket| client_session(state, socket, mode, seed_version, remote_addr, username, fed_neighbour, console, agent))
                 .into_response();
@@ -318,7 +337,7 @@ async fn upgrade_from_parts(state: Arc<AppState>, parts: &mut axum::http::reques
                 // none of them.
                 // `mni` only while Multi Network is on (its main switch).
                 let mni_on = state_mn_enabled;
-                let offer = if mni_on { format!("{}, {}", crate::carriers::EXTENSIONS, crate::visitors::CAPABILITY) } else { crate::carriers::EXTENSIONS.to_owned() };
+                let offer = brew_offer(mni_on, control_on);
                 if let Ok(v) = HeaderValue::from_str(&offer) { response.headers_mut().insert(crate::carriers::X_BREW_EXTENSIONS, v); }
             }
             if fed_neighbour.is_some() {
