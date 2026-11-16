@@ -2,8 +2,168 @@
 
 All notable changes to brew-server, newest first.
 
-Unreleased:
+Version 1.21.2 adds:
 
+- **Multi Network: a restarted link no longer loses its registrations.**
+  Field 2026-11-15: saving a network restarted the TetraPack link, the new
+  link registered the radios while the old one was still deregistering them,
+  and TetraPack sent nothing more on TG 91 until the radio changed groups.
+  Now the new link connects only after the old one has closed (at most 5 s),
+  and every link sends its registrations and affiliations there again every
+  5 minutes, since Brew has no answer that would show one was lost.
+- **Multi Network dialogs: full keyboard on phones.** The fields of "Edit
+  network", "New network" and "This server" no longer ask for the numeric
+  keypad, which has no comma for the ISSI lists.
+- **Dashboard: Radios in the phone tab bar instead of Routing.** Logged in and
+  logged out; Routing stays in the More menu.
+- **Multi Network: a radio changing between cells of two networks keeps only
+  the new cell's groups.** Field 2026-11-15: the MTP went from the 1638 cell
+  back to the 9999 cell of the same station and was listed in 91 and in
+  TetraPack:91, because a registration on another connection took over the old
+  groups, the linked network's group (an alias) included, and the old cell can
+  no longer leave it. Now groups of a linked network stay with the connection
+  that attached them, and between cells of different networks no group comes
+  along (the new cell attaches its own right after registering).
+- **Registration log: Multi Network visitors under their home ISSI.** A
+  station's telemetry names a visitor by its (V)ASSI (e.g. 15728641); with the
+  station's `MsVisitor` event the log now shows the radio's own ISSI, as the
+  rest of the server does.
+
+- **Dashboard: Stations & Cells page split.** Stations (Basestation mode, with
+  their cells) on top, then Terminals (apps and consoles, no cells), then the
+  individual cells. Other connection modes get their own "Network links" card.
+
+- **Dashboard: network names without a login.** Radios' groups of another
+  network (Multi Network) showed as `net 2:91` on an open dashboard because
+  the names came only from the admin route `/api/networks`. The new public
+  route `GET /api/network-names` gives slot and name only (no hosts or
+  logins), so they read `<network>:91` for everyone.
+- **Fleet Control, phase 7: graphs, ping and alarms.** Stations with
+  `metrics-v1` report CPU load, CPU and SDR temperatures, RF state, radios and
+  calls every minute (older stations: temperatures from telemetry). Each
+  station gets a **Graphs** page (CPU load, temperatures, ping, optionally
+  radios and calls) with a gap while it was unreachable; one point per
+  sample interval, kept 24 h by default and then overwritten. The server pings
+  every online station every 5 min for the ping graph; **Auto ping** on the
+  Fleet Control page pings every 5 s while the page is open (not stored). An
+  **Alarms** list on the Fleet Control page (unreachable, SDR error, CPU / SDR
+  temperature, CPU load, missed pings, and the ALARMs of the change log) with
+  **Acknowledge**, a 90-day history and a badge in the sidebar. Server settings
+  → **Fleet Control graphs and alarms**: sample interval, keep time, ping
+  interval, optional lines, and per alarm on/off, ALARM or warning, limit and
+  minutes. The CPU load warning stays off while a station updates (the build
+  takes the CPU) and for 5 min after. See `docs/Fleet-Control.md` section 12.
+- **Fleet Control, phase 6: templates, bulk changes, neighbour suggestions.**
+  Templates hold the settings stations share (Brew server, networks, cell
+  reselection, RXLEV_ACCESS_MIN, migration, presence check, Home Mode Display,
+  ISSI whitelist, telemetry, update source; never carrier, colour code, LA,
+  cells, neighbours or logins), created empty or from a station, applied once.
+  **Change config…** on the ticked stations applies a template or one-off
+  settings with a preview, rolling (default) or parallel like the remote
+  update; a rollback is an ALARM and the run goes on, offline stations get it
+  as pending, stations with a pending change or a differing config are
+  skipped. The edit page suggests neighbour cells (cells that list this cell,
+  cells radios moved to in the last 30 days, cells close by) and marks
+  outdated neighbours; the Fleet Control page has a fleet-wide neighbour check
+  with **Add missing reciprocal**. The confirmation window for config changes
+  is now 90 s and a server setting (60 to 900 s). The change log table scrolls
+  after about 10 rows. See docs/Fleet-Control.md section 11.
+
+- **Neighbour tables always show MCC/MNC.** On the fleet edit page the
+  neighbour list, the station's own cells and the suggestions show the MCC/MNC
+  of every entry (the cell's own network when the entry has none) instead of
+  "same".
+
+- **Phones: change log scroll.** The scrollable change log (and every table
+  that scrolls) keeps its position on a live update instead of jumping back to
+  its start, a scroll inside it pauses live updates like a page scroll, and
+  it no longer holds the page scroll at its ends.
+
+- **Fleet config page: order and "Apply server config".** Cards in the order
+  Brew link, networks, cells, neighbour cells, cell reselection, Home Mode
+  Display, ISSI whitelist, telemetry, control channel, update source. In the
+  difference dialog **Apply server config to base station** is now open
+  whenever the station is online, also when only settings the page does not
+  show differ: the server sends the station's file back to the copy value by
+  value (passwords and keys stay as they are on the station).
+
+- **Fleet Control, phases 4/5 (station config).** Fleet Control → **Edit**
+  opens one page per station (back arrow) with its Infrastructure settings:
+  Brew link, cells (carrier, colour code, LA, network, add / remove), Multi
+  Network, cell reselection, neighbours per cell (manual or from the server's
+  cell list), telemetry, command channel, update source and the
+  config file (read only, passwords and keys removed). **Apply to station**
+  writes the change; the station restarts and must be back on this server
+  (and on Brew) within 180 s, else it restores its old config by itself;
+  **Undo** in between. Offline stations get the change as pending, applied at
+  their next login. The server keeps a copy of each station's config; a
+  station edited locally shows "Config differs from server copy" and asks to
+  import its config or apply the server's. The station is in maintenance
+  while the page is open. The config file at the bottom is an editor: only the values that
+  changed go to the station (passwords and keys stay hidden). Home Mode
+  Display, ISSI whitelist, the home network's whole Brew link and the MCC /
+  MNC of neighbours are editable. Multi Network follows the station's own page (the classic network
+  becomes "home", every network but home can be removed, a network without
+  a cell is caught before Apply). Fleet Control management may change all of it (visibility gets no edit
+  page). Needs FlowStation with `config-v1`. See docs/Fleet-Control.md
+  section 10.
+- **Fleet Control: progress bar for the whole run.** The "Update run" card
+  shows the progress of the whole run in %: each station counts the same,
+  with its build progress while it builds and its full share once it is
+  done (rolling and parallel alike).
+- **Fleet Control: the run card goes away after a clean run.** 30 s after a
+  run in which every station updated, the "Update run" card is hidden (the
+  change log keeps the story). It stays while the run goes and after a run
+  with a failed or skipped station, or one that was cancelled.
+- **Fleet Control, phase 3 (maintenance and restart).** Per station:
+  **Maintenance** puts a solid red banner "work on this base station in
+  progress" (with user, minutes left, note) on every page of the station's
+  dashboard for 1–240 min; it runs out by itself and is set again when the
+  station reconnects. **Restart** restarts the service or reboots the system
+  (with confirmation, optional during a call); the change log shows when the
+  station is back, and an ALARM if it is not back after 10 min. Needs
+  FlowStation with `maintenance-v1` / `restart-v1`. See docs/Fleet-Control.md
+  section 9.
+- **Fleet Control: live update (RF on) and Clear.** The update dialog has a
+  new switch **Live update (RF on)**: the stations install the repository
+  and branch of the **Updates repo** (Server settings) like the install
+  command in a terminal, stay on the air while they build and are off only
+  for the service restart; no check needed, rolling and parallel as before.
+  Needs FlowStation with `update-live-v1`. The change log has a **Clear**
+  button for admins (one entry "Log cleared by <user>" stays). See
+  docs/Fleet-Control.md sections 5.2 and 8.6.
+- **Fleet Control, phase 2 (remote update).** On the Fleet Control page,
+  **Check for updates** lets every station (or the ticked ones) check its own
+  update source; the table shows "Newer: <version>" / "Up to date". **Update
+  all** (or **Update** for ticked stations) asks for
+  **Rolling** (one after another: the next starts when the previous one is
+  back with the new software, so the network is never fully off the air) or
+  **Parallel** (all at once), **Update during call**, and how long to wait
+  for a call to end (default 10 min). The run goes on on the server with the
+  browser closed and after a server restart. Each station shows its stage
+  (download, build %, installing, restarting) live. Limits: 45 min to the
+  restart, 5 min back after it; a failed station is marked ALARM (red, also
+  in the change log) and skipped, the run goes on. A station offline at its
+  turn moves to the end once, then it is skipped. **Cancel all** starts no
+  further station, **Cancel** takes one station out. Stations always update
+  from their own source; new **Updates repo** card (Server settings) sets the
+  reference repository and branch, and a station with another source gets
+  the hint "⚠ other repo/branch". Needs FlowStation with Fleet Control phase 2
+  (`update-v1`). See docs/Fleet-Control.md section 8.
+- **Fleet Control, phase 1 (foundation).** Basestations that switch on
+  "Fleet Control" (FlowStation, Infrastructure page) can be managed from this
+  server over the control channel. Offered automatically while `[control]` is
+  on (`X-Brew-Extensions: fleet-control` on the control channel and the Brew
+  connection). New page **Fleet Control**: the stations with their software,
+  network, features and online / offline state (offline stations stay
+  listed), Ping (round trip) and Remove, and a change log kept 90 days
+  (switched on / off, new software, removed by whom). A station that switches
+  Fleet Control off leaves the list (at once while online, else at its next
+  login) with the INFO "Basestation XYZ switched off Fleet Control". New
+  rights "Fleet Control visibility" and "Fleet Control management" for
+  dashboard users. Stations and log survive restarts in
+  `<storage path>.fleet`. Existing control commands do not change. See
+  docs/Fleet-Control.md.
 - **Multi Network: radios registered there, listed.** On the Multi Network
   page, "N radios registered there" opens a list under the network: ISSI with
   its Directory name, the station / cell here, the groups there and since
@@ -172,8 +332,6 @@ Version 1.20.2 adds:
   connections.
   The Overview adds up the radios of a station that has one connection per
   network.
-  Thanks to OE1LHP for the visual review and the reports of
-  inconsistencies.
 
 Version 1.20.1 adds:
 

@@ -1192,7 +1192,17 @@ async fn handle_subscriber(state: &Arc<AppState>, source: ClientId, msg: Subscri
                 }
             }
             if source_mode == ClientMode::Terminal { ms_reg_event = Some("register"); }
-            Some(local(&mut inner, old.as_ref().map(|o| o.groups.clone()).unwrap_or_default()))
+            let groups = match old.as_ref() {
+                // Moved here from another connection: groups of a linked network were that
+                // connection's (an alias), and a cell of another network has groups of its own.
+                Some(o) if o.client_id != source => {
+                    crate::visitors::forget_foreign(&mut inner, o.client_id, Some(msg.issi));
+                    crate::visitors::groups_carried_over(&inner, &o.groups, o.client_id, source)
+                }
+                Some(o) => o.groups.clone(),
+                None => HashSet::new(),
+            };
+            Some(local(&mut inner, groups))
         }
         SUB_DEREGISTER => {
             // Only the connection the ISSI is registered on can deregister it

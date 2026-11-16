@@ -52,6 +52,35 @@ too. To keep the classic dashboard at `/`:
 legacy_ui = true
 ```
 
+## Fleet Control
+
+The **Fleet Control** page manages the Basestations (FlowStation) over the
+existing control channel (`[control]`, WebSocket, works behind NAT, no new
+port). A station takes part only after its own administrator switches Fleet
+Control on; the others are not touched. Every function is announced as a
+capability, so older stations and servers keep working.
+
+- **Overview**: each managed station with software version, cells, RF state,
+  health, and whether a newer version is on its update source.
+- **Remote and live update**: check and update one, several or all stations,
+  as a run with progress (one by one, in groups or all at once). A normal
+  update keeps each station on its own repository and branch; a live update
+  builds from the Updates repo of the server settings while the radio stays
+  on.
+- **Maintenance banner and restart**, from the server.
+- **Station config**: read and change cells, neighbours, reselection values,
+  Brew, telemetry, update source and single values of the config file (never
+  passwords or keys), with a confirmation window, templates, bulk changes and
+  neighbour suggestions.
+- **Graphs and alarms**: CPU load, temperatures, ping, radios and calls as 24 h
+  graphs; alarms (unreachable, SDR error, temperature, CPU load, missed pings)
+  with acknowledge and a 90-day history.
+- **Change log and rights**: every action is logged with who did it; the rights
+  "Fleet Control visibility" and "Fleet Control management" decide who sees and
+  who acts.
+
+Protocol and details: [docs/Fleet-Control.md](docs/Fleet-Control.md).
+
 ## Run directly
 
 Requires a Rust toolchain and a C compiler (the vendored ACELP codec in
@@ -82,6 +111,7 @@ dashboard's `/healthz` (port 9003) answers on both, with the node's role.
 - [Roaming](docs/Roaming.md) -- kick stale registrations on old Basestations
 - [Handover](docs/Handover.md) -- radios keep group and individual calls when they move between Basestations
 - [Brew extensions](docs/Brew-Extensions.md) -- the protocol behind it, for other server and Basestation implementations
+- [Fleet Control](docs/Fleet-Control.md) -- manage the Basestations from the server over the control channel (stations opt in; protocol, Fleet Manager, rights, change log)
 - [Late entry](docs/Late-Entry.md) -- join running group calls mid-over
 - [Routing](docs/Routing.md) -- DGNA to several radios, talkgroup pools
 - [Multi Network](docs/Multi-Network.md) -- connect to other Brew networks and bridge talkgroups across them (tested on air with TetraPack, including visitors and migration)
@@ -97,5 +127,5 @@ one LAN. See [docs/High-Availability.md](docs/High-Availability.md).
 ## Credits
 
 - Joaquin EA5GVK
-- Sebastian OE4SXM ([sebastianmadl](https://github.com/sebastianmadl)) -- late entry, carrier registry, handover and individual calls between Basestations, the Brew extensions, dashboard redesign, Routing page and talkgroup pools, login and accounts pages, ISSI and GSSI directory, group access and RX only (`group-access`), Multi Network (bridges to other networks, visitors, `issi-check`, `mni`)
+- Sebastian OE4SXM ([sebastianmadl](https://github.com/sebastianmadl)) -- late entry, carrier registry, handover and individual calls between Basestations, the Brew extensions, dashboard redesign, Routing page and talkgroup pools, login and accounts pages, ISSI and GSSI directory, group access and RX only (`group-access`), Multi Network (bridges to other networks, visitors, `issi-check`, `mni`), Fleet Control (managing the Basestations from the server)
 - David Harcus MM7FDM

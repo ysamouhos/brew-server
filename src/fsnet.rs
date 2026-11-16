@@ -26,6 +26,8 @@ pub struct ListenerConfig {
     /// apply to the next connection without a restart.
     pub users: crate::state::Users,
     pub tls: TlsConfig,
+    /// `X-Brew-Extensions` sent in the 101 answer (`None`: no header).
+    pub extensions: Option<&'static str>,
 }
 
 /// Identity of an authenticated connection: the Basic Auth username, or
@@ -110,9 +112,13 @@ where
         Ok(ws) => {
             let handler = state.handler.clone();
             let subprotocol = state.cfg.subprotocol;
-            ws.protocols([subprotocol])
+            let mut response = ws.protocols([subprotocol])
                 .on_upgrade(move |socket| handler(socket, identity, peer))
-                .into_response()
+                .into_response();
+            if let Some(ext) = state.cfg.extensions.and_then(|e| axum::http::HeaderValue::from_str(e).ok()) {
+                response.headers_mut().insert(crate::carriers::X_BREW_EXTENSIONS, ext);
+            }
+            response
         }
         Err(rejection) => rejection.into_response(),
     }

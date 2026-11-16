@@ -16,6 +16,11 @@ mod callsign_db;
 mod emergency;
 mod federation;
 mod fedroute;
+mod fleet;
+mod fleet_bulk;
+mod fleet_config;
+mod fleet_monitor;
+mod fleet_update;
 mod fsnet;
 mod handover;
 mod ha;
@@ -98,6 +103,9 @@ async fn services(
     tokio::spawn(monitor::run_retention(state.clone()));
     tokio::spawn(callsign_db::run(state.clone()));
     tokio::spawn(emergency::run(state.clone()));
+    // Fleet Control update runs go on in the background (no browser needed).
+    tokio::spawn(fleet::run_updates(state.clone()));
+    tokio::spawn(fleet_monitor::run_monitor(state.clone()));
 
     tokio::try_join!(
         server::run(state.clone()),

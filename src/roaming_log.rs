@@ -131,6 +131,8 @@ struct WaitingReport {
 pub struct RoamingLog {
     entries: VecDeque<Entry>,
     waiting: VecDeque<WaitingReport>,
+    /// Cell changes with both cells known, not taken yet (Fleet Control neighbour suggestions).
+    moves: Vec<(String, String)>,
 }
 
 impl RoamingLog {
@@ -180,11 +182,29 @@ impl RoamingLog {
             .filter(|e| e.to.station == to.station && e.to.cell.is_none() && now_ms.saturating_sub(e.at_ms) <= CELL_REPORT_MS);
         if let Some(entry) = open {
             entry.to = to;
+            if let (Some(a), Some(b)) = (entry.from.cell.clone(), entry.to.cell.clone()) {
+                Self::note_move(&mut self.moves, a, b);
+            }
             return;
         }
         if let Some(from) = previous.filter(|p| p.cell != to.cell) {
+            if let (Some(a), Some(b)) = (from.cell.clone(), to.cell.clone()) {
+                Self::note_move(&mut self.moves, a, b);
+            }
             self.push(Entry { at_ms: now_ms, issi, from, to, kind: Kind::WithinStation, reselection: None });
         }
+    }
+
+    fn note_move(moves: &mut Vec<(String, String)>, from: String, to: String) {
+        // Taken every 2 s; a cap only matters when nothing takes them.
+        if moves.len() < 1000 {
+            moves.push((from, to));
+        }
+    }
+
+    /// Cell changes (from cell, to cell) since the last call.
+    pub fn take_moves(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.moves)
     }
 
     /// Newest first.

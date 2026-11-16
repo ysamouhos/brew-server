@@ -134,6 +134,7 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/ui", get(crate::dashboard_ui::page))
         .route("/api/radios", get(crate::routing_api::radios))
         .route("/api/names", get(crate::accounts::names))
+        .route("/api/network-names", get(crate::routing_api::network_names_get))
         .route("/api/issi-names", get(crate::issi_names::list))
         .route("/api/gssi-names", get(crate::issi_names::list_gssi))
         .route("/api/group-access", get(crate::group_access::list))
@@ -158,6 +159,35 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/positions", get(positions_snapshot))
         .route("/api/bts-locations", get(bts_locations_snapshot))
         .route("/api/control", get(control_list))
+        .route("/api/fleet", get(crate::fleet::api_list))
+        .route("/api/fleet/remove", axum::routing::post(crate::fleet::api_remove))
+        .route("/api/fleet/ping", axum::routing::post(crate::fleet::api_ping))
+        .route("/api/fleet/check", axum::routing::post(crate::fleet::api_check))
+        .route("/api/fleet/update", axum::routing::post(crate::fleet::api_update))
+        .route("/api/fleet/update/cancel", axum::routing::post(crate::fleet::api_cancel))
+        .route("/api/fleet/settings", axum::routing::post(crate::fleet::api_settings))
+        .route("/api/fleet/log/clear", axum::routing::post(crate::fleet::api_clear_log))
+        .route("/api/fleet/maintenance", axum::routing::post(crate::fleet::api_maintenance))
+        .route("/api/fleet/restart", axum::routing::post(crate::fleet::api_restart))
+        .route("/api/fleet/graph", get(crate::fleet_monitor::api_graph))
+        .route("/api/fleet/alarms/ack", axum::routing::post(crate::fleet_monitor::api_ack))
+        .route("/api/fleet/monitor/settings", axum::routing::post(crate::fleet_monitor::api_settings))
+        .route("/api/fleet/config", get(crate::fleet_config::api_get))
+        .route("/api/fleet/config/apply", axum::routing::post(crate::fleet_config::api_apply))
+        .route("/api/fleet/config/discard", axum::routing::post(crate::fleet_config::api_discard))
+        .route("/api/fleet/config/import", axum::routing::post(crate::fleet_config::api_import))
+        .route("/api/fleet/config/rollback", axum::routing::post(crate::fleet_config::api_rollback))
+        .route("/api/fleet/config/raw_preview", axum::routing::post(crate::fleet_config::api_raw_preview))
+        .route("/api/fleet/edit", axum::routing::post(crate::fleet_config::api_edit))
+        .route("/api/fleet/config/settings", axum::routing::post(crate::fleet_bulk::api_config_settings))
+        .route("/api/fleet/templates", get(crate::fleet_bulk::api_templates))
+        .route("/api/fleet/templates/save", axum::routing::post(crate::fleet_bulk::api_template_save))
+        .route("/api/fleet/templates/delete", axum::routing::post(crate::fleet_bulk::api_template_delete))
+        .route("/api/fleet/bulk/preview", axum::routing::post(crate::fleet_bulk::api_bulk_preview))
+        .route("/api/fleet/bulk/start", axum::routing::post(crate::fleet_bulk::api_bulk_start))
+        .route("/api/fleet/bulk/cancel", axum::routing::post(crate::fleet_bulk::api_bulk_cancel))
+        .route("/api/fleet/neighbours", get(crate::fleet_bulk::api_neighbours))
+        .route("/api/fleet/neighbours/check", get(crate::fleet_bulk::api_neighbour_check))
         .route("/sip", get(sip_page))
         .route("/sip-config", get(sip_config_page))
         .route("/api/sip", get(sip_snapshot))
@@ -260,7 +290,7 @@ enum Need {
 /// `dash_users::PAGES`). Routes not listed are for admins.
 fn need(path: &str) -> Need {
     const ANY: &[&str] = &[
-        "/", "/ui", "/api/whoami", "/api/live", "/api/names", "/api/issi-names", "/api/gssi-names", "/api/callsigns",
+        "/", "/ui", "/api/whoami", "/api/live", "/api/names", "/api/network-names", "/api/issi-names", "/api/gssi-names", "/api/callsigns",
         "/api/callsign-db", "/api/talkgroups", "/api/pools", "/api/emergencies", "/api/ha", "/api/password",
     ];
     if ANY.contains(&path) {
@@ -284,6 +314,11 @@ fn need(path: &str) -> Need {
         "/sip-config" | "/api/sip/config" => &["sipcfg"],
         "/sms-center" | "/api/sms-center" => &["sms"],
         "/ha" => &["ha"],
+        "/api/fleet" | "/api/fleet/templates" | "/api/fleet/neighbours" | "/api/fleet/neighbours/check" | "/api/fleet/graph" => &["fleet"],
+        "/api/fleet/remove" | "/api/fleet/ping" | "/api/fleet/check" | "/api/fleet/update" | "/api/fleet/update/cancel" | "/api/fleet/maintenance" | "/api/fleet/restart"
+        | "/api/fleet/config" | "/api/fleet/config/apply" | "/api/fleet/config/discard" | "/api/fleet/config/import"
+        | "/api/fleet/config/rollback" | "/api/fleet/config/raw_preview" | "/api/fleet/edit" | "/api/fleet/templates/save"
+        | "/api/fleet/templates/delete" | "/api/fleet/bulk/preview" | "/api/fleet/bulk/start" | "/api/fleet/bulk/cancel" | "/api/fleet/alarms/ack" => &["fleet_manage"],
         _ => return Need::Admin,
     })
 }
@@ -300,7 +335,7 @@ fn allowed(a: &crate::dash_users::Access, needed: Need) -> bool {
 const POLLED: &[&str] = &[
     "/api/status", "/api/connections", "/api/telemetry", "/api/radios", "/api/rssi", "/api/ms-cells", "/api/registrations",
     "/api/positions", "/api/bts-locations", "/api/group-access", "/api/accounts", "/api/sip", "/api/sip/config", "/api/sms-center",
-    "/api/control", "/api/networks",
+    "/api/control", "/api/networks", "/api/fleet",
 ];
 
 /// A page the request may not see: the login dialog for a classic page
@@ -2616,5 +2651,23 @@ mod tests {
         assert!(http(addr, out).await.starts_with("HTTP/1.1 204"));
         assert!(http(addr, get("/api/accounts", &format!("Cookie: {ac}\r\nx-brew-ui: 1\r\n"))).await.starts_with("HTTP/1.1 401"));
     }
-}
 
+    #[test]
+    fn fleet_routes_need_their_rights() {
+        assert_eq!(need("/api/network-names"), Need::Any, "network names show without a login");
+        assert_eq!(need("/api/networks"), Need::Admin, "hosts and logins stay for admins");
+        assert_eq!(need("/api/fleet"), Need::Pages(&["fleet"]));
+        assert_eq!(need("/api/fleet/remove"), Need::Pages(&["fleet_manage"]));
+        assert_eq!(need("/api/fleet/ping"), Need::Pages(&["fleet_manage"]));
+        for p in ["/api/fleet/check", "/api/fleet/update", "/api/fleet/update/cancel", "/api/fleet/maintenance", "/api/fleet/restart"] {
+            assert_eq!(need(p), Need::Pages(&["fleet_manage"]), "{p}");
+        }
+        assert_eq!(need("/api/fleet/settings"), Need::Admin, "Updates repo is a server setting");
+        assert_eq!(need("/api/fleet/log/clear"), Need::Admin, "clearing the change log is for admins only");
+        assert_eq!(need("/api/fleet/graph"), Need::Pages(&["fleet"]), "graphs: visibility");
+        assert_eq!(need("/api/fleet/alarms/ack"), Need::Pages(&["fleet_manage"]), "acknowledging: management");
+        assert_eq!(need("/api/fleet/monitor/settings"), Need::Admin, "alarm rules are server settings");
+        let looker = crate::dash_users::Access { user: Some("eve".into()), admin: false, pages: ["fleet".to_string()].into(), auth: true };
+        assert!(allowed(&looker, need("/api/fleet")) && !allowed(&looker, need("/api/fleet/remove")));
+    }
+}

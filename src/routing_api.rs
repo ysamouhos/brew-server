@@ -150,6 +150,27 @@ pub async fn networks_get(State(state): State<Arc<AppState>>) -> Json<crate::net
     Json(crate::netlink::snapshot(&state).await)
 }
 
+/// One network's name and group-alias slot, for `/api/network-names`.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct NetworkName {
+    pub slot: u8,
+    pub name: String,
+}
+
+/// The networks' names by slot, sorted by slot.
+fn network_names(slots: std::collections::HashMap<String, u8>) -> Vec<NetworkName> {
+    let mut v: Vec<NetworkName> = slots.into_iter().map(|(name, slot)| NetworkName { slot, name }).collect();
+    v.sort_by_key(|n| n.slot);
+    v
+}
+
+/// `GET /api/network-names` (anyone who can open the dashboard): slot -> name
+/// only, so radios' groups of other networks read `name:GSSI` without a
+/// login. `/api/networks` holds hosts and logins and stays for admins.
+pub async fn network_names_get(State(state): State<Arc<AppState>>) -> Json<Vec<NetworkName>> {
+    Json(network_names(crate::netlink::slots(&state)))
+}
+
 /// `POST /api/networks/save` (admins): the whole `[multi_network]` section,
 /// applied at once (only changed links reconnect) and written to the config
 /// file without a restart. An empty password keeps the saved one.
@@ -171,5 +192,13 @@ mod tests {
         assert_eq!(control_station_for(7, &last, &sessions).as_deref(), Some("100000002"));
         assert_eq!(control_station_for(8, &last, &sessions), None);
         assert_eq!(control_station_for(8, &last, &sessions[..1]).as_deref(), Some("100000001"));
+    }
+
+    #[test]
+    fn network_names_are_sorted_by_slot_and_carry_nothing_else() {
+        let slots = std::collections::HashMap::from([("Beta".to_string(), 2), ("Alpha".to_string(), 1)]);
+        let v = network_names(slots);
+        assert_eq!(v, vec![NetworkName { slot: 1, name: "Alpha".into() }, NetworkName { slot: 2, name: "Beta".into() }]);
+        assert_eq!(serde_json::to_string(&v[0]).unwrap(), r#"{"slot":1,"name":"Alpha"}"#);
     }
 }

@@ -86,7 +86,19 @@ struct LinkTask {
     cfg: NetworkConfig,
     stop: watch::Sender<bool>,
     gen: u64,
+    /// Ends (its sender is dropped) once the task has finished, its
+    /// deregistrations sent and its connection closed.
+    closed: watch::Receiver<()>,
 }
+
+/// How long a new link waits for the link it replaces to close.
+const CLOSE_WAIT: Duration = Duration::from_secs(5);
+
+/// How often a link sends its registrations and affiliations there again.
+/// Brew has no answer to them, so a registration the other network lost
+/// (field 2026-11-15: TetraPack after the link was restarted) would
+/// otherwise stay lost until the radio changes its groups.
+pub const REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 
 /// State of one link.
 #[derive(Debug, Clone, Default)]
@@ -199,21 +211,40 @@ pub fn reconcile(state: &Arc<AppState>) {
     let stale: Vec<String> = reg.tasks.iter()
         .filter(|(name, task)| !cfg.enabled || !cfg.networks.iter().any(|n| n.enabled && &n.name == *name && *n == task.cfg))
         .map(|(name, _)| name.clone()).collect();
+    // A link that is replaced first closes (deregistering its radios
+    // there), then the new one connects and registers them again: the
+    // other way round, the other network can drop the new registrations
+    // with the old session (field 2026-11-15, TetraPack).
+    let mut closing: HashMap<String, watch::Receiver<()>> = HashMap::new();
     for name in stale {
         info!(network = %name, "multi network: stopping link");
-        if let Some(task) = reg.tasks.remove(&name) { let _ = task.stop.send(true); }
+        if let Some(task) = reg.tasks.remove(&name) {
+            let _ = task.stop.send(true);
+            closing.insert(name.clone(), task.closed);
+        }
         reg.status.remove(&name);
     }
     for net in cfg.networks.iter().filter(|n| cfg.enabled && n.enabled) {
         if reg.tasks.contains_key(&net.name) { continue; }
         let Some(&slot) = slots.get(&net.name) else { continue };
         let (stop, stop_rx) = watch::channel(false);
+        let (done, closed) = watch::channel(());
         reg.next_gen += 1;
         let gen = reg.next_gen;
-        reg.tasks.insert(net.name.clone(), LinkTask { cfg: net.clone(), stop, gen });
+        reg.tasks.insert(net.name.clone(), LinkTask { cfg: net.clone(), stop, gen, closed });
         reg.status.insert(net.name.clone(), LinkStatus::default());
         let (state, net) = (state.clone(), net.clone());
-        tokio::spawn(async move { link_loop(state, net, slot, gen, stop_rx).await });
+        let previous = closing.remove(&net.name);
+        tokio::spawn(async move {
+            if let Some(mut previous) = previous {
+                // Err once the old task has dropped its sender.
+                if tokio::time::timeout(CLOSE_WAIT, previous.changed()).await.is_err() {
+                    warn!(network = %net.name, "multi network: old link still closing; connecting anyway");
+                }
+            }
+            link_loop(state, net, slot, gen, stop_rx).await;
+            drop(done);
+        });
     }
 }
 
@@ -380,6 +411,25 @@ pub fn exports_station(n: &NetworkConfig, mode: ClientMode, login: Option<&str>,
         ClientMode::Terminal => login.is_some_and(named) || named(&issi.to_string()),
         _ => false,
     }
+}
+
+/// Upstream messages that register again, unchanged, what a link has
+/// registered there: the bridge ISSI with its groups, and each radio in
+/// `have` with its groups (see [`REFRESH_INTERVAL`]).
+pub fn refresh_messages(bridge_issi: u32, bridged: &BTreeSet<u32>, have: &HashMap<u32, BTreeSet<u32>>) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut add = |issi: u32, groups: &BTreeSet<u32>| {
+        out.push(protocol::build_subscriber_message(protocol::SUB_REGISTER, issi, &[]));
+        if !groups.is_empty() {
+            let g: Vec<u32> = groups.iter().copied().collect();
+            out.push(protocol::build_subscriber_message(protocol::SUB_AFFILIATE, issi, &g));
+        }
+    };
+    if bridge_issi != 0 { add(bridge_issi, bridged); }
+    let mut issis: Vec<&u32> = have.keys().collect();
+    issis.sort_unstable();
+    for issi in issis { add(*issi, &have[issi]); }
+    out
 }
 
 /// Upstream messages that bring the radios registered there from `have` to
@@ -969,10 +1019,23 @@ async fn run_session(
     let ours = ids.clone();
     let mut inbound = Inbound::new(slot, ids);
     let name = net.name.clone();
+    let mut refresh = tokio::time::interval_at(tokio::time::Instant::now() + REFRESH_INTERVAL, REFRESH_INTERVAL);
+    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         let item = tokio::select! {
             item = federation::next_frame(&mut ws_rx, keepalive) => item,
             _ = stop.changed() => break,
+            _ = refresh.tick() => {
+                let bridged = {
+                    let reg = state.netlinks.lock();
+                    reg.status.get(&name).map(|s| s.affiliated.clone()).unwrap_or_default()
+                };
+                let mut msgs = refresh_messages(net.bridge_issi, &bridged, &export_lock(&talkers).have);
+                msgs.extend(crate::visitors::registrations(&*state.inner.read().await, slot));
+                info!(network = %name, count = msgs.len(), "multi network: registrations sent there again");
+                for m in msgs { let _ = up_tx.send(m); }
+                continue;
+            }
         };
         let item = match item {
             Ok(Some(item)) => item,
@@ -1852,6 +1915,58 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn a_restarted_link_connects_only_after_the_old_one_has_closed() {
+        // Field 2026-11-15: saving a network restarted the TetraPack link;
+        // the new link registered while the old one was still sending its
+        // deregistrations, and TetraPack sent nothing more on TG 91.
+        let (tp, tp_addr) = serve(base_config()).await;
+        let mut cfg = base_config();
+        cfg.multi_network.networks.push(NetworkConfig {
+            name: "TP".into(), remote_host: tp_addr.to_string(), bridge_issi: 9_000_001,
+            user_agent: "TMO-Austria Infra 1.0".into(), reconnect_interval_seconds: 5, ..Default::default()
+        });
+        cfg.talkgroup_pools.push(TalkgroupPoolConfig {
+            name: "Bridge".into(), enabled: true, both_ways: true, groups: vec![9],
+            remote: vec![RemotePoolGroup { network: "TP".into(), gssi: 909 }],
+            linked: false,
+        });
+        let (main, main_addr) = serve(cfg).await;
+        run(main.clone()).await;
+        let _st = station(main_addr, &[2_320_001], &[9]).await;
+        wait_until("bridge ISSI there", async || tp.inner.read().await.subscribers.contains_key(&9_000_001)).await;
+
+        let mut renamed = main.networks.read().unwrap().clone();
+        renamed.networks[0].user_agent = "TMO-Austria Infra 2.0".into();
+        if let Ok(mut live) = main.networks.write() { *live = renamed; }
+        reconcile(&main);
+        let links = async || tp.inner.read().await.client_agents.values().filter(|a| a.starts_with("TMO-Austria")).count();
+        let started = Instant::now();
+        let mut most = 0;
+        while started.elapsed() < Duration::from_secs(2) {
+            most = most.max(links().await);
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(most, 1, "old and new link were connected at the same time");
+        assert!(tp.inner.read().await.client_agents.values().any(|a| a == "TMO-Austria Infra 2.0"), "the new link is up");
+        assert!(tp.inner.read().await.subscribers.get(&9_000_001).is_some_and(|s| s.groups.contains(&909)), "the bridge ISSI is registered there again");
+    }
+
+    #[test]
+    fn refresh_sends_every_registration_again() {
+        let bridged: BTreeSet<u32> = [909].into();
+        let have: HashMap<u32, BTreeSet<u32>> = [(2_320_972, [91].into()), (2_320_001, BTreeSet::new())].into();
+        let msgs = refresh_messages(9_000_001, &bridged, &have);
+        assert_eq!(msgs, vec![
+            protocol::build_subscriber_message(protocol::SUB_REGISTER, 9_000_001, &[]),
+            protocol::build_subscriber_message(protocol::SUB_AFFILIATE, 9_000_001, &[909]),
+            protocol::build_subscriber_message(protocol::SUB_REGISTER, 2_320_001, &[]),
+            protocol::build_subscriber_message(protocol::SUB_REGISTER, 2_320_972, &[]),
+            protocol::build_subscriber_message(protocol::SUB_AFFILIATE, 2_320_972, &[91]),
+        ]);
+        assert!(refresh_messages(0, &BTreeSet::new(), &HashMap::new()).is_empty());
+    }
+
+    #[tokio::test]
     async fn register_all_checks_issis_and_reports_conflicts() {
         let (tp, tp_addr) = serve(base_config()).await;
         // TetraPack's own radio with an ISSI this server has as well.
@@ -1997,6 +2112,51 @@ mod e2e {
         st.send(svc(protocol::SERVICE_GROUP_NETWORK, serde_json::json!({"issi": 2_320_972, "groups": [{"gssi": 2324, "mcc": 901, "mnc": 1638}]}))).await.unwrap();
         st.send(Message::Binary(protocol::build_subscriber_message(protocol::SUB_DEAFFILIATE, 2_320_972, &[2324]).into())).await.unwrap();
         wait_until("left 2324 at TetraPack", async || !tp.inner.read().await.subscribers.get(&2_320_972).is_some_and(|s| s.groups.contains(&2324))).await;
+    }
+
+    #[tokio::test]
+    async fn radio_moving_between_cells_of_two_networks_keeps_only_the_new_cells_groups() {
+        // Field 2026-11-15: the MTP (home 9999) went from the 1638 cell back to the 9999
+        // cell of the same station; the server listed it in 91 and in TetraPack:91.
+        let (_tp, tp_addr) = serve(base_config()).await;
+        let mut cfg = base_config();
+        cfg.multi_network.mcc = 901;
+        cfg.multi_network.mnc = 9999;
+        cfg.multi_network.networks.push(NetworkConfig {
+            name: "TP".into(), mcc: 901, mnc: 1638, remote_host: tp_addr.to_string(), bridge_issi: 9_000_001, reconnect_interval_seconds: 5, ..Default::default()
+        });
+        let (main, main_addr) = serve(cfg).await;
+        run(main.clone()).await;
+        wait_until("link up", async || main.inner.read().await.netlinks.len() == 1).await;
+        let mut guest = station(main_addr, &[], &[]).await;
+        guest.send(Message::Binary(protocol::build_service(protocol::SERVICE_BTS_INFO, r#"{"mcc":901,"mnc":1638,"cells":[{"carrier":1528,"carrier_ext":268,"location_area":1}],"capabilities":["mni"]}"#).into())).await.unwrap();
+        next_service(&mut guest, protocol::SERVICE_NETWORKS, 2000).await.expect("SERVICE_NETWORKS");
+        let mut home = station(main_addr, &[], &[]).await;
+        home.send(Message::Binary(protocol::build_service(protocol::SERVICE_BTS_INFO, r#"{"mcc":901,"mnc":9999,"cells":[{"carrier":1530,"carrier_ext":268,"location_area":2}],"capabilities":["mni"]}"#).into())).await.unwrap();
+        next_service(&mut home, protocol::SERVICE_NETWORKS, 2000).await.expect("SERVICE_NETWORKS");
+        let groups = async || main.inner.read().await.subscribers.get(&2_320_972).map(|s| s.groups.clone()).unwrap_or_default();
+        let alias_91 = alias(1, 91);
+
+        // On the 1638 cell, in TetraPack's 91.
+        guest.send(svc(protocol::SERVICE_MS_NETWORK, serde_json::json!({"issi": 2_320_972, "mcc": 901, "mnc": 9999}))).await.unwrap();
+        guest.send(Message::Binary(protocol::build_subscriber_message(protocol::SUB_REGISTER, 2_320_972, &[]).into())).await.unwrap();
+        guest.send(svc(protocol::SERVICE_GROUP_NETWORK, serde_json::json!({"issi": 2_320_972, "groups": [{"gssi": 91, "mcc": 901, "mnc": 1638}]}))).await.unwrap();
+        guest.send(Message::Binary(protocol::build_subscriber_message(protocol::SUB_AFFILIATE, 2_320_972, &[91]).into())).await.unwrap();
+        wait_until("in TetraPack's 91", async || groups().await.contains(&alias_91)).await;
+
+        // Back on the 9999 cell, in this network's 91 only.
+        home.send(Message::Binary(protocol::build_subscriber_message(protocol::SUB_REGISTER, 2_320_972, &[]).into())).await.unwrap();
+        home.send(Message::Binary(protocol::build_subscriber_message(protocol::SUB_AFFILIATE, 2_320_972, &[91]).into())).await.unwrap();
+        wait_until("in 91 here", async || groups().await.contains(&91)).await;
+        assert_eq!(groups().await, HashSet::from([91]), "TetraPack's 91 stayed with the 1638 cell");
+
+        // And over to the 1638 cell again: this network's 91 does not come along.
+        guest.send(svc(protocol::SERVICE_MS_NETWORK, serde_json::json!({"issi": 2_320_972, "mcc": 901, "mnc": 9999}))).await.unwrap();
+        guest.send(Message::Binary(protocol::build_subscriber_message(protocol::SUB_REGISTER, 2_320_972, &[]).into())).await.unwrap();
+        guest.send(svc(protocol::SERVICE_GROUP_NETWORK, serde_json::json!({"issi": 2_320_972, "groups": [{"gssi": 91, "mcc": 901, "mnc": 1638}]}))).await.unwrap();
+        guest.send(Message::Binary(protocol::build_subscriber_message(protocol::SUB_AFFILIATE, 2_320_972, &[91]).into())).await.unwrap();
+        wait_until("in TetraPack's 91 again", async || groups().await.contains(&alias_91)).await;
+        assert_eq!(groups().await, HashSet::from([alias_91]), "this network's 91 stayed with the 9999 cell");
     }
 
     #[tokio::test]
