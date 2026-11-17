@@ -63,6 +63,11 @@ pub struct Config {
     /// `[issi_names]`: ISSI -> name ("2320972" = "OE4SXM Sebastian"), shown
     /// next to the ISSI on the dashboard. Edited live on its Directory page.
     pub issi_names: std::collections::BTreeMap<String, String>,
+    /// `[issi_kinds]`: what a number that logs in as Terminal is, ISSI ->
+    /// "bridge" ("2321100" = "bridge"); not listed = "terminal" (an app or
+    /// console). Only for the dashboard (Radios, Stations & Cells); set on
+    /// the Directory page.
+    pub issi_kinds: std::collections::BTreeMap<String, String>,
     /// `[gssi_names]`: GSSI -> name ("2321" = "District North"), shown next to the
     /// group on the dashboard. Edited live on the same directory page.
     pub gssi_names: std::collections::BTreeMap<String, String>,
@@ -1192,6 +1197,7 @@ impl Default for Config {
             handover: HandoverConfig::default(),
             talkgroup_pools: Vec::new(),
             issi_names: std::collections::BTreeMap::new(),
+            issi_kinds: std::collections::BTreeMap::new(),
             gssi_names: std::collections::BTreeMap::new(),
             group_access: std::collections::BTreeMap::new(),
             talkgroups: TalkgroupsConfig::default(),

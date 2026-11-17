@@ -302,6 +302,13 @@ impl CarrierRegistry {
         self.info(*id)?.cells.iter().find(|c| c.key == *key)
     }
 
+    /// The cell `issi` was last reported on by any connection that still
+    /// announces it, with that connection.
+    pub fn ms_cell_any(&self, issi: u32) -> Option<(ClientId, &Cell)> {
+        let (id, key, _) = self.ms_cells.get(&issi)?;
+        self.info(*id)?.cells.iter().find(|c| c.key == *key).map(|c| (*id, c))
+    }
+
     /// When `issi`'s cell was last reported, by whichever connection.
     pub fn ms_cell_reported_at(&self, issi: u32) -> Option<(ClientId, u64)> {
         self.ms_cells.get(&issi).map(|(id, _, at)| (*id, *at))

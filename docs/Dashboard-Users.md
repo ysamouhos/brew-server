@@ -7,7 +7,7 @@ things. Managed on **Server settings -> Dashboard users** (bottom of the page).
 
 | Role | Sees | May change |
 | --- | --- | --- |
-| **Admin** | every page | everything (settings, routing, accounts, users, control) |
+| **Admin** | every page | everything (settings, routing, accounts, users, DGNA & Radio actions, Fleet Control) |
 | **User** | the pages ticked for them | nothing, only their own password |
 | **Viewer** | the pages ticked for Viewer | nothing |
 
@@ -18,8 +18,12 @@ things. Managed on **Server settings -> Dashboard users** (bottom of the page).
 - **Viewer** is everyone who is not logged in. Its ticks decide which pages an
   open dashboard (`[dashboard.ui] open = true`) shows without a login. With a
   closed dashboard (the default) nobody sees anything without logging in.
-- Multi Network, Control, Config and Server settings are for admins only and
-  cannot be ticked.
+- Multi Network, Config and Server settings are for admins only and cannot be
+  ticked.
+- Two pages have a second right for acting there (logged-in users only, it
+  includes seeing the page): *Fleet Control management* and *DGNA & Radio
+  actions: send* (DGNA, kick, clear emergency, live SDS, ambience listening).
+  Neither page is ticked for users taken over from the config.
 - Pages a person may not see are left out of the menu.
 
 Saving and editing are for admins only. When someone who is not an admin

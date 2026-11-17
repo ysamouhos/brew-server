@@ -280,7 +280,11 @@ impl Monitor {
 /// log); see `Monitor::apply_retention`.
 pub async fn prune_history(state: &crate::state::AppState, clear_calls: bool, clear_sds: bool) -> crate::store::DroppedTotals {
     let d = state.monitor.apply_retention(clear_calls, clear_sds).await;
-    state.telemetry.write().await.prune_sds_history(state.config.storage.keep_days, clear_sds);
+    {
+        let mut t = state.telemetry.write().await;
+        t.prune_sds_history(state.config.storage.keep_days, clear_sds);
+        t.regs.prune(state.config.storage.keep_days, false, crate::telemetry::now_ms());
+    }
     if d.calls > 0 || d.sds > 0 || clear_calls || clear_sds {
         tracing::info!(calls = d.calls, sds = d.sds, clear_calls, clear_sds, "history trimmed");
     }

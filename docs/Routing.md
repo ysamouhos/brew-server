@@ -1,12 +1,14 @@
 # Routing: DGNA and talkgroup pools
 
-The **Routing** page of the dashboard (new UI, sidebar **Infrastructure -> Routing**)
-does two things:
+Two pages of the dashboard (new UI):
 
-- assign a group to several radios at once with DGNA, and
-- connect talkgroups inside the server (talkgroup pools).
-
-Everyone logged in sees the page. Changing anything needs an admin login.
+- **DGNA & Radio actions** (sidebar **Infrastructure**): assign a group to
+  several radios at once with DGNA, and send commands for one radio (kick,
+  clear emergency, live SDS, ambience listening). Seeing it needs the right
+  *DGNA & Radio actions: view*, sending *DGNA & Radio actions: send*
+  (Server settings → Users; admins have both).
+- **Routing**: connect talkgroups inside the server (talkgroup pools, linked
+  talkgroups, managed talkgroups). Changing anything needs an admin login.
 
 ## DGNA to several radios
 
@@ -35,6 +37,15 @@ or "rejected 2329" with the station's reason).
 
 DGNA reaches radios only. App and console terminals are listed but cannot be
 selected.
+
+## Radio actions
+
+Pick the station, then: **Kick radio** (takes the ISSI off the station),
+**Clear emergency** (0 = every emergency on the station), **Add / Clear live
+SDS**, **Ambience listen** / **Stop** (the radio keys its microphone, with
+indication; needs station support). Each goes over the station's control
+connection. Restart and shut down of a station are on Fleet Control; only
+stations that do not use Fleet Control show them here.
 
 ## Talkgroup pools
 
@@ -116,6 +127,16 @@ Two more pages of the new dashboard, both for admins:
 
   [gssi_names]
   "2321" = "District North"
+  ```
+
+  An ISSI's dialog also sets what the number is when it logs in as Terminal:
+  *Terminal* (an app or console, the default) or *Bridge*. Radios and
+  Stations & Cells list these numbers as **Terminals & bridges** with their
+  type. Only bridges are stored:
+
+  ```toml
+  [issi_kinds]
+  "2321100" = "bridge"
   ```
 
   **Access** (Groups list) decides who may use a group: *Open* (no list),

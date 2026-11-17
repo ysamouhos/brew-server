@@ -2,6 +2,73 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.21.3 (UI Cleanup) adds:
+
+- **Telemetry shows how the stations are doing.** For stations in Fleet
+  Control each telemetry card now has **Graphs →** (the graph page, its back
+  button returns to Telemetry), the latest CPU load, CPU and SDR temperatures
+  and ping, the station's active alarms as chips, and a **Ping** button. The
+  condition alarms (unreachable, SDR error, temperature, CPU load, missed
+  pings) with their history and the **Auto ping** switch moved here from Fleet
+  Control, and the Telemetry menu entry carries their badge. A Fleet Control
+  station without a telemetry connection gets a small card of its own. All of
+  this needs Fleet Control visibility (acknowledging and ping: management);
+  others see the cards as before.
+- **Fleet Control is for managing.** Graphs, latest values, Ping and Auto ping
+  are gone from its station list. It keeps the change log ALARMs (update,
+  restart, config) as **Change log alarms**, with their own badge.
+  "Acknowledge all" on either page takes only that page's alarms
+  (`POST /api/fleet/alarms/ack` `{"events": true|false}`).
+- **Power options on Fleet Control.** The station's Restart button is now
+  **Power options**: one dialog with *Restart service*, *Reboot system* and
+  the new *Shut down service*; stations without `restart-v1` get the button
+  too (restart sent as the older station command).
+- **Control is now DGNA & Radio actions.** The page takes the DGNA card from
+  Routing and has one **Radio actions** card with a station picker (kick
+  radio, clear emergency, live SDS, ambience listening) instead of one card
+  per station. Two new rights in Server settings → Users: *DGNA & Radio
+  actions: view* and *DGNA & Radio actions: send* (includes view, never for
+  Viewer); before, Control and DGNA were for admins only. Stations outside
+  Fleet Control keep Restart / Shut down on this page. `#control` links open
+  the new page.
+- **Server settings: "Graphs and alarms"** (was "Fleet Control graphs and
+  alarms"), linking to Telemetry.
+- **Telemetry SDS is part of the SDS page.** Its menu entry is gone: the SDS
+  page shows Recent SDS and the stations' Telemetry SDS side by side on wide
+  screens (one above the other on narrow ones). Each list scrolls on its own,
+  the search filters both, Telemetry SDS keeps its Kind filter, and **⤢**
+  opens a list on the whole screen with all columns (it follows the live
+  refresh). The Telemetry SDS right stays in the users dialog and shows the
+  second list; old `#tsds` links open the SDS page.
+- `/api/control` (the list of control connections) is no longer open to
+  everyone: it needs DGNA & Radio actions or Fleet Control visibility.
+- **Radios: the cell (global ID) no longer gets lost.** Deregistrations,
+  timeouts and "moved to another station" entries in the registration log
+  keep the cell the radio was last seen in, a guest's registration gets the
+  cell its station reports for the guest's home ISSI, and **Registered
+  radios** falls back to the cell reported on another connection of the same
+  station, or to the station's only cell.
+- **Registration log kept for `[storage] keep_days` (7 days by default).**
+  The Radios page's log no longer holds only the last 50 entries per station
+  in memory: every entry (stations and Brew channel) goes to its own file
+  `<storage path>.registrations` (JSON lines; the history store is not
+  touched, so an older server can still read it), survives a restart and is
+  trimmed with the hourly retention. The dashboard gets the newest 2000 and
+  shows 1000 in a scrolling list. Admins get **Clear**
+  (`POST /api/history/clear` `{"registrations": true}`).
+- **Terminals and bridges apart from radios.** The Radios page lists radios
+  (on a base station, or of another network) in **Registered radios** and
+  numbers logged in as Terminal in **Terminals & bridges**, with their type.
+  The Directory dialog of an ISSI sets the type for when it logs in as
+  Terminal: *Terminal* (app, console; the default) or *Bridge*
+  (`[issi_kinds]`, `GET /api/issi-kinds`, `POST /api/issi-kinds/set`
+  `{"issi","kind"}`). Stations & Cells shows the type in its
+  **Terminals & bridges** card, and the cell column says "— (bridge)" or
+  "— (terminal)".
+- **SMS Center: "n radios known" opens the list.** A popup shows the known
+  radios with their names (radio directory or callsign list), with a filter.
+  `GET /api/sms-center` now also returns `known` (the ISSIs).
+
 Version 1.21.2 adds:
 
 - **Multi Network: a restarted link no longer loses its registrations.**
