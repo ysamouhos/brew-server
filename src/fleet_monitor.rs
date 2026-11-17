@@ -684,10 +684,17 @@ impl FleetMonitor {
 
     /// Acknowledge one alarm (`Some(id)`) or every active one. A change log
     /// alarm is finished by it. Returns how many were acknowledged.
-    pub fn ack(&mut self, id: Option<u64>, user: Option<&str>, now_ms: u64) -> usize {
+    /// `events`: only the change log ALARMs (`Some(true`, Fleet Control page)
+    /// or only the condition alarms (`Some(false)`, Telemetry page).
+    pub fn ack(&mut self, id: Option<u64>, events: Option<bool>, user: Option<&str>, now_ms: u64) -> usize {
         let who = user.unwrap_or("dashboard").to_owned();
         let mut n = 0;
-        for a in self.data.alarms.iter_mut().filter(|a| a.active() && a.acked_ms.is_none() && id.is_none_or(|i| i == a.id)) {
+        for a in self
+            .data
+            .alarms
+            .iter_mut()
+            .filter(|a| a.active() && a.acked_ms.is_none() && id.is_none_or(|i| i == a.id) && events.is_none_or(|e| e == a.event()))
+        {
             a.acked_by = Some(who.clone());
             a.acked_ms = Some(now_ms);
             if a.event() {
@@ -957,9 +964,14 @@ pub struct AckRequest {
     /// One alarm; `None`: every active one.
     #[serde(default)]
     pub id: Option<u64>,
+    /// With `id` `None`: only the change log ALARMs (`true`) or only the
+    /// condition alarms (`false`); missing: both.
+    #[serde(default)]
+    pub events: Option<bool>,
 }
 
-/// `POST /api/fleet/alarms/ack` `{"id": 7}` or `{}` for all (Fleet Control management).
+/// `POST /api/fleet/alarms/ack` `{"id": 7}`, `{}` for all, `{"events": false}` for all
+/// condition alarms (Fleet Control management).
 pub async fn api_ack(
     axum::extract::State(state): axum::extract::State<std::sync::Arc<crate::state::AppState>>,
     headers: axum::http::HeaderMap,
@@ -970,7 +982,7 @@ pub async fn api_ack(
     if !a.manages_fleet() {
         return (axum::http::StatusCode::FORBIDDEN, "This needs the right Fleet Control management").into_response();
     }
-    let n = state.fleet_monitor.lock().unwrap_or_else(|e| e.into_inner()).ack(req.id, a.user.as_deref(), crate::fleet::now_ms());
+    let n = state.fleet_monitor.lock().unwrap_or_else(|e| e.into_inner()).ack(req.id, req.events, a.user.as_deref(), crate::fleet::now_ms());
     state.monitor.emit("fleet_changed", serde_json::json!({"alarms": true}));
     axum::Json(serde_json::json!({"ok": true, "acknowledged": n})).into_response()
 }
@@ -1233,10 +1245,25 @@ mod tests {
         assert_eq!(m.active()[0].text, "Basestation BS1: not back 10 min after the reboot");
         m.evaluate(&on, &[log(3, "restart_alarm", "again the same entry")], 3 * MIN);
         assert_eq!(m.active().len(), 1, "an entry is raised once");
-        assert_eq!(m.ack(None, Some("sebastian"), 4 * MIN), 1);
+        assert_eq!(m.ack(None, None, Some("sebastian"), 4 * MIN), 1);
         assert!(m.active().is_empty());
         let h = &m.history(1)[0];
         assert_eq!((h.acked_by.as_deref(), h.clear_text.as_deref()), (Some("sebastian"), Some("acknowledged by sebastian")));
+    }
+
+    #[test]
+    fn acknowledging_all_can_take_only_condition_alarms_or_only_change_log_alarms() {
+        let mut m = FleetMonitor::load(None, 0);
+        let off = [st("bs1", false, 0)];
+        m.evaluate(&off, &[log(1, "restart", "x")], MIN);
+        m.evaluate(&off, &[log(2, "restart_alarm", "ALARM Basestation BS1: not back")], 3 * MIN);
+        assert_eq!(m.active().len(), 2, "unreachable + restart ALARM");
+        // Telemetry page: condition alarms only.
+        assert_eq!(m.ack(None, Some(false), Some("op"), 4 * MIN), 1);
+        assert!(m.active().iter().any(|a| a.event() && a.acked_ms.is_none()), "the change log ALARM is left");
+        // Fleet Control page: change log ALARMs only.
+        assert_eq!(m.ack(None, Some(true), Some("op"), 4 * MIN), 1);
+        assert!(m.active().iter().all(|a| !a.event()), "acknowledged change log ALARM is finished");
     }
 
     #[test]
@@ -1244,8 +1271,8 @@ mod tests {
         let mut m = FleetMonitor::load(None, 0);
         m.evaluate(&[st("bs1", false, 0)], &[], 3 * MIN);
         let id = m.active()[0].id;
-        assert_eq!(m.ack(Some(id), Some("op"), 4 * MIN), 1);
-        assert_eq!(m.ack(Some(id), Some("op"), 4 * MIN), 0, "only once");
+        assert_eq!(m.ack(Some(id), None, Some("op"), 4 * MIN), 1);
+        assert_eq!(m.ack(Some(id), None, Some("op"), 4 * MIN), 0, "only once");
         assert_eq!(m.active()[0].acked_by.as_deref(), Some("op"));
         m.evaluate(&[st("bs1", true, 5 * MIN)], &[], 5 * MIN);
         assert!(m.active().is_empty());

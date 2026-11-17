@@ -87,7 +87,6 @@ fn app(state: Arc<AppState>) -> Router {
     // and then bounces back to wherever Login was pressed.
     let settings_routes = Router::new()
         .route("/login", get(login))
-        .route("/api/control/{id}", axum::routing::post(control_command))
         .route("/settings", get(settings_page))
         .route("/api/config/raw", get(config_raw_get).put(config_raw_put))
         .route("/api/config/sip/full", get(sip_config_full))
@@ -102,12 +101,12 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/config/allowlist/enabled", axum::routing::put(allowlist_set_enabled))
         .route("/api/config/allowlist/{issi}", axum::routing::post(allowlist_add).delete(allowlist_remove))
         .route("/api/sms-center/{id}", axum::routing::delete(sms_center_delete))
-        .route("/api/dgna", axum::routing::post(crate::routing_api::dgna))
         .route("/api/pools/save", axum::routing::post(crate::routing_api::pools_put))
         .route("/api/networks", get(crate::routing_api::networks_get))
         .route("/api/networks/save", axum::routing::post(crate::routing_api::networks_put))
         .route("/api/accounts", get(crate::accounts::list).post(crate::accounts::upsert))
         .route("/api/issi-names/set", axum::routing::post(crate::issi_names::set))
+        .route("/api/issi-kinds/set", axum::routing::post(crate::issi_names::set_kind))
         .route("/api/issi-names/import", axum::routing::post(crate::issi_names::import))
         .route("/api/gssi-names/set", axum::routing::post(crate::issi_names::set_gssi))
         .route("/api/gssi-names/import", axum::routing::post(crate::issi_names::import_gssi))
@@ -136,6 +135,7 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/names", get(crate::accounts::names))
         .route("/api/network-names", get(crate::routing_api::network_names_get))
         .route("/api/issi-names", get(crate::issi_names::list))
+        .route("/api/issi-kinds", get(crate::issi_names::list_kinds))
         .route("/api/gssi-names", get(crate::issi_names::list_gssi))
         .route("/api/group-access", get(crate::group_access::list))
         .route("/api/talkgroups", get(crate::group_access::talkgroups))
@@ -159,6 +159,10 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/positions", get(positions_snapshot))
         .route("/api/bts-locations", get(bts_locations_snapshot))
         .route("/api/control", get(control_list))
+        // DGNA & Radio actions (and the old Restart / Shut down for Fleet
+        // Control): the handlers check the right per command.
+        .route("/api/control/{id}", axum::routing::post(control_command))
+        .route("/api/dgna", axum::routing::post(crate::routing_api::dgna))
         .route("/api/fleet", get(crate::fleet::api_list))
         .route("/api/fleet/remove", axum::routing::post(crate::fleet::api_remove))
         .route("/api/fleet/ping", axum::routing::post(crate::fleet::api_ping))
@@ -290,11 +294,15 @@ enum Need {
 /// `dash_users::PAGES`). Routes not listed are for admins.
 fn need(path: &str) -> Need {
     const ANY: &[&str] = &[
-        "/", "/ui", "/api/whoami", "/api/live", "/api/names", "/api/network-names", "/api/issi-names", "/api/gssi-names", "/api/callsigns",
+        "/", "/ui", "/api/whoami", "/api/live", "/api/names", "/api/network-names", "/api/issi-names", "/api/issi-kinds", "/api/gssi-names", "/api/callsigns",
         "/api/callsign-db", "/api/talkgroups", "/api/pools", "/api/emergencies", "/api/ha", "/api/password",
     ];
     if ANY.contains(&path) {
         return Need::Any;
+    }
+    // A station command: radio actions or Restart / Shut down (see `control_command`).
+    if path.starts_with("/api/control/") {
+        return Need::Pages(&["radioctl_manage", "fleet_manage"]);
     }
     Need::Pages(match path {
         "/api/status" => &["overview", "calls", "sds", "routing"],
@@ -304,7 +312,9 @@ fn need(path: &str) -> Need {
         "/api/connections" | "/connections" => &["overview", "stations", "radios", "roaming", "routing", "map", "telemetry", "issis"],
         "/api/telemetry" => &["overview", "stations", "telemetry", "tsds", "map"],
         "/telemetry-sds" => &["tsds"],
-        "/api/radios" => &["overview", "radios", "routing", "issis", "roaming"],
+        "/api/radios" => &["overview", "radios", "routing", "issis", "roaming", "radioctl"],
+        "/api/control" => &["radioctl", "fleet"],
+        "/api/dgna" => &["radioctl_manage"],
         "/api/rssi" | "/api/ms-cells" => &["overview", "stations", "radios", "roaming", "map"],
         "/api/registrations" | "/registrations" => &["radios"],
         "/api/positions" | "/api/bts-locations" | "/map" => &["map", "stations", "overview"],
@@ -947,15 +957,21 @@ pub async fn snapshot(State(state): State<Arc<AppState>>, axum::extract::Query(q
     Json(state.monitor.snapshot_n(counts.0,counts.1,counts.2,n(&q.calls),n(&q.sds)).await)
 }
 
-/// `POST /api/history/clear` (admins) `{"calls":bool,"sds":bool}`: drops
-/// every call / SDS from the history (the totals stay).
+/// `POST /api/history/clear` (admins) `{"calls":bool,"sds":bool,"registrations":bool}`:
+/// drops every call / SDS from the history (the totals stay), or the
+/// registration log of the Radios page.
 #[derive(Debug, serde::Deserialize)]
-pub struct ClearHistory { #[serde(default)] calls: bool, #[serde(default)] sds: bool }
+pub struct ClearHistory { #[serde(default)] calls: bool, #[serde(default)] sds: bool, #[serde(default)] registrations: bool }
 
 pub async fn history_clear(State(state): State<Arc<AppState>>, Json(req): Json<ClearHistory>) -> Json<serde_json::Value> {
-    tracing::warn!(calls = req.calls, sds = req.sds, "history cleared from the dashboard");
-    let d = crate::monitor::prune_history(&state, req.calls, req.sds).await;
-    Json(serde_json::json!({ "calls": d.calls, "sds": d.sds }))
+    tracing::warn!(calls = req.calls, sds = req.sds, registrations = req.registrations, "history cleared from the dashboard");
+    let regs = if req.registrations {
+        let mut t = state.telemetry.write().await;
+        t.flush_regs();
+        t.regs.prune(0, true, crate::telemetry::now_ms())
+    } else { 0 };
+    let d = if req.calls || req.sds { crate::monitor::prune_history(&state, req.calls, req.sds).await } else { Default::default() };
+    Json(serde_json::json!({ "calls": d.calls, "sds": d.sds, "registrations": regs }))
 }
 pub async fn live(State(state): State<Arc<AppState>>, ws: WebSocketUpgrade) -> impl IntoResponse { ws.on_upgrade(move |s| live_socket(state,s)) }
 async fn live_socket(state: Arc<AppState>, mut socket: WebSocket) { let mut rx=state.monitor.subscribe(); while let Ok(ev)=rx.recv().await { if socket.send(Message::Text(serde_json::to_string(&ev).unwrap().into())).await.is_err(){break;} } }
@@ -984,8 +1000,14 @@ pub async fn brew_rssi_snapshot(State(state): State<Arc<AppState>>) -> Json<Vec<
 /// The cell a registered subscriber is on, as its station reported it
 /// (`SERVICE_MS_CELL`): `{"name":"<login>/<cell>","cell":N,"carrier":N}`.
 fn ms_cell_json(inner: &crate::state::Inner, issi: u32, client: crate::state::ClientId) -> Option<serde_json::Value> {
-    let cell = inner.carriers.ms_cell(issi, client)?;
-    let station = crate::carriers::station_name(client, inner.clients.get(&client).and_then(|c| c.username.as_deref()));
+    let station_of = |c: crate::state::ClientId| crate::carriers::station_name(c, inner.clients.get(&c).and_then(|x| x.username.as_deref()));
+    let station = station_of(client);
+    // The cell this connection reported; else the one another connection of the same
+    // station reported (a station with cells in several networks, a Multi Network guest);
+    // else the station's only cell.
+    let cell = inner.carriers.ms_cell(issi, client)
+        .or_else(|| inner.carriers.ms_cell_any(issi).filter(|(other, _)| station_of(*other) == station).map(|(_, c)| c))
+        .or_else(|| inner.carriers.info(client).filter(|i| i.cells.len() == 1).map(|i| &i.cells[0]))?;
     Some(serde_json::json!({
         "name": crate::carriers::cell_name(&station, cell.cell),
         "cell": cell.cell,
@@ -1528,11 +1550,32 @@ pub async fn control_list(State(state): State<Arc<AppState>>) -> Json<Vec<String
     Json(state.control.read().await.connected_ids())
 }
 
+/// Who may send a station command from the dashboard: the radio actions need
+/// "DGNA & Radio actions" sending, Restart / Shut down "Fleet Control
+/// management", everything else (raw SDS, Fleet Control internals) an admin.
+fn may_send(a: &crate::dash_users::Access, command: &ControlCommand) -> bool {
+    match command {
+        ControlCommand::KickMs { .. }
+        | ControlCommand::ClearEmergency { .. }
+        | ControlCommand::AddLiveSds { .. }
+        | ControlCommand::DeleteLiveSds { .. }
+        | ControlCommand::ClearLiveSds
+        | ControlCommand::AmbienceListen { .. }
+        | ControlCommand::Dgna { .. } => a.manages_radios(),
+        ControlCommand::RestartService | ControlCommand::ShutdownService => a.manages_fleet(),
+        _ => a.admin,
+    }
+}
+
 pub async fn control_command(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(command): Json<ControlCommand>,
 ) -> Response {
+    if !may_send(&access(&state, &headers), &command) {
+        return (StatusCode::FORBIDDEN, "Forbidden: this command needs another right of the dashboard\n").into_response();
+    }
     match control::send_command(&state, &id, command).await {
         Ok(response) => Json(serde_json::json!({"sent": true, "response": response})).into_response(),
         Err(SendError::NotConnected) => (StatusCode::NOT_FOUND, "control BTS not connected").into_response(),
@@ -2669,5 +2712,26 @@ mod tests {
         assert_eq!(need("/api/fleet/monitor/settings"), Need::Admin, "alarm rules are server settings");
         let looker = crate::dash_users::Access { user: Some("eve".into()), admin: false, pages: ["fleet".to_string()].into(), auth: true };
         assert!(allowed(&looker, need("/api/fleet")) && !allowed(&looker, need("/api/fleet/remove")));
+    }
+
+    #[test]
+    fn radio_action_routes_need_their_rights() {
+        assert_eq!(need("/api/control"), Need::Pages(&["radioctl", "fleet"]), "station list: not open to everyone any more");
+        assert_eq!(need("/api/dgna"), Need::Pages(&["radioctl_manage"]));
+        assert_eq!(need("/api/control/bs1"), Need::Pages(&["radioctl_manage", "fleet_manage"]));
+        assert!(match need("/api/radios") { Need::Pages(p) => p.contains(&"radioctl"), _ => false }, "the DGNA list of radios");
+        let user = |pages: &[&str]| crate::dash_users::Access { user: Some("bob".into()), admin: false, pages: pages.iter().map(|p| p.to_string()).collect(), auth: true };
+        let kick = ControlCommand::KickMs { issi: 4013 };
+        let radio = user(&["radioctl", "radioctl_manage"]);
+        assert!(may_send(&radio, &kick) && may_send(&radio, &ControlCommand::ClearLiveSds));
+        assert!(!may_send(&radio, &ControlCommand::ShutdownService), "shut down belongs to Fleet Control");
+        let fleet = user(&["fleet", "fleet_manage"]);
+        assert!(may_send(&fleet, &ControlCommand::RestartService) && may_send(&fleet, &ControlCommand::ShutdownService));
+        assert!(!may_send(&fleet, &kick));
+        assert!(!may_send(&user(&["radioctl"]), &kick), "seeing the page is not sending");
+        let raw = ControlCommand::CommandA { handle: 0, parameter: 1 };
+        assert!(!may_send(&radio, &raw) && !may_send(&fleet, &raw), "other commands stay for admins");
+        let admin = crate::dash_users::Access { user: Some("root".into()), admin: true, pages: Default::default(), auth: true };
+        assert!(may_send(&admin, &raw) && may_send(&admin, &kick));
     }
 }

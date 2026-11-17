@@ -95,6 +95,46 @@ pub async fn list_gssi(State(state): State<Arc<AppState>>) -> Json<BTreeMap<Stri
     Json(snapshot(&state, Kind::Gssi))
 }
 
+/// `GET /api/issi-kinds`: number -> "bridge" for the Terminal logins that are
+/// bridges; every other Terminal login is a terminal (app, console).
+pub async fn list_kinds(State(state): State<Arc<AppState>>) -> Json<BTreeMap<String, String>> {
+    Json(state.issi_kinds.read().map(|n| n.clone()).unwrap_or_default())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct KindRequest {
+    pub issi: String,
+    /// "bridge" or "terminal" (the default, removes the entry).
+    pub kind: String,
+}
+
+/// `POST /api/issi-kinds/set` (admins): marks a number that logs in as
+/// Terminal as a bridge, or back as a terminal.
+pub async fn set_kind(State(state): State<Arc<AppState>>, Json(req): Json<KindRequest>) -> Response {
+    let issi = match parse_ssi(&req.issi, Kind::Issi) { Ok(i) => i, Err(e) => return (StatusCode::BAD_REQUEST, e).into_response() };
+    match apply_kind(&state, &issi, &req.kind) {
+        Ok(()) => {}
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    }
+    match save(&state).await {
+        Ok(()) => list_kinds(State(state)).await.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+fn apply_kind(state: &AppState, issi: &str, kind: &str) -> Result<(), String> {
+    let mut k = state.issi_kinds.write().map_err(|_| "busy".to_string())?;
+    match kind {
+        "terminal" => { k.remove(issi); }
+        "bridge" => {
+            if k.len() >= MAX_ENTRIES && !k.contains_key(issi) { return Err(format!("at most {MAX_ENTRIES} entries")); }
+            k.insert(issi.to_string(), "bridge".to_string());
+        }
+        other => return Err(format!("kind '{other}': bridge or terminal")),
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 pub struct NameRequest {
     pub issi: String,
@@ -238,6 +278,23 @@ mod tests {
         let saved = crate::config::Config::load(path.to_str().unwrap()).unwrap();
         assert_eq!(saved.gssi_names, BTreeMap::from([("2321".to_string(), "Bezirk Nord".to_string()), ("2322".to_string(), "Bezirk Sued".to_string())]));
         assert_eq!(saved.issi_names.len(), 1);
+        crate::CONFIG_WRITE_APPLIED_LIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn a_terminal_login_can_be_marked_as_a_bridge_and_back() {
+        let path = std::env::temp_dir().join(format!("brew-kinds-{}.toml", uuid::Uuid::new_v4().simple()));
+        let mut c = crate::config::Config::default();
+        c.storage.enabled = false;
+        c.sms_center.enabled = false;
+        let state = Arc::new(AppState::new(c, path.clone()).0);
+        assert_eq!(set_kind(State(state.clone()), Json(KindRequest { issi: "2321100".into(), kind: "bridge".into() })).await.status(), StatusCode::OK);
+        assert_eq!(set_kind(State(state.clone()), Json(KindRequest { issi: "2321101".into(), kind: "router".into() })).await.status(), StatusCode::BAD_REQUEST);
+        let saved = crate::config::Config::load(path.to_str().unwrap()).unwrap();
+        assert_eq!(saved.issi_kinds, BTreeMap::from([("2321100".to_string(), "bridge".to_string())]));
+        set_kind(State(state.clone()), Json(KindRequest { issi: "2321100".into(), kind: "terminal".into() })).await;
+        assert!(state.issi_kinds.read().unwrap().is_empty(), "terminal is the default, not stored");
         crate::CONFIG_WRITE_APPLIED_LIVE.store(false, std::sync::atomic::Ordering::SeqCst);
         let _ = std::fs::remove_file(&path);
     }

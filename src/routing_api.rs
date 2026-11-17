@@ -92,10 +92,13 @@ fn control_station_for(issi: u32, last_registration: &std::collections::HashMap<
     (sessions.len() == 1).then(|| sessions[0].clone())
 }
 
-/// `POST /api/dgna` (admins): DGNA to several radios at once, each through
-/// the station it is registered on. The radios' answers come in over
-/// telemetry and show on `/api/radios`.
-pub async fn dgna(State(state): State<Arc<AppState>>, Json(req): Json<DgnaRequest>) -> Response {
+/// `POST /api/dgna` ("DGNA & Radio actions" sending): DGNA to several radios
+/// at once, each through the station it is registered on. The radios' answers
+/// come in over telemetry and show on `/api/radios`.
+pub async fn dgna(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap, Json(req): Json<DgnaRequest>) -> Response {
+    if !crate::dashboard::access(&state, &headers).manages_radios() {
+        return (StatusCode::FORBIDDEN, "This needs the right DGNA & Radio actions: send").into_response();
+    }
     if req.gssi == 0 || req.gssi > 0xFF_FFFF {
         return (StatusCode::BAD_REQUEST, "GSSI must be 1 to 16777215").into_response();
     }
@@ -124,7 +127,7 @@ pub async fn dgna(State(state): State<Arc<AppState>>, Json(req): Json<DgnaReques
             Err(SendError::NotConnected) => Some("station not connected".into()),
             Err(SendError::Timeout) => Some("no answer from the station".into()),
         };
-        tracing::warn!(issi, gssi = req.gssi, assign = req.assign, station = %station, ok = error.is_none(), "DGNA sent from the Routing page");
+        tracing::warn!(issi, gssi = req.gssi, assign = req.assign, station = %station, ok = error.is_none(), "DGNA sent from the DGNA & Radio actions page");
         results.push(DgnaResult { issi, station: Some(station), sent: error.is_none(), error });
     }
     Json(results).into_response()

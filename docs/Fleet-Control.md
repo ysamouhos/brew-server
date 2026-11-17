@@ -222,7 +222,7 @@ Dashboard users (Server settings → Users), next to the page ticks:
 | Right | Page id | Allows |
 | --- | --- | --- |
 | Fleet Control visibility | `fleet` | see the Fleet Manager and the change log |
-| Fleet Control management | `fleet_manage` | visibility plus every button (Ping, Remove, Check for updates, Update, Cancel, Maintenance, Restart; later config) |
+| Fleet Control management | `fleet_manage` | visibility plus every button (Remove, Check for updates, Update, Cancel, Maintenance, Restart / Shut down, config; on the Telemetry page Ping, Auto ping and acknowledging alarms) |
 
 Admins have both. Viewer (not logged in) may get visibility, never
 management. Neither right is given to users taken over from the config.
@@ -468,8 +468,12 @@ RF on!") without this flag.
 Answer `CommandResult`: `ok` (the station restarts its service, `host` false,
 or reboots the computer, `host` true, 5 s later), `busy` (an update is
 running), `call_active` (a call is in progress and `during_call` is false),
-`fleet_control_off`. **Restart** on a station opens a dialog: *Restart
-service* / *Reboot system*, *Restart during call*, then a confirmation. The
+`fleet_control_off`. **Power options** on a station opens a dialog: *Restart
+service* / *Reboot system* / *Shut down service*, *Restart during call*, then
+a confirmation. *Shut down service*, and Restart on a station without
+`restart-v1`, go as the older station commands `ShutdownService` /
+`RestartService` (`POST /api/control/{id}`, no call protection, no change log
+entry); the station does not come back from a shut down by itself. The
 change log records who sent it and, from the next `StationHello`, "back after
 the reboot (n s)"; a station not back within **10 min** gets an ALARM
 (`restart_alarm`). The station needs no sudo rule: FlowStation's service runs
@@ -744,13 +748,17 @@ more than 7 days need a longer interval. While a station sends nothing
 **Ping**: every **ping interval** (Server settings, 0–60 min, default 5, 0 =
 off) the server sends `FleetPing` (section 3.3) to every online station with
 `fleet-v1` and stores the round trip (server ↔ station, ms) or "no answer"
-(5 s). **Auto ping** on the Fleet Control page (management) asks
+(5 s). **Auto ping** on the Telemetry page (management) asks
 `POST /api/fleet/ping` for every online station every 5 s while the page is
 open; these are shown at the station only, not stored and not logged.
 
 Optional lines (Server settings): registered radios, calls in progress.
 
-The graph page (**Graphs** at a station, visibility) shows CPU load with the
+The Telemetry page shows, for every Fleet Control station (matched to its
+telemetry login by control login or Brew login, as the sampling does), the
+latest CPU load, temperatures and ping, its active alarms and **Graphs →**; a
+Fleet Control station without telemetry gets a card of its own. The graph page
+(**Graphs →**, visibility; its back button returns to Telemetry) shows CPU load with the
 alarm limit, CPU and SDR temperatures (one line per cell) with their limits,
 ping (unanswered pings as red marks), and the optional lines, for 1 h, 6 h,
 24 h, 3 d, 7 d or the whole keep time; it reloads every 30 s.
@@ -768,8 +776,8 @@ ping (unanswered pings as red marks), and the optional lines, for 1 h, 6 h,
 | Change log ALARMs | an `update_alarm`, `restart_alarm` or `config_alarm` entry | ALARM | acknowledged |
 
 Every rule can be switched off, set to ALARM (red) or warning (yellow), and
-given its limit and minutes in Server settings → **Fleet Control graphs and
-alarms** (admins). Switching a rule off finishes its active alarms ("rule
+given its limit and minutes in Server settings → **Graphs and alarms**
+(admins). Switching a rule off finishes its active alarms ("rule
 switched off by …"). Metric rules are only checked with a report not older
 than 3 min. A station that leaves Fleet Control finishes its alarms and drops
 its graph. On the very first start the change log ALARMs already in the log
@@ -777,10 +785,12 @@ are not raised.
 
 An alarm is active until it ends; **Acknowledge** (management, one or all)
 marks it with the user and time; a change log ALARM ends by being
-acknowledged. Finished alarms are kept 90 days as history. The Fleet Control
-page shows the active alarms (ALARM first, newest first) and the last 200
-finished ones; the sidebar badge counts the unacknowledged ones (red with an
-ALARM).
+acknowledged. Finished alarms are kept 90 days as history. The **Telemetry**
+page shows the active condition alarms (ALARM first, newest first) and the
+last finished ones, the **Fleet Control** page the change log ALARMs the same
+way (*Change log alarms*); each page's sidebar badge counts its unacknowledged
+ones (red with an ALARM). **Acknowledge all** takes only that page's alarms
+(`{"events": false}` / `{"events": true}`).
 
 Files next to the history log: `<storage>.fleet-alarms` (settings, alarms;
 written on every change) and `<storage>.fleet-metrics` (graphs; written every
@@ -791,7 +801,7 @@ written on every change) and `<storage>.fleet-metrics` (graphs; written every
 | Route | Right | Body / query | Does |
 | --- | --- | --- | --- |
 | `GET /api/fleet/graph?id=&hours=` | visibility | | points `{t, c, ct, s: {cell: °C}, r, k}` and pings `{t, ms}` from `hours` back (default: whole keep time), settings, limits, active alarms of the station |
-| `POST /api/fleet/alarms/ack` | management | `{id}` or `{}` (all) | acknowledge |
+| `POST /api/fleet/alarms/ack` | management | `{id}`, `{}` (all), `{"events": false}` (all condition alarms) or `{"events": true}` (all change log ALARMs) | acknowledge |
 | `POST /api/fleet/monitor/settings` | admin | `{sample_min, keep_hours, ping_min, show_radios, show_calls, rules: {offline, sdr_error, cpu_temp, sdr_temp, cpu_load, ping, events: {enabled, severity: "alarm"\|"warning", threshold, minutes}}}` | settings; 400 with the reason when a value is out of range |
 
 `GET /api/fleet` also gives `alarms: {active, history, settings, latest}`

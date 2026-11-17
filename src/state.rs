@@ -380,6 +380,8 @@ pub struct AppState {
     pub locations: std::sync::RwLock<HashMap<String, crate::config::BtsLocationConfig>>,
     /// `[issi_names]` as it is right now (see `issi_names`).
     pub issi_names: std::sync::RwLock<std::collections::BTreeMap<String, String>>,
+    /// `[issi_kinds]` as it is right now (see `issi_names::set_kind`).
+    pub issi_kinds: std::sync::RwLock<std::collections::BTreeMap<String, String>>,
     /// `[gssi_names]` as it is right now (see `issi_names`).
     pub gssi_names: std::sync::RwLock<std::collections::BTreeMap<String, String>>,
     /// `[group_access]` as it is right now (see `group_access`).
@@ -575,6 +577,7 @@ impl AppState {
         if let Ok(u) = self.logins.control.read() { cfg.control.users = u.clone(); }
         if let Ok(l) = self.locations.read() { cfg.bts_locations = l.clone(); }
         if let Ok(n) = self.issi_names.read() { cfg.issi_names = n.clone(); }
+        if let Ok(n) = self.issi_kinds.read() { cfg.issi_kinds = n.clone(); }
         if let Ok(n) = self.gssi_names.read() { cfg.gssi_names = n.clone(); }
         if let Ok(g) = self.group_access.read() { cfg.group_access = g.clone(); }
         if let Ok(t) = self.talkgroups.read() { cfg.talkgroups = t.clone(); }
@@ -625,10 +628,13 @@ impl AppState {
             Some(store) => Monitor::with_store_cfg(store.clone(), &config.storage),
             None => Monitor::new(),
         };
-        let telemetry = match &store {
+        let mut telemetry = match &store {
             Some(store) => TelemetryState::with_store(store.clone()),
             None => TelemetryState::default(),
         };
+        if config.storage.enabled && !cfg!(test) {
+            telemetry.regs = crate::telemetry::RegHistory::open(crate::telemetry::RegHistory::path_for(&config.storage.path));
+        }
         let (aprs_tx, aprs_rx) = mpsc::unbounded_channel();
         let sms_center = crate::sms_center::SmsCenter::open(config.sms_center.clone());
         let dash_users = crate::dash_users::DashUsers::open(&config.dashboard);
@@ -638,6 +644,7 @@ impl AppState {
         let logins = Logins::from_config(&config);
         let locations = config.bts_locations.clone();
         let issi_names = config.issi_names.clone();
+        let issi_kinds = config.issi_kinds.clone();
         let gssi_names = config.gssi_names.clone();
         let group_access = config.group_access.clone();
         let talkgroups = config.talkgroups.clone();
@@ -675,6 +682,7 @@ impl AppState {
                 logins,
                 locations: std::sync::RwLock::new(locations),
                 issi_names: std::sync::RwLock::new(issi_names),
+                issi_kinds: std::sync::RwLock::new(issi_kinds),
                 gssi_names: std::sync::RwLock::new(gssi_names),
                 group_access: std::sync::RwLock::new(group_access),
                 talkgroups: std::sync::RwLock::new(talkgroups),

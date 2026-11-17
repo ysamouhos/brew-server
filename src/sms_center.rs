@@ -117,6 +117,8 @@ pub struct SweepResult {
 pub struct Snapshot {
     pub enabled: bool,
     pub known_issis: usize,
+    /// The known radios themselves, for the dashboard's list.
+    pub known: Vec<u32>,
     pub messages: Vec<StoredSms>,
 }
 
@@ -324,7 +326,7 @@ impl SmsCenter {
 
     pub fn snapshot(&self) -> Snapshot {
         let d = self.data.lock().unwrap();
-        Snapshot { enabled: self.cfg.enabled, known_issis: d.known_issis.len(), messages: d.messages.clone() }
+        Snapshot { enabled: self.cfg.enabled, known_issis: d.known_issis.len(), known: d.known_issis.iter().copied().collect(), messages: d.messages.clone() }
     }
 
     /// Change counter for HA replication (see `export`).
@@ -635,6 +637,7 @@ mod tests {
         let sc = SmsCenter::open(c);
         let snap = sc.snapshot();
         assert_eq!(snap.messages.len(), 1);
+        assert_eq!(snap.known_issis, snap.known.len(), "the dashboard lists every known radio");
         assert_eq!(snap.messages[0].data(), TEXT.to_vec());
         assert_eq!(snap.messages[0].text.as_deref(), Some("Hello"));
 
