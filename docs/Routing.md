@@ -129,15 +129,26 @@ Two more pages of the new dashboard, both for admins:
   "2321" = "District North"
   ```
 
-  An ISSI's dialog also sets what the number is when it logs in as Terminal:
-  *Terminal* (an app or console, the default) or *Bridge*. Radios and
-  Stations & Cells list these numbers as **Terminals & bridges** with their
-  type. Only bridges are stored:
+  An ISSI's dialog also sets the **type** of the number as a login: *Auto*
+  (the default: as it logs in, Basestation mode = station, Terminal mode =
+  terminal), *Terminal* (an app or console) or *Bridge*. The same choice is in
+  the login's dialog on the Accounts page and behind *Change* on Stations &
+  Cells. Radios and Stations & Cells list Terminal logins, and Basestation
+  logins set to Terminal or Bridge, as **Terminals & bridges** with their
+  type; such a Basestation login, and the radios registered through it, leave
+  the station lists (Stations, the station count in the header, the map).
+  Only the dashboard changes, never how the server treats the connection. Auto
+  is not stored:
 
   ```toml
   [issi_kinds]
   "2321100" = "bridge"
+  "9100232" = "bridge"     # logs in as Basestation, listed as a bridge
+  "1000009" = "terminal"
   ```
+
+  An older server reads `"terminal"` as its default (Terminal) and ignores it
+  for Basestation logins.
 
   **Access** (Groups list) decides who may use a group: *Open* (no list),
   *Only these* (allow list: only the listed ISSIs) or *Block these* (everyone

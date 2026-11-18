@@ -2621,7 +2621,7 @@ mod pool_tests {
     }
 
     fn pool(both_ways: bool, groups: &[u32]) -> TalkgroupPoolConfig {
-        TalkgroupPoolConfig { name: "Nord".into(), enabled: true, both_ways, groups: groups.to_vec(), remote: Vec::new(), linked: false }
+        TalkgroupPoolConfig { name: "Nord".into(), enabled: true, both_ways, groups: groups.to_vec(), remote: Vec::new(), linked: false, on_demand: false }
     }
 
     fn state_with(pools: Vec<TalkgroupPoolConfig>) -> Arc<AppState> {

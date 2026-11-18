@@ -63,10 +63,12 @@ pub struct Config {
     /// `[issi_names]`: ISSI -> name ("2320972" = "OE4SXM Sebastian"), shown
     /// next to the ISSI on the dashboard. Edited live on its Directory page.
     pub issi_names: std::collections::BTreeMap<String, String>,
-    /// `[issi_kinds]`: what a number that logs in as Terminal is, ISSI ->
-    /// "bridge" ("2321100" = "bridge"); not listed = "terminal" (an app or
-    /// console). Only for the dashboard (Radios, Stations & Cells); set on
-    /// the Directory page.
+    /// `[issi_kinds]`: the type a login or number is listed as, login ->
+    /// "bridge" or "terminal" ("9100232" = "bridge"). Not listed = Auto: as
+    /// it logs in (Basestation mode = station, Terminal mode = terminal). A
+    /// Basestation login set to "terminal" or "bridge" is listed with the
+    /// terminals and bridges, its radios too. Only for the dashboard (Radios,
+    /// Stations & Cells); set on the Accounts, Stations and Directory pages.
     pub issi_kinds: std::collections::BTreeMap<String, String>,
     /// `[gssi_names]`: GSSI -> name ("2321" = "District North"), shown next to the
     /// group on the dashboard. Edited live on the same directory page.
@@ -210,11 +212,19 @@ pub struct TalkgroupPoolConfig {
     /// under "Linked talkgroups" with its own editor.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub linked: bool,
+    /// Groups of other networks only on demand (like a dynamic talkgroup):
+    /// the bridge ISSI joins them there only while a radio here is in one of
+    /// the pool's own groups, and leaves them when the last one has left.
+    /// Off (default, "permanent"): the bridge ISSI is always in them, so
+    /// their calls always come. Radios registered there (`register_talkers`)
+    /// follow their own groups either way.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub on_demand: bool,
 }
 
 impl Default for TalkgroupPoolConfig {
     fn default() -> Self {
-        Self { name: String::new(), enabled: true, both_ways: true, groups: Vec::new(), remote: Vec::new(), linked: false }
+        Self { name: String::new(), enabled: true, both_ways: true, groups: Vec::new(), remote: Vec::new(), linked: false, on_demand: false }
     }
 }
 
@@ -321,6 +331,17 @@ pub struct NetworkConfig {
     /// to and from this network. Off: they stay on this side of the link,
     /// other SDS still pass. Default on.
     pub forward_lip: bool,
+    /// How often the link sends what it registered there again (seconds;
+    /// 0 = never, otherwise at least 30). Brew has no answer to a
+    /// registration, so one the other network lost stays lost otherwise.
+    pub refresh_seconds: u64,
+    /// "Rejoin groups": at each refresh, while no call crosses the link,
+    /// leave every group there and join it again (DEAFFILIATE, AFFILIATE)
+    /// instead of only affiliating again. Field 2026-11-16/17: TetraPack
+    /// stopped sending a group's calls while the subscriber stayed affiliated;
+    /// leaving and joining again (a group change on the radio) brought them
+    /// back. Default off.
+    pub refresh_rejoin: bool,
     pub reconnect_interval_seconds: u64,
     /// TLS settings, as for `[[federation.peers]]`.
     pub tls: bool,
@@ -349,6 +370,8 @@ impl Default for NetworkConfig {
             never_forward: Vec::new(),
             forward_unknown: false,
             forward_lip: true,
+            refresh_seconds: 300,
+            refresh_rejoin: false,
             reconnect_interval_seconds: 15,
             tls: false,
             tls_ca_path: "/etc/ssl/certs/ca-certificates.crt".into(),

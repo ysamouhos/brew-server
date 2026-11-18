@@ -38,8 +38,9 @@ which connect talkgroups inside the server without a restart
 state, with graphs, latest values and alarms for Fleet Control stations. **Accounts** adds the logins of
 Basestations and terminals (Brew, telemetry, control) without a restart, with
 an info text and position per login, the **Directory** keeps names for ISSIs
-and groups (`[issi_names]`, `[gssi_names]`), whether a Terminal login is a
-terminal or a bridge (`[issi_kinds]`), and who may use a group (allow or
+and groups (`[issi_names]`, `[gssi_names]`), whether a login is listed as a
+station, terminal or bridge (Auto / Terminal / Bridge, `[issi_kinds]`, also on
+Accounts and Stations & Cells), and who may use a group (allow or
 block list and RX only, `[group_access]`), and **Config file** edits the whole config
 file. **Managed talkgroups** on the Routing page close the set of groups that
 may be used (`[talkgroups]`). The optional **ham callsign database** names

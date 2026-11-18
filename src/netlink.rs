@@ -80,6 +80,8 @@ struct Registry {
     /// Numbers the link tasks, so a stopped task cannot overwrite the state
     /// of the one that replaced it.
     next_gen: u64,
+    /// Groups the radios here are in right now (for pools `on_demand`).
+    in_use: HashSet<u32>,
 }
 
 struct LinkTask {
@@ -94,11 +96,21 @@ struct LinkTask {
 /// How long a new link waits for the link it replaces to close.
 const CLOSE_WAIT: Duration = Duration::from_secs(5);
 
-/// How often a link sends its registrations and affiliations there again.
-/// Brew has no answer to them, so a registration the other network lost
-/// (field 2026-11-15: TetraPack after the link was restarted) would
-/// otherwise stay lost until the radio changes its groups.
-pub const REFRESH_INTERVAL: Duration = Duration::from_secs(300);
+/// Shortest refresh interval a network can set (`refresh_seconds`).
+pub const MIN_REFRESH_SECONDS: u64 = 30;
+
+/// How often a link sends its registrations and affiliations there again
+/// (`refresh_seconds`, 0 = never). Brew has no answer to them, so a
+/// registration the other network lost (field 2026-11-15: TetraPack after
+/// the link was restarted) would otherwise stay lost until the radio changes
+/// its groups.
+pub fn refresh_interval(net: &NetworkConfig) -> Option<Duration> {
+    (net.refresh_seconds > 0).then(|| Duration::from_secs(net.refresh_seconds.max(MIN_REFRESH_SECONDS)))
+}
+
+/// While a call crosses the link, a refresh that leaves and joins the groups
+/// again waits; this is how often it looks again.
+const REJOIN_RETRY: Duration = Duration::from_secs(2);
 
 /// State of one link.
 #[derive(Debug, Clone, Default)]
@@ -342,6 +354,18 @@ pub fn bridged_groups(pools: &[TalkgroupPoolConfig], name: &str) -> BTreeSet<u32
         .collect()
 }
 
+/// Groups the bridge ISSI is to be in, in network `name`: those of the
+/// switched-on pools bridging it, a pool `on_demand` only while one of its
+/// own groups is in `in_use` (a pool without own groups always).
+pub fn bridge_wants(pools: &[TalkgroupPoolConfig], name: &str, in_use: &HashSet<u32>) -> BTreeSet<u32> {
+    pools.iter().filter(|p| p.enabled)
+        .filter(|p| !p.on_demand || p.groups.is_empty() || p.groups.iter().any(|g| in_use.contains(g)))
+        .flat_map(|p| p.remote.iter())
+        .filter(|r| r.network == name)
+        .map(|r| r.gssi)
+        .collect()
+}
+
 fn pools_now(state: &AppState) -> Vec<TalkgroupPoolConfig> {
     state.pools.read().map(|p| p.clone()).unwrap_or_default()
 }
@@ -358,16 +382,18 @@ fn affiliation_changes(issi: u32, have: &BTreeSet<u32>, want: &BTreeSet<u32>) ->
     out
 }
 
-/// After a pool change: every connected link affiliates its bridge ISSI to
-/// the groups now bridged and leaves the others.
+/// After a pool change, or a radio here joining or leaving a group of an
+/// `on_demand` pool: every connected link affiliates its bridge ISSI to the
+/// groups it is to be in now ([`bridge_wants`]) and leaves the others.
 pub fn refresh_affiliations(state: &AppState) {
     let pools = pools_now(state);
     let cfg = state.networks.read().map(|c| c.clone()).unwrap_or_default();
     let mut reg = state.netlinks.lock();
+    let in_use = reg.in_use.clone();
     for net in &cfg.networks {
         let Some(status) = reg.status.get_mut(&net.name) else { continue };
         let Some(up) = status.up.clone() else { continue };
-        let want = bridged_groups(&pools, &net.name);
+        let want = bridge_wants(&pools, &net.name, &in_use);
         for msg in affiliation_changes(net.bridge_issi, &status.affiliated, &want) { let _ = up.send(msg); }
         if net.bridge_issi != 0 { status.affiliated = want; }
     }
@@ -415,13 +441,19 @@ pub fn exports_station(n: &NetworkConfig, mode: ClientMode, login: Option<&str>,
 
 /// Upstream messages that register again, unchanged, what a link has
 /// registered there: the bridge ISSI with its groups, and each radio in
-/// `have` with its groups (see [`REFRESH_INTERVAL`]).
-pub fn refresh_messages(bridge_issi: u32, bridged: &BTreeSet<u32>, have: &HashMap<u32, BTreeSet<u32>>) -> Vec<Vec<u8>> {
+/// `have` with its groups (see [`refresh_interval`]). The ISSI `rejoin`
+/// (`refresh_rejoin`, see [`rejoin_issi`]) leaves its groups first and joins
+/// them again; every other ISSI stays in its groups, so the groups never
+/// lose this link's members there.
+pub fn refresh_messages(bridge_issi: u32, bridged: &BTreeSet<u32>, have: &HashMap<u32, BTreeSet<u32>>, rejoin: Option<u32>) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
+    // Already registered there: a re-registration, as a FlowStation sends
+    // when one of its radios registers again.
     let mut add = |issi: u32, groups: &BTreeSet<u32>| {
-        out.push(protocol::build_subscriber_message(protocol::SUB_REGISTER, issi, &[]));
+        out.push(protocol::build_subscriber_message(protocol::SUB_REREGISTER, issi, &[]));
         if !groups.is_empty() {
             let g: Vec<u32> = groups.iter().copied().collect();
+            if rejoin == Some(issi) { out.push(protocol::build_subscriber_message(protocol::SUB_DEAFFILIATE, issi, &g)); }
             out.push(protocol::build_subscriber_message(protocol::SUB_AFFILIATE, issi, &g));
         }
     };
@@ -471,6 +503,19 @@ pub fn member_changes(have: &mut HashMap<u32, BTreeSet<u32>>, want: &HashMap<u32
 /// bridged group there while it is in the group here, and leaves when it
 /// leaves it here).
 pub async fn sync_members(state: &AppState) {
+    // The groups in use here, for the bridge ISSI in `on_demand` pools.
+    let in_use: HashSet<u32> = {
+        let inner = state.inner.read().await;
+        let local = |c: &crate::state::ClientId| inner.clients.get(c).is_some_and(|c| matches!(c.mode, ClientMode::Terminal | ClientMode::Basestation));
+        inner.subscribers.values().filter(|s| s.route.path.is_empty() && local(&s.client_id)).flat_map(|s| s.groups.iter().copied()).collect()
+    };
+    let changed = {
+        let mut reg = state.netlinks.lock();
+        let changed = reg.in_use != in_use;
+        reg.in_use = in_use;
+        changed
+    };
+    if changed { refresh_affiliations(state); }
     let cfg = state.networks.read().map(|c| c.clone()).unwrap_or_default();
     if !cfg.enabled || !cfg.networks.iter().any(|n| n.enabled && n.register_talkers) { return; }
     let pools = pools_now(state);
@@ -951,7 +996,10 @@ async fn run_session(
     }
     // The bridge ISSI registers there and affiliates to the bridged groups,
     // so that network's server sends their calls over this link.
-    let want = bridged_groups(&pools_now(state), &net.name);
+    let want = {
+        let reg = state.netlinks.lock();
+        bridge_wants(&pools_now(state), &net.name, &reg.in_use)
+    };
     if net.bridge_issi != 0 {
         let _ = up_tx.send(protocol::build_subscriber_message(protocol::SUB_REGISTER, net.bridge_issi, &[]));
         for msg in affiliation_changes(net.bridge_issi, &BTreeSet::new(), &want) { let _ = up_tx.send(msg); }
@@ -1008,7 +1056,8 @@ async fn run_session(
                 }
             };
             let mut gone = false;
-            for p in packet {
+            for mut p in packet {
+                stamp_subscriber(&mut p, std::time::SystemTime::now());
                 if ws_tx.send(Message::Binary(p.into())).await.is_err() { gone = true; break; }
             }
             if gone { break; }
@@ -1019,21 +1068,29 @@ async fn run_session(
     let ours = ids.clone();
     let mut inbound = Inbound::new(slot, ids);
     let name = net.name.clone();
-    let mut refresh = tokio::time::interval_at(tokio::time::Instant::now() + REFRESH_INTERVAL, REFRESH_INTERVAL);
+    let every = refresh_interval(net);
+    // Off: a tick that never comes in practice.
+    let period = every.unwrap_or(Duration::from_secs(86_400 * 365));
+    let mut refresh = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
     refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut retry = tokio::time::interval(REJOIN_RETRY);
+    retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // A rejoin refresh due while a call crossed the link.
+    let mut rejoin_due = false;
+    // Rejoin refreshes so far, to take the radios in turn.
+    let mut turn = 0usize;
     loop {
         let item = tokio::select! {
             item = federation::next_frame(&mut ws_rx, keepalive) => item,
             _ = stop.changed() => break,
-            _ = refresh.tick() => {
-                let bridged = {
-                    let reg = state.netlinks.lock();
-                    reg.status.get(&name).map(|s| s.affiliated.clone()).unwrap_or_default()
-                };
-                let mut msgs = refresh_messages(net.bridge_issi, &bridged, &export_lock(&talkers).have);
-                msgs.extend(crate::visitors::registrations(&*state.inner.read().await, slot));
-                info!(network = %name, count = msgs.len(), "multi network: registrations sent there again");
-                for m in msgs { let _ = up_tx.send(m); }
+            _ = refresh.tick(), if every.is_some() => {
+                rejoin_due = net.refresh_rejoin;
+                if !rejoin_due || !link_busy(&ours) { send_refresh(state, net, slot, &talkers, &up_tx, rejoin_due, turn).await; turn += usize::from(rejoin_due); rejoin_due = false; }
+                else { info!(network = %name, "multi network: refresh waits, a call crosses the link"); }
+                continue;
+            }
+            _ = retry.tick(), if rejoin_due => {
+                if !link_busy(&ours) { send_refresh(state, net, slot, &talkers, &up_tx, true, turn).await; turn += 1; rejoin_due = false; }
                 continue;
             }
         };
@@ -1100,6 +1157,55 @@ async fn run_session(
     }
     state.cleanup_client(id).await;
     info!(network = %name, "multi network: link closed");
+}
+
+/// The one ISSI a rejoin refresh lets leave and join its groups again: the
+/// bridge ISSI when it has groups, else the radios in turn (`turn` counts
+/// the refreshes). None when nobody there is in a group.
+pub fn rejoin_issi(bridge_issi: u32, bridged: &BTreeSet<u32>, have: &HashMap<u32, BTreeSet<u32>>, turn: usize) -> Option<u32> {
+    if bridge_issi != 0 && !bridged.is_empty() { return Some(bridge_issi); }
+    let mut radios: Vec<u32> = have.iter().filter(|(_, g)| !g.is_empty()).map(|(i, _)| *i).collect();
+    if radios.is_empty() { return None; }
+    radios.sort_unstable();
+    Some(radios[turn % radios.len()])
+}
+
+/// Puts the time into a subscriber message whose timestamp is empty, as a
+/// FlowStation sends it (seconds and nanoseconds since 1970, little endian,
+/// after the ISSI). Field 2026-11-15..17: the link sent 0 (1970) and
+/// TetraPack stopped sending a bridged group's calls after a while, though
+/// the bridge stayed registered; a FlowStation always sends the time.
+pub fn stamp_subscriber(p: &mut [u8], now: std::time::SystemTime) {
+    if p.len() < 18 || p[0] != protocol::CLASS_SUBSCRIBER || p[6..18].iter().any(|b| *b != 0) { return; }
+    let t = now.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    p[6..14].copy_from_slice(&t.as_secs().to_le_bytes());
+    p[14..18].copy_from_slice(&t.subsec_nanos().to_le_bytes());
+}
+
+/// A call crosses link `ids` right now (either way).
+fn link_busy(ids: &SharedCallIds) -> bool {
+    !ids_lock(ids).to_remote.is_empty()
+}
+
+/// Sends what the link registered there again (see [`refresh_messages`]),
+/// and the visitors' registrations.
+async fn send_refresh(state: &AppState, net: &NetworkConfig, slot: u8, talkers: &SharedExport, up: &mpsc::UnboundedSender<Vec<u8>>, rejoin: bool, turn: usize) {
+    let bridged = {
+        let reg = state.netlinks.lock();
+        reg.status.get(&net.name).map(|s| s.affiliated.clone()).unwrap_or_default()
+    };
+    let (mut msgs, who) = {
+        let e = export_lock(talkers);
+        let who = if rejoin { rejoin_issi(net.bridge_issi, &bridged, &e.have, turn) } else { None };
+        (refresh_messages(net.bridge_issi, &bridged, &e.have, who), who)
+    };
+    msgs.extend(crate::visitors::registrations(&*state.inner.read().await, slot));
+    if let Some(issi) = who {
+        info!(network = %net.name, count = msgs.len(), issi, "multi network: registrations sent there again, ISSI {issi} left its groups and joined again");
+    } else {
+        info!(network = %net.name, count = msgs.len(), "multi network: registrations sent there again");
+    }
+    for m in msgs { let _ = up.send(m); }
 }
 
 /// A `SERVICE_ISSI_CHECK` answer on a link (`{"taken":[..],"free":[..]}`):
@@ -1304,6 +1410,8 @@ pub struct NetworkView {
     pub never_forward: Vec<u32>,
     pub forward_unknown: bool,
     pub forward_lip: bool,
+    pub refresh_seconds: u64,
+    pub refresh_rejoin: bool,
     /// That network answers the ISSI check (a brew-server).
     pub checks: bool,
     /// Radios registered there by the link right now.
@@ -1353,6 +1461,7 @@ pub async fn snapshot(state: &AppState) -> MultiNetworkView {
             has_password: !n.password.is_empty(), user_agent: n.user_agent.clone(), bridge_issi: n.bridge_issi,
             register_talkers: n.register_talkers, register_all: n.register_all,
             export_stations: n.export_stations.clone(), never_export: n.never_export.clone(), never_forward: n.never_forward.clone(), forward_unknown: n.forward_unknown, forward_lip: n.forward_lip,
+            refresh_seconds: n.refresh_seconds, refresh_rejoin: n.refresh_rejoin,
             checks: s.connected && s.members.as_ref().is_some_and(|e| export_lock(e).checks),
             exported_detail: if s.connected { s.members.as_ref().map(|e| export_lock(e).exported_view()).unwrap_or_default() } else { Vec::new() },
             exported: if s.connected { s.members.as_ref().map(|e| { let mut v: Vec<u32> = export_lock(e).have.keys().copied().collect(); v.sort_unstable(); v }).unwrap_or_default() } else { Vec::new() },
@@ -1594,7 +1703,7 @@ mod tests {
         TalkgroupPoolConfig {
             name: name.into(), enabled: true, both_ways: true, groups: vec![9],
             remote: remote.iter().map(|(n, g)| RemotePoolGroup { network: (*n).into(), gssi: *g }).collect(),
-            linked: false,
+            linked: false, on_demand: false,
         }
     }
 
@@ -1605,6 +1714,22 @@ mod tests {
         let pools = [pool("A", &[("TP", 909), ("Other", 1)]), pool("B", &[("TP", 9)]), off];
         assert_eq!(bridged_groups(&pools, "TP").into_iter().collect::<Vec<_>>(), vec![9, 909]);
         assert_eq!(bridged_groups(&pools, "Other").into_iter().collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
+    fn on_demand_pools_bridge_only_while_their_groups_are_in_use() {
+        let mut dynamic = pool("Dyn", &[("TP", 909)]);
+        dynamic.on_demand = true;
+        let mut remote_only = pool("RemoteOnly", &[("TP", 5)]);
+        remote_only.groups.clear();
+        remote_only.on_demand = true;
+        let pools = [pool("Static", &[("TP", 91)]), dynamic, remote_only];
+        let none = HashSet::new();
+        assert_eq!(bridge_wants(&pools, "TP", &none).into_iter().collect::<Vec<_>>(), vec![5, 91]);
+        let in9: HashSet<u32> = [9].into();
+        assert_eq!(bridge_wants(&pools, "TP", &in9).into_iter().collect::<Vec<_>>(), vec![5, 91, 909]);
+        // bridged_groups (what may come in) still has all of them.
+        assert_eq!(bridged_groups(&pools, "TP").len(), 3);
     }
 
     #[test]
@@ -1772,7 +1897,7 @@ mod e2e {
         cfg.talkgroup_pools.push(TalkgroupPoolConfig {
             name: "Bridge".into(), enabled: true, both_ways: true, groups: vec![9],
             remote: vec![RemotePoolGroup { network: "TP".into(), gssi: 909 }],
-            linked: false,
+            linked: false, on_demand: false,
         });
         let (main, main_addr) = serve(cfg).await;
         run(main.clone()).await;
@@ -1928,7 +2053,7 @@ mod e2e {
         cfg.talkgroup_pools.push(TalkgroupPoolConfig {
             name: "Bridge".into(), enabled: true, both_ways: true, groups: vec![9],
             remote: vec![RemotePoolGroup { network: "TP".into(), gssi: 909 }],
-            linked: false,
+            linked: false, on_demand: false,
         });
         let (main, main_addr) = serve(cfg).await;
         run(main.clone()).await;
@@ -1951,19 +2076,104 @@ mod e2e {
         assert!(tp.inner.read().await.subscribers.get(&9_000_001).is_some_and(|s| s.groups.contains(&909)), "the bridge ISSI is registered there again");
     }
 
+    #[tokio::test]
+    async fn the_bridge_joins_an_on_demand_group_only_while_a_radio_here_is_in_the_pool() {
+        let (tp, tp_addr) = serve(base_config()).await;
+        let mut cfg = base_config();
+        cfg.multi_network.networks.push(NetworkConfig {
+            name: "TP".into(), remote_host: tp_addr.to_string(), bridge_issi: 9_000_001,
+            register_talkers: false, reconnect_interval_seconds: 5, ..Default::default()
+        });
+        cfg.talkgroup_pools.push(TalkgroupPoolConfig {
+            name: "Static".into(), groups: vec![8], remote: vec![RemotePoolGroup { network: "TP".into(), gssi: 91 }], ..Default::default()
+        });
+        cfg.talkgroup_pools.push(TalkgroupPoolConfig {
+            name: "Dyn".into(), groups: vec![9], remote: vec![RemotePoolGroup { network: "TP".into(), gssi: 909 }], on_demand: true, ..Default::default()
+        });
+        let (main, main_addr) = serve(cfg).await;
+        run(main.clone()).await;
+        let bridge = async |g: u32| tp.inner.read().await.subscribers.get(&9_000_001).is_some_and(|s| s.groups.contains(&g));
+        wait_until("permanent group there", async || bridge(91).await).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!bridge(909).await, "nobody here in TG 9: the bridge stays out of 909");
+
+        let mut st = station(main_addr, &[2_320_001], &[9]).await;
+        wait_until("bridge joins 909", async || bridge(909).await).await;
+        st.send(Message::Binary(protocol::build_subscriber_message(protocol::SUB_DEAFFILIATE, 2_320_001, &[9]).into())).await.unwrap();
+        wait_until("bridge leaves 909", async || !bridge(909).await).await;
+        assert!(bridge(91).await, "the permanent group stays");
+    }
+
+    #[test]
+    fn refresh_interval_is_per_network() {
+        let mut n = NetworkConfig::default();
+        assert_eq!(refresh_interval(&n), Some(Duration::from_secs(300)));
+        n.refresh_seconds = 60;
+        assert_eq!(refresh_interval(&n), Some(Duration::from_secs(60)));
+        n.refresh_seconds = 5;
+        assert_eq!(refresh_interval(&n), Some(Duration::from_secs(MIN_REFRESH_SECONDS)));
+        n.refresh_seconds = 0;
+        assert_eq!(refresh_interval(&n), None);
+        let cfg: NetworkConfig = toml::from_str("name = \"TP\"\nrefresh_rejoin = true").unwrap();
+        assert!(cfg.refresh_rejoin);
+        assert_eq!(cfg.refresh_seconds, 300);
+    }
+
     #[test]
     fn refresh_sends_every_registration_again() {
         let bridged: BTreeSet<u32> = [909].into();
         let have: HashMap<u32, BTreeSet<u32>> = [(2_320_972, [91].into()), (2_320_001, BTreeSet::new())].into();
-        let msgs = refresh_messages(9_000_001, &bridged, &have);
+        let msgs = refresh_messages(9_000_001, &bridged, &have, None);
         assert_eq!(msgs, vec![
-            protocol::build_subscriber_message(protocol::SUB_REGISTER, 9_000_001, &[]),
+            protocol::build_subscriber_message(protocol::SUB_REREGISTER, 9_000_001, &[]),
             protocol::build_subscriber_message(protocol::SUB_AFFILIATE, 9_000_001, &[909]),
-            protocol::build_subscriber_message(protocol::SUB_REGISTER, 2_320_001, &[]),
-            protocol::build_subscriber_message(protocol::SUB_REGISTER, 2_320_972, &[]),
+            protocol::build_subscriber_message(protocol::SUB_REREGISTER, 2_320_001, &[]),
+            protocol::build_subscriber_message(protocol::SUB_REREGISTER, 2_320_972, &[]),
             protocol::build_subscriber_message(protocol::SUB_AFFILIATE, 2_320_972, &[91]),
         ]);
-        assert!(refresh_messages(0, &BTreeSet::new(), &HashMap::new()).is_empty());
+        assert!(refresh_messages(0, &BTreeSet::new(), &HashMap::new(), None).is_empty());
+        // Rejoin: only the chosen ISSI leaves and joins again, the others
+        // stay in their groups.
+        assert_eq!(refresh_messages(9_000_001, &bridged, &have, Some(9_000_001)), vec![
+            protocol::build_subscriber_message(protocol::SUB_REREGISTER, 9_000_001, &[]),
+            protocol::build_subscriber_message(protocol::SUB_DEAFFILIATE, 9_000_001, &[909]),
+            protocol::build_subscriber_message(protocol::SUB_AFFILIATE, 9_000_001, &[909]),
+            protocol::build_subscriber_message(protocol::SUB_REREGISTER, 2_320_001, &[]),
+            protocol::build_subscriber_message(protocol::SUB_REREGISTER, 2_320_972, &[]),
+            protocol::build_subscriber_message(protocol::SUB_AFFILIATE, 2_320_972, &[91]),
+        ]);
+    }
+
+    #[test]
+    fn subscriber_messages_over_a_link_carry_the_time_like_a_flowstation() {
+        let now = std::time::UNIX_EPOCH + Duration::new(1_763_416_071, 261_420_000);
+        let mut m = protocol::build_subscriber_message(protocol::SUB_AFFILIATE, 2_320_856, &[91]);
+        stamp_subscriber(&mut m, now);
+        assert_eq!(m[6..14], 1_763_416_071u64.to_le_bytes());
+        assert_eq!(m[14..18], 261_420_000u32.to_le_bytes());
+        assert_eq!(m[18..22], 91u32.to_le_bytes(), "the groups stay");
+        // Same layout as FlowStation's own messages: class, type, ISSI, seconds, nanoseconds.
+        assert_eq!((m[0], m[1], &m[2..6]), (protocol::CLASS_SUBSCRIBER, protocol::SUB_AFFILIATE, &2_320_856u32.to_le_bytes()[..]));
+        // A time already set and other classes stay as they are.
+        let before = m.clone();
+        stamp_subscriber(&mut m, now + Duration::from_secs(5));
+        assert_eq!(m, before);
+        let mut call = protocol::build_call_cause(protocol::CALL_GROUP_IDLE, &Uuid::nil(), 0);
+        let c = call.clone();
+        stamp_subscriber(&mut call, now);
+        assert_eq!(call, c);
+    }
+
+    #[test]
+    fn rejoin_takes_the_bridge_else_one_radio_at_a_time() {
+        let bridged: BTreeSet<u32> = [909].into();
+        let have: HashMap<u32, BTreeSet<u32>> = [(2_320_972, [91].into()), (2_320_005, [91].into()), (2_320_001, BTreeSet::new())].into();
+        assert_eq!(rejoin_issi(9_000_001, &bridged, &have, 3), Some(9_000_001));
+        // No bridge (or it has no group): the radios in a group, in turn.
+        assert_eq!(rejoin_issi(0, &bridged, &have, 0), Some(2_320_005));
+        assert_eq!(rejoin_issi(0, &bridged, &have, 1), Some(2_320_972));
+        assert_eq!(rejoin_issi(9_000_001, &BTreeSet::new(), &have, 2), Some(2_320_005));
+        assert_eq!(rejoin_issi(0, &bridged, &HashMap::new(), 0), None);
     }
 
     #[tokio::test]
@@ -1980,7 +2190,7 @@ mod e2e {
         cfg.talkgroup_pools.push(TalkgroupPoolConfig {
             name: "Bridge".into(), enabled: true, both_ways: true, groups: vec![9],
             remote: vec![RemotePoolGroup { network: "TP".into(), gssi: 909 }],
-            linked: false,
+            linked: false, on_demand: false,
         });
         let (main, main_addr) = serve(cfg).await;
         // 10 stations, 25 radios, none in TG 9; station 0 has Multi Network
@@ -2660,7 +2870,7 @@ mod e2e {
         let slot = slots(&state)["TP"];
         if let Ok(mut p) = state.pools.write() {
             p.push(TalkgroupPoolConfig { name: "B".into(), enabled: true, both_ways: true, groups: vec![9],
-                remote: vec![RemotePoolGroup { network: "TP".into(), gssi: 909 }], linked: false });
+                remote: vec![RemotePoolGroup { network: "TP".into(), gssi: 909 }], linked: false, on_demand: false });
         }
         let (bs, link) = (Uuid::new_v4(), Uuid::new_v4());
         {
@@ -2690,7 +2900,7 @@ mod e2e {
         let slot = slots(&state)["TP"];
         if let Ok(mut p) = state.pools.write() {
             p.push(TalkgroupPoolConfig { name: "B".into(), enabled: true, both_ways: true, groups: vec![9],
-                remote: vec![RemotePoolGroup { network: "TP".into(), gssi: 909 }], linked: false });
+                remote: vec![RemotePoolGroup { network: "TP".into(), gssi: 909 }], linked: false, on_demand: false });
         }
         let (bs, link) = (Uuid::new_v4(), Uuid::new_v4());
         {
@@ -2780,7 +2990,7 @@ mod e2e {
         cfg.talkgroup_pools.push(TalkgroupPoolConfig {
             name: "TestLink".into(), enabled: true, both_ways: true, groups: vec![9],
             remote: vec![RemotePoolGroup { network: "Loop".into(), gssi: 909 }],
-            linked: false,
+            linked: false, on_demand: false,
         });
         let state = Arc::new(AppState::new(cfg, "test.toml".into()).0);
         let app = axum::Router::new()

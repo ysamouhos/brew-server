@@ -95,8 +95,9 @@ pub async fn list_gssi(State(state): State<Arc<AppState>>) -> Json<BTreeMap<Stri
     Json(snapshot(&state, Kind::Gssi))
 }
 
-/// `GET /api/issi-kinds`: number -> "bridge" for the Terminal logins that are
-/// bridges; every other Terminal login is a terminal (app, console).
+/// `GET /api/issi-kinds`: login or number -> "bridge" or "terminal", the type
+/// the dashboard lists it as. Not listed = Auto: as it logs in (Basestation
+/// mode = station, Terminal mode = terminal).
 pub async fn list_kinds(State(state): State<Arc<AppState>>) -> Json<BTreeMap<String, String>> {
     Json(state.issi_kinds.read().map(|n| n.clone()).unwrap_or_default())
 }
@@ -104,12 +105,13 @@ pub async fn list_kinds(State(state): State<Arc<AppState>>) -> Json<BTreeMap<Str
 #[derive(Debug, Deserialize)]
 pub struct KindRequest {
     pub issi: String,
-    /// "bridge" or "terminal" (the default, removes the entry).
+    /// "auto" (the default, removes the entry), "terminal" or "bridge".
     pub kind: String,
 }
 
-/// `POST /api/issi-kinds/set` (admins): marks a number that logs in as
-/// Terminal as a bridge, or back as a terminal.
+/// `POST /api/issi-kinds/set` (admins): sets the type of a login or number:
+/// Auto (as it logs in), Terminal or Bridge. A Basestation login set to
+/// Terminal or Bridge is listed with the terminals and bridges.
 pub async fn set_kind(State(state): State<Arc<AppState>>, Json(req): Json<KindRequest>) -> Response {
     let issi = match parse_ssi(&req.issi, Kind::Issi) { Ok(i) => i, Err(e) => return (StatusCode::BAD_REQUEST, e).into_response() };
     match apply_kind(&state, &issi, &req.kind) {
@@ -125,12 +127,12 @@ pub async fn set_kind(State(state): State<Arc<AppState>>, Json(req): Json<KindRe
 fn apply_kind(state: &AppState, issi: &str, kind: &str) -> Result<(), String> {
     let mut k = state.issi_kinds.write().map_err(|_| "busy".to_string())?;
     match kind {
-        "terminal" => { k.remove(issi); }
-        "bridge" => {
+        "auto" => { k.remove(issi); }
+        "terminal" | "bridge" => {
             if k.len() >= MAX_ENTRIES && !k.contains_key(issi) { return Err(format!("at most {MAX_ENTRIES} entries")); }
-            k.insert(issi.to_string(), "bridge".to_string());
+            k.insert(issi.to_string(), kind.to_string());
         }
-        other => return Err(format!("kind '{other}': bridge or terminal")),
+        other => return Err(format!("kind '{other}': auto, terminal or bridge")),
     }
     Ok(())
 }
@@ -293,8 +295,29 @@ mod tests {
         assert_eq!(set_kind(State(state.clone()), Json(KindRequest { issi: "2321101".into(), kind: "router".into() })).await.status(), StatusCode::BAD_REQUEST);
         let saved = crate::config::Config::load(path.to_str().unwrap()).unwrap();
         assert_eq!(saved.issi_kinds, BTreeMap::from([("2321100".to_string(), "bridge".to_string())]));
-        set_kind(State(state.clone()), Json(KindRequest { issi: "2321100".into(), kind: "terminal".into() })).await;
-        assert!(state.issi_kinds.read().unwrap().is_empty(), "terminal is the default, not stored");
+        set_kind(State(state.clone()), Json(KindRequest { issi: "2321100".into(), kind: "auto".into() })).await;
+        assert!(state.issi_kinds.read().unwrap().is_empty(), "Auto is the default, not stored");
+        crate::CONFIG_WRITE_APPLIED_LIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A login that connects in Basestation mode can be listed as a bridge or a
+    /// terminal; Auto removes the override. The file keeps both values.
+    #[tokio::test]
+    async fn a_basestation_login_can_be_set_to_terminal_or_bridge_and_back_to_auto() {
+        let path = std::env::temp_dir().join(format!("brew-kinds-{}.toml", uuid::Uuid::new_v4().simple()));
+        let mut c = crate::config::Config::default();
+        c.storage.enabled = false;
+        c.sms_center.enabled = false;
+        let state = Arc::new(AppState::new(c, path.clone()).0);
+        assert_eq!(set_kind(State(state.clone()), Json(KindRequest { issi: "9100232".into(), kind: "bridge".into() })).await.status(), StatusCode::OK);
+        assert_eq!(set_kind(State(state.clone()), Json(KindRequest { issi: "1000003".into(), kind: "terminal".into() })).await.status(), StatusCode::OK);
+        let saved = crate::config::Config::load(path.to_str().unwrap()).unwrap();
+        assert_eq!(saved.issi_kinds, BTreeMap::from([("1000003".to_string(), "terminal".to_string()), ("9100232".to_string(), "bridge".to_string())]));
+        assert!(std::fs::read_to_string(&path).unwrap().contains("[issi_kinds]"));
+        assert_eq!(set_kind(State(state.clone()), Json(KindRequest { issi: "1000003".into(), kind: "auto".into() })).await.status(), StatusCode::OK);
+        let saved = crate::config::Config::load(path.to_str().unwrap()).unwrap();
+        assert_eq!(saved.issi_kinds, BTreeMap::from([("9100232".to_string(), "bridge".to_string())]));
         crate::CONFIG_WRITE_APPLIED_LIVE.store(false, std::sync::atomic::Ordering::SeqCst);
         let _ = std::fs::remove_file(&path);
     }
