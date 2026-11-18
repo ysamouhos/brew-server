@@ -495,7 +495,7 @@ mod tests {
     use super::*;
 
     fn pool(name: &str, both: bool, groups: &[u32]) -> TalkgroupPoolConfig {
-        TalkgroupPoolConfig { name: name.into(), enabled: true, both_ways: both, groups: groups.to_vec(), remote: Vec::new(), linked: false }
+        TalkgroupPoolConfig { name: name.into(), enabled: true, both_ways: both, groups: groups.to_vec(), remote: Vec::new(), linked: false, on_demand: false }
     }
 
     fn none() -> HashMap<String, u8> { HashMap::new() }

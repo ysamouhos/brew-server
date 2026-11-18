@@ -174,6 +174,34 @@ location system; TS 100 392-2 table 29.21) does not go to that network and
 one coming from it is dropped; text and other SDS still pass. The protocol
 identifier is in the payload, so the SDS header is held until it arrives.
 
+A link speaks to the other network like a FlowStation with radios: every
+subscriber message carries the time (seconds and nanoseconds since 1970,
+after the ISSI), a radio already registered there is registered again with
+REREGISTER, never a second REGISTER, and nothing leaves a group unless it
+left here.
+
+A pool or linked talkgroup can bridge its groups of another network
+permanently (default: the bridge ISSI is always in them, their calls always
+come) or `on_demand = true`: the bridge ISSI joins them only while a radio
+registered here is in one of the pool's own groups and leaves them when the
+last one has left (a pool without own groups stays permanent). Radios
+registered there (`register_talkers`) follow their own groups either way.
+
+`refresh_seconds` (per network, default 300, 0 = never, at least 30) is how
+often a link sends everything it registered there again: the bridge ISSI and
+the radios with their groups, and the visitors. Brew has no answer to a
+registration, so one the other network lost would otherwise stay lost until
+the radio changes its groups. `refresh_rejoin` (per network, default off)
+makes each refresh let one ISSI leave its groups there and join them again
+(DEAFFILIATE, then AFFILIATE): the bridge ISSI, or without one the radios in
+turn. Every other ISSI stays in its groups, so a bridged group never loses
+this link's members there; while a call crosses the link it waits until the
+link is idle. Field 2026-11-16/17: TetraPack stopped
+sending TG 91's calls while the bridge stayed affiliated, a group change on
+the radio (leave and join) brought them back, and twice the first call after
+a long silence came right after a refresh. Unverified whether TetraPack
+expires group subscriptions; the switch is there to find out.
+
 A visitor that dials a bare ISSI reaches a party of its own network (the
 cell's network, TS 100 392-2 clause 14.2.3); to reach a radio or the app of
 this server's network it has to dial the full TSI.
@@ -215,6 +243,8 @@ never_export = [2320002]  # ISSIs that network has itself
 forward_unknown = false   # individual calls / SDS nobody here takes go there
 never_forward = [200999]  # ISSIs whose individual calls / SDS never cross, either way
 forward_lip = true        # position reports (LIP) cross, either way
+refresh_seconds = 300     # send the registrations there again (0 = never, at least 30)
+refresh_rejoin = false    # at each refresh leave and join the groups again (only while idle)
 reconnect_interval_seconds = 15
 tls = true                # wss://, settings as for [[federation.peers]]
 # tls_ca_path, tls_server_name, tls_pinned_cert_path
