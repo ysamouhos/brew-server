@@ -157,6 +157,10 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/registrations", get(registration_log))
         .route("/api/connections", get(connections_snapshot))
         .route("/api/positions", get(positions_snapshot))
+        .route("/api/map", get(crate::map_track::api_snapshot))
+        .route("/api/map/track", get(crate::map_track::api_track))
+        .route("/api/map/settings", axum::routing::post(crate::map_track::api_settings))
+        .route("/api/map/clear", axum::routing::post(crate::map_track::api_clear))
         .route("/api/bts-locations", get(bts_locations_snapshot))
         .route("/api/control", get(control_list))
         // DGNA & Radio actions (and the old Restart / Shut down for Fleet
@@ -317,7 +321,7 @@ fn need(path: &str) -> Need {
         "/api/dgna" => &["radioctl_manage"],
         "/api/rssi" | "/api/ms-cells" => &["overview", "stations", "radios", "roaming", "map"],
         "/api/registrations" | "/registrations" => &["radios"],
-        "/api/positions" | "/api/bts-locations" | "/map" => &["map", "stations", "overview"],
+        "/api/positions" | "/api/bts-locations" | "/api/map" | "/api/map/track" | "/map" => &["map", "stations", "overview"],
         "/api/group-access" => &["routing", "issis", "radios"],
         "/api/accounts" => &["accounts"],
         "/sip" | "/api/sip" => &["sip"],
@@ -574,64 +578,99 @@ static MAP_HTML: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| forma
 <p><a class=backlink href="/">&larr; Back to dashboard</a></p>
 <section class=panel><h2>Radio positions</h2><div id=map></div>
 <div class=map-note id=note>Loading positions&hellip;</div>
-<div class=map-note>Positions come from decoded LIP (binary short &amp; long reports) and textual beacons over the Brew channel. Radios that beacon but can't be plotted (no GPS fix, or coordinates not relayed to this server) are listed below.</div>
+<div class=map-note>Positions come from decoded LIP (binary short &amp; long reports) and textual beacons over the Brew channel. A radio without a recent position is shown next to the station it is registered on; click a radio for its last positions. Radios that beacon but can't be plotted (no GPS fix, or coordinates not relayed to this server) are listed below.</div>
 </section>
 <section class=panel><h2>Beaconing but not plottable</h2><div id=undecoded class=reg-list><span class=muted>None</span></div>
 <div class=map-note>These subscribers sent a position beacon that carried no usable coordinates &mdash; typically no GPS fix yet, or a locally-delivered beacon whose bytes never reach this server.</div>
 </section>
 </main>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+{markers}
 <script>
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>]/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;'}}[c]));
 const map=L.map('map').setView([44.43,26.10],5);
 L.tileLayer('https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{maxZoom:19,attribution:'&copy; OpenStreetMap'}}).addTo(map);
 let markers={{}};let btsMarkers={{}};let fitted=false;
-// Inline SVG icons (no image fetches): a radio mast with signal arcs for a Basestation, a handheld radio for a mobile terminal.
-const pin=(bg,svg)=>`<div style="width:34px;height:34px;border-radius:50%;background:${{bg}};border:2px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center">${{svg}}</div>`;
-const btsSvg='<svg width=22 height=22 viewBox="0 0 24 24" fill=none stroke=#fff stroke-width=2 stroke-linecap=round stroke-linejoin=round><path d="M12 11v10M8 21h8M9.5 21l2.5-10 2.5 10"/><circle cx=12 cy=9 r=1.6 fill=#fff /><path d="M7.8 5.8a6 6 0 0 0 0 6.4M16.2 5.8a6 6 0 0 1 0 6.4M5 3.5a10 10 0 0 0 0 11M19 3.5a10 10 0 0 1 0 11"/></svg>';
-const msSvg='<svg width=20 height=20 viewBox="0 0 24 24" fill=none stroke=#fff stroke-width=2 stroke-linecap=round stroke-linejoin=round><path d="M9 2v4M7 6h10a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1z"/><rect x=8.5 y=8.5 width=7 height=4 rx=0.5 /><circle cx=9.5 cy=16 r=0.8 fill=#fff /><circle cx=12 cy=16 r=0.8 fill=#fff /><circle cx=14.5 cy=16 r=0.8 fill=#fff /><circle cx=9.5 cy=19 r=0.8 fill=#fff /><circle cx=12 cy=19 r=0.8 fill=#fff /><circle cx=14.5 cy=19 r=0.8 fill=#fff /></svg>';
-const mkIcon=(bg,svg)=>L.divIcon({{html:pin(bg,svg),className:'',iconSize:[34,34],iconAnchor:[17,17],popupAnchor:[0,-18]}});
-const btsIcon=mkIcon('#1f6feb',btsSvg),btsIconOff=mkIcon('#7a8696',btsSvg),msIcon=mkIcon('#d9822b',msSvg),msIconEmg=L.divIcon({{html:pin('#e53935',msSvg).replace('<div ','<div class=emg-pin '),className:'',iconSize:[34,34],iconAnchor:[17,17],popupAnchor:[0,-18]}});
+// Markers from the design set v2 (`map_track::MARKERS_JS`): the type from the Accounts page
+// (station, tower, terminal), status from Fleet Control alarms.
+const stType=b=>b.icon==='tbs'?'tbs':b.icon==='terminal'?'term':'tmo';
+const stLabel={{tmo:'Basestation',tbs:'Tower (TBS)',term:'Terminal'}};
+const btsIcon=b=>v2icon(stType(b),{{px:44,off:!b.connected,status:b.connected?(b.alarm||(stType(b)==='term'?null:'active')):null}});
 async function loadBts(){{
   try{{
     const bts=await(await fetch('/api/bts-locations')).json();
     const seen=new Set();
     bts.forEach(b=>{{
       seen.add(b.id);
-      const html=`<b>${{esc(b.name||b.username)}}</b> (Basestation)<br>${{b.lat.toFixed(5)}}, ${{b.lon.toFixed(5)}}<br>IP: ${{esc(b.ip||(b.origin?'via server '+b.origin.slice(0,8):'not connected'))}}<br>Source: ${{esc(b.source)}}<br>${{b.connected?'<span style="color:#2a7">connected</span>':'<span style="color:#a55">offline</span>'}}`;
-      if(btsMarkers[b.id]){{btsMarkers[b.id].setLatLng([b.lat,b.lon]).setIcon(b.connected?btsIcon:btsIconOff).setPopupContent(html);}}
-      else{{btsMarkers[b.id]=L.marker([b.lat,b.lon],{{icon:b.connected?btsIcon:btsIconOff}}).addTo(map).bindPopup(html);}}
+      const html=`<b>${{esc(b.name||b.username)}}</b> (${{stLabel[stType(b)]}})${{b.alarm?'<br><span style="color:'+(b.alarm==='error'?'#c62828':'#d66a00')+'">Fleet Control '+(b.alarm==='error'?'alarm':'warning')+'</span>':''}}<br>${{b.lat.toFixed(5)}}, ${{b.lon.toFixed(5)}}<br>IP: ${{esc(b.ip||(b.origin?'via server '+b.origin.slice(0,8):'not connected'))}}<br>Source: ${{esc(b.source)}}<br>${{b.connected?'<span style="color:#2a7">connected</span>':'<span style="color:#a55">offline</span>'}}`;
+      if(btsMarkers[b.id]){{btsMarkers[b.id].setLatLng([b.lat,b.lon]).setIcon(btsIcon(b)).setPopupContent(html);}}
+      else{{btsMarkers[b.id]=L.marker([b.lat,b.lon],{{icon:btsIcon(b)}}).addTo(map).bindPopup(html);}}
     }});
+    bts.forEach(b=>{{btsMarkers[b.id]._name=b.name||b.username;}});
     Object.keys(btsMarkers).forEach(k=>{{if(!seen.has(k)){{map.removeLayer(btsMarkers[k]);delete btsMarkers[k];}}}});
   }}catch(e){{}}
 }}
+// Radios: at their position, or docked next to the station they are registered
+// on (no position, an old one, or one from before a station change). A docked
+// radio keeps a fixed pixel distance from its station at every zoom, in rings
+// around it, so it never covers the station marker.
+let names={{}},track=null,sel=null,lastMap=null;
+const ago=ms=>{{const s=Math.max(0,Math.round((Date.now()-ms)/1000));return s<90?s+' s':s<5400?Math.round(s/60)+' min':Math.round(s/3600)+' h';}};
+const slot=i=>{{const r=i<8?40:68,n=i<8?8:14,k=i<8?i:i-8,a=-Math.PI/2+(2*Math.PI*k/n)+(i<8?Math.PI/8:0);return[Math.round(r*Math.cos(a)),Math.round(r*Math.sin(a))];}};
+const nm=i=>names[i]?' ('+String(names[i]).replace(/[<>&"]/g,'')+')':'';
+function msMarkerIcon(r,px,dx,dy,faded){{return v2icon('ms',{{px,emg:r.emergency,faded,sel:sel===r.issi}},dx,dy);}}
+function clearTrack(){{if(track){{map.removeLayer(track);track=null;}}}}
+async function showTrack(issi){{
+  clearTrack();sel=issi;drawRadios();
+  const t=await fetch('/api/map/track?issi='+issi).then(r=>r.ok?r.json():[]).catch(()=>[]);
+  if(sel!==issi||!t.length)return;
+  track=L.layerGroup();
+  L.polyline(t.map(f=>[f.lat,f.lon]),{{color:'#d9822b',weight:3,opacity:.8}}).addTo(track);
+  t.forEach((f,i)=>L.circleMarker([f.lat,f.lon],{{radius:i===t.length-1?5:3.5,color:'#fff',weight:1.5,fillColor:'#d9822b',fillOpacity:1}}).bindTooltip(new Date(f.at_ms).toLocaleString()).addTo(track));
+  track.addTo(map);
+}}
+map.on('click',()=>{{if(sel!==null){{sel=null;clearTrack();drawRadios();}}}});
+function drawRadios(){{
+  const d=lastMap;if(!d)return;const seen=new Set(),docked={{}},now=d.now_ms,fresh=(d.settings.dock_after_min||0)*60000;
+  const put=(key,ll,icon,z,html,issi)=>{{seen.add(key);const m=markers[key];
+    if(m){{m.setLatLng(ll).setIcon(icon).setZIndexOffset(z).setPopupContent(html);}}
+    else{{markers[key]=L.marker(ll,{{icon,zIndexOffset:z}}).addTo(map).bindPopup(html).on('click',()=>showTrack(issi));}}}};
+  d.radios.forEach(r=>{{
+    const f=r.fix,st=r.dock&&btsMarkers[r.dock];
+    const html=`${{r.emergency?'<div class=emg-pop>&#128680; EMERGENCY</div>':''}}<b>ISSI ${{r.issi}}${{nm(r.issi)}}</b>${{st?'<br>On station: '+esc(st._name||r.dock):''}}${{f?`<br>Position ${{f.lat.toFixed(5)}}, ${{f.lon.toFixed(5)}} (${{ago(f.at_ms)}} ago)<br>${{new Date(f.at_ms).toLocaleString()}}<br><span style="color:#555">${{esc(f.source_text||'')}}</span>`:'<br>No position'}}${{r.points>1?`<br><span style="color:#555">${{r.points}} positions, click shows the track</span>`:''}}`;
+    const z=r.emergency?10000:sel===r.issi?900:0;
+    if(r.docked&&st){{(docked[r.dock]=docked[r.dock]||[]).push([r,html,z]);}}
+    else if(f){{put('r'+r.issi,[f.lat,f.lon],msMarkerIcon(r,44,0,0,fresh>0&&now-f.at_ms>fresh/2),z,html,r.issi);}}
+  }});
+  Object.entries(docked).forEach(([id,l])=>{{const ll=btsMarkers[id].getLatLng();l.sort((a,b)=>a[0].issi-b[0].issi);
+    l.slice(0,22).forEach(([r,html,z],i)=>{{const[dx,dy]=slot(i);put('r'+r.issi,ll,msMarkerIcon(r,36,dx,dy,false),z||400,html,r.issi);}});
+    if(l.length>22){{const rest=l.slice(22);seen.add('more'+id);const html='<b>Also on this station</b><br>'+rest.map(([r])=>'ISSI '+r.issi+nm(r.issi)).join('<br>');
+      const icon=L.divIcon({{html:`<div style="background:#d9822b;color:#fff;border:2px solid #fff;border-radius:12px;padding:1px 7px;font:600 12px sans-serif;box-shadow:0 1px 3px rgba(0,0,0,.4)">+${{rest.length}}</div>`,className:'',iconSize:[40,20],iconAnchor:[20,102]}});
+      if(markers['more'+id])markers['more'+id].setLatLng(ll).setIcon(icon).setPopupContent(html);else markers['more'+id]=L.marker(ll,{{icon,zIndexOffset:400}}).addTo(map).bindPopup(html);}}
+  }});
+  Object.keys(markers).forEach(k=>{{if(!seen.has(k)){{map.removeLayer(markers[k]);delete markers[k];}}}});
+}}
 async function load(){{
+  await loadBts();
   try{{
-    const fixes=(await(await fetch('/api/positions')).json()).filter(f=>f.lat!==0||f.lon!==0);
+    lastMap=await(await fetch('/api/map')).json();
+    const fixes=lastMap.radios.filter(r=>r.fix).map(r=>r.fix);
     // Call sign / name from the ISSI directory ([issi_names]), shown as "2320972 (OE4SXM)".
-    const names=await fetch('/api/issi-names').then(r=>r.ok?r.json():{{}}).catch(()=>({{}}));
+    names=await fetch('/api/issi-names').then(r=>r.ok?r.json():{{}}).catch(()=>({{}}));
     // Then the ham callsign database for ISSIs without a Directory name (Directory names come first).
-    const miss=fixes.map(f=>f.issi).filter(i=>!names[i]);
+    const miss=lastMap.radios.map(r=>r.issi).filter(i=>!names[i]);
     if(miss.length){{const cs=await fetch('/api/callsigns?issi='+miss.join(',')).then(r=>r.ok?r.json():{{}}).catch(()=>({{}}));for(const k in cs)if(!names[k])names[k]=cs[k];}}
-    const nm=i=>names[i]?' ('+String(names[i]).replace(/[<>&"]/g,'')+')':'';
     $('status').textContent='Live';
-    const seen=new Set();
-    fixes.forEach(f=>{{
-      seen.add(f.issi);
-      const when=new Date(f.at_ms).toLocaleString();
-      const html=`${{f.emergency?'<div class=emg-pop>&#128680; EMERGENCY</div>':''}}<b>ISSI ${{f.issi}}${{nm(f.issi)}}</b><br>${{f.lat.toFixed(5)}}, ${{f.lon.toFixed(5)}}<br>Station: ${{f.bts}}<br>${{when}}<br><span style="color:#555">${{(f.source_text||'').replace(/[<>&]/g,'')}}</span>`;
-      const icon=f.emergency?msIconEmg:msIcon,z=f.emergency?10000:0;
-      if(markers[f.issi]){{markers[f.issi].setLatLng([f.lat,f.lon]).setIcon(icon).setZIndexOffset(z).setPopupContent(html);}}
-      else{{markers[f.issi]=L.marker([f.lat,f.lon],{{icon,zIndexOffset:z}}).addTo(map).bindPopup(html);}}
-    }});
-    Object.keys(markers).forEach(k=>{{if(!seen.has(Number(k))){{map.removeLayer(markers[k]);delete markers[k];}}}});
-    const emg=fixes.filter(f=>f.emergency).map(f=>f.issi+nm(f.issi));
-    $('note').textContent=(fixes.length?`${{fixes.length}} station(s) positioned.`:'No decodable position beacons received yet.')+(emg.length?' EMERGENCY: ISSI '+emg.join(', ')+'.':'');
+    drawRadios();
+    const emg=lastMap.radios.filter(r=>r.emergency).map(r=>r.issi+nm(r.issi));
+    const nd=lastMap.radios.filter(r=>r.docked).length;
+    $('note').textContent=(fixes.length?`${{fixes.length}} radio(s) positioned.`:'No decodable position beacons received yet.')+(nd?` ${{nd}} shown next to their station (no recent position).`:'')+(emg.length?' EMERGENCY: ISSI '+emg.join(', ')+'.':'');
     $('note').style.color=emg.length?'#ff6b6b':'';
-    if(!fitted&&fixes.length){{fitted=true;map.fitBounds(fixes.map(f=>[f.lat,f.lon]),{{padding:[40,40],maxZoom:13}});}}
+    // First view: every station and every positioned radio, even before any radio sent a position.
+    if(!fitted){{const pts=Object.values(btsMarkers).map(m=>m.getLatLng()).concat(lastMap.radios.filter(r=>r.fix&&!r.docked).map(r=>[r.fix.lat,r.fix.lon]));
+      if(pts.length){{fitted=true;map.fitBounds(pts,{{padding:[40,40],maxZoom:13}});}}}}
   }}catch(e){{$('status').textContent='Disconnected';}}
-  loadBts();
   // Undecodable beacons (beaconing but not plottable), from telemetry.
   try{{
     const stations=await(await fetch('/api/telemetry')).json();
@@ -640,13 +679,13 @@ async function load(){{
       const prev=byIssi[u.issi];
       if(!prev||u.at_ms>prev.at_ms)byIssi[u.issi]=u;
     }}));
-    const plotted=new Set(Object.keys(markers).map(Number));
+    const plotted=new Set((lastMap?lastMap.radios:[]).filter(r=>r.fix).map(r=>r.issi));
     const list=Object.values(byIssi).filter(u=>!plotted.has(u.issi)).sort((a,b)=>b.at_ms-a.at_ms);
     $('undecoded').innerHTML=list.length?list.map(u=>`<span class=reg-issi title="${{esc(u.reason)}} \u2014 ${{u.count}} beacon(s)">${{u.issi}} <span class=muted>${{new Date(u.at_ms).toLocaleTimeString()}}</span></span>`).join(''):'<span class=muted>None</span>';
   }}catch(e){{}}
 }}
 load();setInterval(load,3000);
-</script></body></html>"#, style = STYLE, ver = VERSION, name = server_name()));
+</script></body></html>"#, style = STYLE, ver = VERSION, name = server_name(), markers = crate::map_track::MARKERS_JS));
 
 /// SIP live panel: registrations, trunks and active calls, polled from
 /// /api/sip every 2s. Renders a clear "disabled" notice when SIP is off.
@@ -1032,6 +1071,12 @@ pub async fn registration_log(State(state): State<Arc<AppState>>) -> Json<Vec<cr
 }
 
 pub async fn positions_snapshot(State(state): State<Arc<AppState>>) -> Json<Vec<crate::telemetry::PositionFix>> {
+    Json(collect_positions(&state).await)
+}
+
+/// The newest position of every radio: decoded here, reported by stations, or
+/// relayed by other servers (newest wins), radios in an emergency flagged.
+pub async fn collect_positions(state: &Arc<AppState>) -> Vec<crate::telemetry::PositionFix> {
     let mut fixes = state.telemetry.read().await.positions();
     // Positions other servers relayed, merged by newest fix per ISSI.
     let inner = state.inner.read().await;
@@ -1052,9 +1097,9 @@ pub async fn positions_snapshot(State(state): State<Arc<AppState>>) -> Json<Vec<
     fixes.sort_unstable_by(|a, b| b.at_ms.cmp(&a.at_ms));
     drop(inner);
     // Radios with an active emergency are drawn red on the map.
-    let emergencies: std::collections::HashSet<u32> = crate::emergency::snapshot(&state).await.iter().map(|e| e.issi).collect();
+    let emergencies: std::collections::HashSet<u32> = crate::emergency::snapshot(state).await.iter().map(|e| e.issi).collect();
     for f in &mut fixes { f.emergency = emergencies.contains(&f.issi); }
-    Json(fixes)
+    fixes
 }
 
 pub async fn map_page() -> Html<&'static str> { Html(MAP_HTML.as_str()) }
@@ -1080,6 +1125,11 @@ pub struct BtsLocation {
     pub source: &'static str,
     /// Origin server id (hex) for a "federation" entry.
     pub origin: Option<String>,
+    /// Map marker set on the Accounts page (`"tbs"`, `"terminal"`; a login connected as Terminal is a terminal), else a TMO station.
+    pub icon: Option<String>,
+    /// Worst active Fleet Control alarm (`"error"` or `"warning"`), only for
+    /// users who see Fleet Control.
+    pub alarm: Option<&'static str>,
 }
 
 /// Basestation positions for the map, best source first: what a Basestation
@@ -1091,7 +1141,9 @@ pub struct BtsLocation {
 pub async fn bts_locations_snapshot(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
+    headers: HeaderMap,
 ) -> Json<Vec<BtsLocation>> {
+    let sees_fleet = access(&state, &headers).sees("fleet");
     // `?config_only=1`: just the static entries (the Settings table), all of them.
     let config_only = q.contains_key("config_only");
     let mut out: Vec<BtsLocation> = Vec::new();
@@ -1103,7 +1155,7 @@ pub async fn bts_locations_snapshot(
         out.push(BtsLocation {
             id: st.id.clone(), username: st.id.clone(),
             name: st.site_name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| st.id.clone()),
-            lat, lon, ip: st.ip.clone(), connected: true, source: "telemetry", origin: None,
+            lat, lon, ip: st.ip.clone(), connected: true, source: "telemetry", origin: None, icon: None, alarm: None,
         });
     }
 
@@ -1115,7 +1167,7 @@ pub async fn bts_locations_snapshot(
         out.push(BtsLocation {
             id: format!("{origin}/{key}"), username: key.clone(),
             name: if b.name.is_empty() { key.clone() } else { b.name.clone() },
-            lat: b.lat, lon: b.lon, ip: None, connected: true, source: "federation", origin: Some(origin),
+            lat: b.lat, lon: b.lon, ip: None, connected: true, source: "federation", origin: Some(origin), icon: None, alarm: None,
         });
     }
 
@@ -1128,7 +1180,21 @@ pub async fn bts_locations_snapshot(
             lat: loc.lat, lon: loc.lon,
             ip: live.and_then(|c| c.remote_addr).map(|a| a.ip().to_string()),
             connected: live.is_some(), source: "config", origin: None,
+            // A login connected in Terminal mode (app, console) gets the terminal marker unless one is set.
+            icon: live.filter(|c| c.mode == crate::state::ClientMode::Terminal).map(|_| "terminal".to_owned()), alarm: None,
         });
+    }
+    drop(inner);
+    // Marker type from the Accounts page, alarms from Fleet Control
+    // (keyed by control login, which names its Brew login).
+    let stations = state.fleet.lock().map(|f| f.stations()).unwrap_or_default();
+    let alarms = if sees_fleet { state.fleet_monitor.lock().map(|m| m.active()).unwrap_or_default() } else { Vec::new() };
+    for b in out.iter_mut().filter(|b| b.source != "federation") {
+        b.icon = locations.get(&b.username).and_then(|l| l.icon.clone()).or(b.icon.take());
+        let fs: Vec<&crate::fleet::Station> = stations.iter().filter(|s| s.id == b.username || s.brew_login.as_deref() == Some(b.username.as_str())).collect();
+        let worst = alarms.iter().filter(|a| fs.iter().any(|s| s.id == a.station) || a.station == b.username)
+            .map(|a| a.severity == crate::fleet_monitor::Severity::Alarm).max();
+        b.alarm = worst.map(|e| if e { "error" } else { "warning" });
     }
     Json(out)
 }
@@ -2194,8 +2260,8 @@ mod tests {
     fn map_page_builds() {
         let h = MAP_HTML.as_str();
         assert!(!h.contains("__STYLE__"), "style substituted");
-        assert!(h.contains("/api/positions"), "map polls positions api");
-        assert!(h.contains("ISSI ${f.issi}${nm(f.issi)}") && h.contains("/api/issi-names"), "map shows the directory name next to the ISSI");
+        assert!(h.contains("/api/map"), "map polls the map api");
+        assert!(h.contains("ISSI ${r.issi}${nm(r.issi)}") && h.contains("/api/issi-names"), "map shows the directory name next to the ISSI");
         assert!(h.contains("leaflet"), "leaflet loaded");
         assert!(h.contains("Back to dashboard"), "back link present");
         // OSM tile template must survive the format! escaping as literal braces
@@ -2320,13 +2386,13 @@ mod tests {
     async fn bts_locations_snapshot_omits_unconfigured_zero_entries() {
         let mut config = crate::config::Config::default();
         config.bts_locations.insert("1000001".into(), crate::config::BtsLocationConfig {
-            name: "Athens HQ".into(), lat: 37.9917, lon: 23.7640,
+            name: "Athens HQ".into(), lat: 37.9917, lon: 23.7640, icon: None,
         });
         config.bts_locations.insert("1000002".into(), crate::config::BtsLocationConfig {
-            name: "Unconfigured".into(), lat: 0.0, lon: 0.0,
+            name: "Unconfigured".into(), lat: 0.0, lon: 0.0, icon: None,
         });
         let (state, _rx) = crate::state::AppState::new(config, std::path::PathBuf::from("test.toml"));
-        let Json(out) = bts_locations_snapshot(State(std::sync::Arc::new(state)), axum::extract::Query(HashMap::new())).await;
+        let Json(out) = bts_locations_snapshot(State(std::sync::Arc::new(state)), axum::extract::Query(HashMap::new()), HeaderMap::new()).await;
         assert_eq!(out.len(), 1, "the (0,0) entry must not be plotted");
         assert_eq!(out[0].username, "1000001");
     }
@@ -2334,8 +2400,8 @@ mod tests {
     #[tokio::test]
     async fn bts_locations_prefer_telemetry_over_static_config() {
         let mut config = crate::config::Config::default();
-        config.bts_locations.insert("1000001".into(), crate::config::BtsLocationConfig { name: "Static".into(), lat: 1.0, lon: 2.0 });
-        config.bts_locations.insert("1000002".into(), crate::config::BtsLocationConfig { name: "Fallback".into(), lat: 3.0, lon: 4.0 });
+        config.bts_locations.insert("1000001".into(), crate::config::BtsLocationConfig { name: "Static".into(), lat: 1.0, lon: 2.0, icon: None });
+        config.bts_locations.insert("1000002".into(), crate::config::BtsLocationConfig { name: "Fallback".into(), lat: 3.0, lon: 4.0, icon: None });
         let (state, _rx) = crate::state::AppState::new(config, std::path::PathBuf::from("test.toml"));
         let state = std::sync::Arc::new(state);
         {
@@ -2343,13 +2409,50 @@ mod tests {
             t.add_test_station("1000001", Some((37.9917, 23.764)), "Reported");
             t.add_test_station("1000003", None, "No location"); // reports none: not plotted
         }
-        let Json(out) = bts_locations_snapshot(State(state.clone()), axum::extract::Query(HashMap::new())).await;
+        let Json(out) = bts_locations_snapshot(State(state.clone()), axum::extract::Query(HashMap::new()), HeaderMap::new()).await;
         let by = |id: &str| out.iter().find(|b| b.id == id).unwrap();
         assert_eq!(out.len(), 2);
         assert_eq!((by("1000001").source, by("1000001").lat), ("telemetry", 37.9917));
         assert_eq!(by("1000002").source, "config");
-        let Json(cfg) = bts_locations_snapshot(State(state), axum::extract::Query(HashMap::from([("config_only".into(), "1".into())]))).await;
+        let Json(cfg) = bts_locations_snapshot(State(state), axum::extract::Query(HashMap::from([("config_only".into(), "1".into())])), HeaderMap::new()).await;
         assert_eq!(cfg.len(), 2, "settings table lists every static entry");
+    }
+
+    /// The map marker of a station: its type from the Accounts page and the worst active
+    /// Fleet Control alarm (control login naming the Brew login in its hello).
+    #[tokio::test]
+    async fn bts_locations_carry_icon_and_alarm() {
+        let mut config = crate::config::Config::default();
+        let loc = |name: &str, icon: Option<&str>| crate::config::BtsLocationConfig { name: name.into(), lat: 48.2, lon: 16.3, icon: icon.map(Into::into) };
+        config.bts_locations.insert("1000001".into(), loc("Tower", Some("tbs")));
+        config.bts_locations.insert("1000002".into(), loc("Plain", None));
+        config.bts_locations.insert("1000003".into(), loc("Console 3", Some("terminal")));
+        config.bts_locations.insert("2320100".into(), loc("Console", None));
+        config.bts_locations.insert("2320101".into(), loc("Console 2", Some("tbs")));
+        let (state, _rx) = crate::state::AppState::new(config, std::path::PathBuf::from("test.toml"));
+        let state = std::sync::Arc::new(state);
+        for login in ["2320100", "2320101"] {
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            state.inner.write().await.clients.insert(uuid::Uuid::new_v4(), crate::state::Client { tx, mode: crate::state::ClientMode::Terminal,
+                version: crate::protocol::ConnVersion::V0, version_announced: false, remote_addr: None, connected_at_ms: 0, username: Some(login.into()) });
+        }
+        {
+            let hello = crate::fleet::Hello { protocol: 1, version: "v0.5.20".into(), brew_login: Some("1000001".into()), mcc: 232, mnc: 20, fleet_control: true,
+                capabilities: vec!["fleet-v1".into()] };
+            state.fleet.lock().unwrap().hello("bs-north", &hello, 1, &|_| None);
+            let mut m = state.fleet_monitor.lock().unwrap();
+            m.test_raise("bs-north", "cpu_temp", crate::fleet_monitor::Severity::Warning);
+            m.test_raise("bs-north", "sdr_error", crate::fleet_monitor::Severity::Alarm);
+            m.test_raise("1000002", "cpu_load", crate::fleet_monitor::Severity::Warning);
+        }
+        let Json(out) = bts_locations_snapshot(State(state), axum::extract::Query(HashMap::new()), HeaderMap::new()).await;
+        let by = |id: &str| out.iter().find(|b| b.id == id).unwrap();
+        assert_eq!(by("1000001").icon.as_deref(), Some("tbs"));
+        assert_eq!(by("1000001").alarm, Some("error"), "the worst alarm wins, via the Brew login of the hello");
+        assert_eq!((by("1000002").icon.as_deref(), by("1000002").alarm), (None, Some("warning")));
+        assert_eq!((by("1000003").icon.as_deref(), by("1000003").alarm), (Some("terminal"), None));
+        assert_eq!(by("2320100").icon.as_deref(), Some("terminal"), "connected as Terminal");
+        assert_eq!(by("2320101").icon.as_deref(), Some("tbs"), "a symbol set on the Accounts page wins");
     }
 
     #[tokio::test]
@@ -2388,7 +2491,7 @@ mod tests {
         assert_eq!(blacklist_get(State(state.clone())).await.0, vec![4013]);
 
         // Another settings edit keeps the live list instead of reverting it.
-        let resp = upsert_bts_location(State(state.clone()), Path("1".into()), Json(crate::config::BtsLocationConfig { name: "x".into(), lat: 1.0, lon: 2.0 })).await;
+        let resp = upsert_bts_location(State(state.clone()), Path("1".into()), Json(crate::config::BtsLocationConfig { name: "x".into(), lat: 1.0, lon: 2.0, icon: None })).await;
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(crate::config::Config::load(path.to_str().unwrap()).unwrap().blacklist.issis, vec![4013]);
 
@@ -2418,7 +2521,11 @@ mod tests {
     #[test]
     fn map_page_renders_with_marker_icons() {
         let html = MAP_HTML.as_str();
-        assert!(html.contains("const btsIcon=") && html.contains("msIconEmg") && html.contains("f.emergency") && !html.contains("{{"));
+        assert!(html.contains("const btsIcon=") && html.contains("r.emergency") && !html.contains("{{"));
+        // Design set v2: one shared builder, station type from the Accounts page, alarm badge.
+        assert!(html.contains("function v2icon(") && html.contains("stType(b)") && html.contains("b.alarm||"));
+        // Radios without a recent position are docked next to their station, with a track on a click.
+        assert!(html.contains("/api/map") && html.contains("/api/map/track") && html.contains("r.docked&&st"));
     }
 
     fn basic_auth_header(user: &str, pass: &str) -> HeaderMap {
