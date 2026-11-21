@@ -2,6 +2,18 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.22.0 (Parrot, DGNA list, Map rework) rolls up 1.21.4 to 1.21.9.
+No functional changes since 1.21.9. In short:
+
+- **Parrot** to test a radio (1.21.8): [docs/Parrot.md](docs/Parrot.md).
+- **Assigned by DGNA** list, with Remove and Forget, kept across a restart
+  (1.21.9): [docs/Routing.md](docs/Routing.md).
+- **Map rework** (1.21.7), with terminals drawn as terminals (1.21.9):
+  [docs/Basestation-Locations.md](docs/Basestation-Locations.md).
+- **Login type** Auto, Terminal or Bridge, and linked networks that speak
+  Brew like a FlowStation (1.21.4, 1.21.5):
+  [docs/Multi-Network.md](docs/Multi-Network.md).
+
 Version 1.21.9 (DGNA list) adds:
 
 - **The server remembers the groups given by DGNA**, so they can be taken

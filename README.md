@@ -119,7 +119,7 @@ dashboard's `/healthz` (port 9003) answers on both, with the node's role.
 - [Fleet Control](docs/Fleet-Control.md) -- manage the Basestations from the server over the control channel (stations opt in; protocol, Fleet Manager, rights, change log)
 - [Late entry](docs/Late-Entry.md) -- join running group calls mid-over
 - [Parrot](docs/Parrot.md) -- a number radios call to hear themselves back (individual call and group)
-- [Routing](docs/Routing.md) -- DGNA to several radios, talkgroup pools
+- [Routing](docs/Routing.md) -- DGNA to several radios, the list of groups given by DGNA, talkgroup pools
 - [Multi Network](docs/Multi-Network.md) -- connect to other Brew networks and bridge talkgroups across them (tested on air with TetraPack, including visitors and migration)
 - [ISSI blacklist](docs/ISSI-Blacklist.md)
 - [ISSI allowlist](docs/ISSI-Allowlist.md) -- run a closed network: only listed ISSIs may communicate
