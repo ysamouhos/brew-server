@@ -15,6 +15,10 @@ Version 1.21.9 (DGNA list) adds:
   FlowStation v0.5.19 or newer), also those made on the station's own
   dashboard, and send what they know after each connect. Details:
   [docs/Routing.md](docs/Routing.md).
+- **Map: terminals are drawn as terminals.** A number registered over a
+  Terminal connection (app, console) gets the terminal marker instead of the
+  radio, and "(Terminal)" in its popup. Radios behind a login set to
+  *Bridge* stay radios; a number set to *Terminal* is a terminal.
 
 Version 1.21.8 (Parrot) adds:
 
