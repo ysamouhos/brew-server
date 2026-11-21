@@ -2945,6 +2945,7 @@ async function saveMapSettings(){
 async function clearMapTracks(){
   if(!confirm('Forget the stored positions of every radio?'))return;
   try{await api('/api/map/clear',{method:'POST'});setMsg('map-msg','ok','All tracks cleared.');}catch(e){setMsg('map-msg','err',e.message);}
+}
 // Server settings: the parrot ([parrot], live, no restart).
 function parrotCard(){
   const p=D.parrot;if(!p)return '';
@@ -3088,6 +3089,8 @@ mod tests {
         assert!(PAGE_HTML.contains("lat,lon,icon:$('ac-icon').value}"), "saved with the login");
         assert!(PAGE_HTML.contains("function mapSettingsCard(") && PAGE_HTML.contains("/api/map/settings"));
         assert!(PAGE_HTML.contains("id=\"map-guest\"") && PAGE_HTML.contains("guests_see_track:$('map-guest')"), "guests see tracks: a switch");
+        // The function ends before the next card's comment (a missing brace broke the whole script).
+        assert!(PAGE_HTML.contains("setMsg('map-msg','err',e.message);}\n}\n// Server settings: the parrot"), "clearMapTracks is closed");
     }
 
     /// The parrot is set on the Settings page (on/off, ISSI, separate GSSI, delay, length).

@@ -30,6 +30,11 @@ pub struct TrackFix {
     /// [`dock_station`]), so a later registration elsewhere docks it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub station: Option<String>,
+    /// Sent by a terminal (see [`terminal_issis`]): an app often registers
+    /// only to send its position and leaves again, so the map keeps drawing
+    /// it as a terminal.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub terminal: bool,
 }
 
 pub struct Tracks {
@@ -174,7 +179,8 @@ pub async fn terminal_issis(state: &AppState) -> std::collections::HashSet<u32> 
 /// telemetry), with the station the radio is on now.
 pub async fn record_local(state: &Arc<AppState>, issi: u32, lat: f64, lon: f64, at_ms: u64) {
     let station = dock_stations(state).await.remove(&issi);
-    record(state, issi, TrackFix { lat, lon, at_ms, station });
+    let terminal = terminal_issis(state).await.contains(&issi);
+    record(state, issi, TrackFix { lat, lon, at_ms, station, terminal });
 }
 
 pub fn record(state: &AppState, issi: u32, fix: TrackFix) {
@@ -207,6 +213,9 @@ pub struct RadioOut {
     /// Registered here over a Terminal connection (app, console), drawn with
     /// the terminal marker instead of the radio.
     pub terminal: bool,
+    /// Registered somewhere now (here, on a station that reports it, or on
+    /// a linked server); otherwise drawn as offline.
+    pub online: bool,
 }
 
 #[derive(Serialize)]
@@ -225,17 +234,25 @@ pub async fn api_snapshot(axum::extract::State(state): axum::extract::State<Arc<
     let docks = dock_stations(&state).await;
     let emergencies: std::collections::HashSet<u32> = crate::emergency::snapshot(&state).await.iter().map(|e| e.issi).collect();
     let terminals = terminal_issis(&state).await;
+    let (registered, mut online): (std::collections::HashSet<u32>, std::collections::HashSet<u32>) = {
+        let inner = state.inner.read().await;
+        (inner.subscribers.iter().filter(|(_, s)| s.route.path.is_empty()).map(|(i, _)| *i).collect(), inner.subscribers.keys().copied().collect())
+    };
+    for st in state.telemetry.read().await.stations.values() { online.extend(st.registrations.iter().copied()); }
     let mut by_issi: BTreeMap<u32, Option<crate::telemetry::PositionFix>> = docks.keys().map(|i| (*i, None)).collect();
     for f in fixes { by_issi.insert(f.issi, Some(f)); }
     let t = state.tracks.lock().unwrap_or_else(|e| e.into_inner());
     let radios = by_issi.into_iter().map(|(issi, fix)| {
         let dock = docks.get(&issi).cloned();
         // The track's newest fix is the one the map shows when they agree.
-        let fix_station = t.newest(issi).filter(|n| fix.as_ref().is_some_and(|f| f.at_ms == n.at_ms)).and_then(|n| n.station.clone());
+        let shown = t.newest(issi).filter(|n| fix.as_ref().is_some_and(|f| f.at_ms == n.at_ms));
+        let fix_station = shown.and_then(|n| n.station.clone());
+        // Registered here now: as it is registered. Not registered: as it was when it sent the position shown.
+        let terminal = terminals.contains(&issi) || (!registered.contains(&issi) && shown.is_some_and(|n| n.terminal));
         RadioOut {
             issi, docked: docked(dock.as_deref(), fix.as_ref(), fix_station.as_deref(), settings.dock_after_min, now),
             dock, points: if hide { 0 } else { t.len(issi) }, emergency: emergencies.contains(&issi), fix,
-            terminal: terminals.contains(&issi),
+            terminal, online: online.contains(&issi),
         }
     }).collect();
     axum::Json(MapSnapshot { settings, now_ms: now, radios })
@@ -331,7 +348,7 @@ mod tests {
     use super::*;
 
     fn fix(at: u64, station: Option<&str>) -> TrackFix {
-        TrackFix { lat: 48.0 + at as f64 / 1e6, lon: 16.0, at_ms: at, station: station.map(str::to_owned) }
+        TrackFix { lat: 48.0 + at as f64 / 1e6, lon: 16.0, at_ms: at, station: station.map(str::to_owned), terminal: false }
     }
     fn pf(at: u64) -> crate::telemetry::PositionFix {
         crate::telemetry::PositionFix { issi: 1, lat: 48.0, lon: 16.0, at_ms: at, bts: "brew-sds".into(), source_text: String::new(), emergency: false }
@@ -347,7 +364,7 @@ mod tests {
         assert!(!t.record(7, fix(500, None), 50_000), "older than the whole full track");
         assert!(t.record(7, fix(39_500, None), 50_000), "a late fix goes into its place");
         assert_eq!(t.newest(7).unwrap().at_ms, 40_000);
-        assert!(!t.record(7, TrackFix { lat: 0.0, lon: 0.0, at_ms: 60_000, station: None }, 60_000), "0/0 is no fix");
+        assert!(!t.record(7, TrackFix { lat: 0.0, lon: 0.0, at_ms: 60_000, station: None, terminal: false }, 60_000), "0/0 is no fix");
     }
 
     #[test]
@@ -435,6 +452,19 @@ mod tests {
         assert!(!t.contains(&2320972), "radio on a station");
         assert!(!t.contains(&2320500), "radio behind a bridge login");
         assert!(t.contains(&2320973), "number set to terminal");
+
+        // The app sends its position and leaves: still a terminal on the map, until it registers on a station.
+        let now = crate::telemetry::now_ms();
+        state.telemetry.write().await.record_sds_position(2320100, 48.21, 16.37, now, "lip".into());
+        record_local(&state, 2320100, 48.21, 16.37, now).await;
+        state.inner.write().await.subscribers.remove(&2320100);
+        let snap = |s: Arc<AppState>| async move { api_snapshot(axum::extract::State(s), axum::http::HeaderMap::new()).await.0 };
+        let term = |r: MapSnapshot| r.radios.iter().find(|r| r.issi == 2320100).map(|r| r.terminal);
+        assert_eq!(term(snap(state.clone()).await), Some(true), "left after its position");
+        assert!(snap(state.clone()).await.radios.iter().any(|r| r.issi == 2320100 && !r.online), "and is offline");
+        state.inner.write().await.subscribers.insert(2320100, crate::state::Subscriber { client_id: bs, groups: Default::default(), mode: ClientMode::Basestation, route: Default::default() });
+        assert_eq!(term(snap(state.clone()).await), Some(false), "now registered on a station");
+        assert!(snap(state.clone()).await.radios.iter().any(|r| r.issi == 2320100 && r.online));
     }
 
     #[tokio::test]

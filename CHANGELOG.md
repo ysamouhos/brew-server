@@ -2,6 +2,19 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.22.1 (Map: terminals and offline radios) adds:
+
+- **A terminal stays a terminal on the map after it leaves.** An app often
+  registers only to send its position and deregisters seconds later; its
+  position was then drawn as a radio. Each stored position now notes
+  whether it came from a terminal, and a number not registered here is drawn
+  as it was when it sent the position shown.
+- **Radios registered nowhere are drawn offline** on the map (grey with a
+  dashed ring, "Offline (not registered)" in the popup), at their last
+  position.
+- **Dashboard loads again.** A missing brace after the map settings card
+  (since 1.21.8) stopped the whole dashboard script.
+
 Version 1.22.0 (Parrot, DGNA list, Map rework) rolls up 1.21.4 to 1.21.9.
 No functional changes since 1.21.9. In short:
 
