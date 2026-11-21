@@ -390,6 +390,20 @@ lon = 23.7640
 # auto = false
 # cache = "callsign-db.dat"
 
+# Parrot: a number radios call to test themselves. An individual call to
+# issi is answered by the server and each over comes back after delay_ms
+# (a duplex call: an echo, ended after max_secs). An over on the parrot
+# group (the same number, or gssi with separate_gssi = true; 0 = no group)
+# is played back on the group. Overs are recorded for at most max_secs. Set
+# on the dashboard's Server settings page (live).
+# [parrot]
+# enabled = false
+# issi = 9990
+# separate_gssi = false
+# gssi = 0
+# delay_ms = 1000
+# max_secs = 60
+
 # [talkgroups]
 # managed = false
 # allowed = [9, 2321]

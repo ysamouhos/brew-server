@@ -157,6 +157,8 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/registrations", get(registration_log))
         .route("/api/connections", get(connections_snapshot))
         .route("/api/positions", get(positions_snapshot))
+        .route("/api/parrot", get(crate::parrot::api_get))
+        .route("/api/parrot/set", axum::routing::post(crate::parrot::api_set))
         .route("/api/bts-locations", get(bts_locations_snapshot))
         .route("/api/control", get(control_list))
         // DGNA & Radio actions (and the old Restart / Shut down for Fleet

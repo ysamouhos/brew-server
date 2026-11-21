@@ -390,6 +390,8 @@ pub struct AppState {
     pub talkgroups: std::sync::RwLock<crate::config::TalkgroupsConfig>,
     /// `[callsign_db]` as it is right now, and the loaded list.
     pub callsign_cfg: std::sync::RwLock<crate::config::CallsignDbConfig>,
+    /// `[parrot]` and its recordings (see `parrot`).
+    pub parrot: crate::parrot::Parrot,
     pub callsign_db: crate::callsign_db::Db,
     /// Groups managed talkgroups refused since the start, with the ISSIs that
     /// tried (in memory only, for the Routing page).
@@ -582,6 +584,7 @@ impl AppState {
         if let Ok(g) = self.group_access.read() { cfg.group_access = g.clone(); }
         if let Ok(t) = self.talkgroups.read() { cfg.talkgroups = t.clone(); }
         if let Ok(c) = self.callsign_cfg.read() { cfg.callsign_db = c.clone(); }
+        cfg.parrot = self.parrot.config();
         
         cfg.auth.enabled = self.brew_auth_enabled();
         let (enabled, issis) = self.allowlist_snapshot();
@@ -657,6 +660,7 @@ impl AppState {
         // Fleet Control file next to the history log (memory only in tests and without storage).
         let fleet_path = (config.storage.enabled && !cfg!(test)).then(|| crate::fleet::Fleet::path_for(&config.storage.path));
         // Graphs and alarms next to it.
+        let parrot = crate::parrot::Parrot::new(config.parrot);
         let fleet_monitor = crate::fleet_monitor::FleetMonitor::load((config.storage.enabled && !cfg!(test)).then_some(config.storage.path.as_path()), crate::fleet::now_ms());
         let ha = crate::ha::HaHandle::new(&config.ha, config_hash, crate::ha::config_sections(&config, false));
         (
@@ -687,6 +691,7 @@ impl AppState {
                 group_access: std::sync::RwLock::new(group_access),
                 talkgroups: std::sync::RwLock::new(talkgroups),
                 callsign_cfg: std::sync::RwLock::new(callsign_cfg),
+                parrot,
                 callsign_db,
                 refused_groups: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 allowlist: std::sync::RwLock::new(allowlist),
