@@ -15,6 +15,7 @@ Applied at once, no restart.
 | `separate_gssi` | `false` | Off: the parrot group has the same number as `issi`. On: `gssi` is the group. |
 | `gssi` | `0` | The parrot group when `separate_gssi` is on; 0 = no group. |
 | `delay_ms` | `1000` | Wait after the over before it is played back, 0 to 60000 ms. |
+| `tail_ms` | `500` | How long the floor (or the group call) stays with the parrot after the last played frame, 0 to 5000 ms, so the station plays out its buffer before the end is cut. |
 | `max_secs` | `60` | Longest over recorded, 1 to 600 s. A duplex call is ended after it. |
 
 ```toml
@@ -22,6 +23,7 @@ Applied at once, no restart.
 enabled = true
 issi = 9990
 delay_ms = 1000
+tail_ms = 500
 max_secs = 60
 ```
 
@@ -42,8 +44,8 @@ called party, simplex or duplex as the radio set it up).
 - **Simplex**: the radio talks; when it lets go of PTT (`CALL_SIMPLEX_IDLE`
   from its station, or one second without voice) the over is played back
   after `delay_ms`: `CALL_SIMPLEX_GRANTED` (the station gives the floor to the
-  other party), the voice frames in their original timing, then
-  `CALL_SIMPLEX_IDLE`. Talking again before the playback starts drops the old
+  other party), the voice frames in their original timing, then, `tail_ms`
+  after the last frame, `CALL_SIMPLEX_IDLE`. Talking again before the playback starts drops the old
   over; taking the floor during the playback stops it. The radio ends the call.
 - **Duplex**: every voice frame comes back `delay_ms` later (an echo). The
   parrot ends the call (`CALL_RELEASE`) after `max_secs`.

@@ -120,6 +120,12 @@ impl Parrot {
         self.config().max_secs as u64 * 1000
     }
 
+    /// Time after the last played frame before the floor / group call is
+    /// released (`tail_ms`, at least the 60 ms a frame takes).
+    fn tail(&self) -> Duration {
+        Duration::from_millis(self.config().tail_ms.max(60) as u64)
+    }
+
     fn delay(&self) -> Duration {
         Duration::from_millis(self.config().delay_ms as u64)
     }
@@ -340,7 +346,7 @@ async fn play_private(state: Arc<AppState>, id: Uuid, gen: u64, frames: Vec<(u64
         if !still_playing(&state, id, gen) { return; }
         if !send_to_caller(&state, id, raw).await { return; }
     }
-    tokio::time::sleep(Duration::from_millis(60)).await;
+    tokio::time::sleep(state.parrot.tail()).await;
     if !still_playing(&state, id, gen) { return; }
     send_to_caller(&state, id, &build_floor(CALL_SIMPLEX_IDLE, &id, 1)).await;
     if let Ok(mut r) = state.parrot.recs.lock() {
@@ -380,7 +386,8 @@ async fn play_group(state: Arc<AppState>, gssi: u32, frames: Vec<(u64, Vec<u8>)>
         if !group_call_alive(&state, id).await { return; }
         crate::router::handle_packet(state.clone(), PARROT_OWNER, with_id(raw, &id)).await;
     }
-    tokio::time::sleep(Duration::from_millis(60)).await;
+    tokio::time::sleep(state.parrot.tail()).await;
+    if !group_call_alive(&state, id).await { return; }
     crate::router::handle_packet(state.clone(), PARROT_OWNER, protocol::build_call_cause(CALL_GROUP_IDLE, &id, 0)).await;
     info!(uuid=%id, gssi, talker, frames = frames.len(), "parrot played a group over back");
 }
@@ -408,7 +415,7 @@ pub async fn api_set(State(state): State<Arc<AppState>>, Json(req): Json<ParrotC
         }
     }
     if group_added && state.talkgroups_managed() { crate::group_access::refresh(&state).await; }
-    warn!(enabled = req.enabled, issi = req.issi, gssi = ?req.active_gssi(), delay_ms = req.delay_ms, max_secs = req.max_secs, "parrot settings changed");
+    warn!(enabled = req.enabled, issi = req.issi, gssi = ?req.active_gssi(), delay_ms = req.delay_ms, tail_ms = req.tail_ms, max_secs = req.max_secs, "parrot settings changed");
     let cfg = state.config_snapshot();
     crate::CONFIG_WRITE_APPLIED_LIVE.store(true, std::sync::atomic::Ordering::SeqCst);
     match crate::dashboard::save_config(&state, &cfg).await {
@@ -441,7 +448,8 @@ mod tests {
     }
 
     fn on(delay_ms: u32) -> ParrotConfig {
-        ParrotConfig { enabled: true, issi: PARROT, delay_ms, ..Default::default() }
+        // Tail 0 (at least one frame time, as before `tail_ms`) keeps the tests fast.
+        ParrotConfig { enabled: true, issi: PARROT, delay_ms, tail_ms: 0, ..Default::default() }
     }
 
     async fn connect(state: &AppState, mode: ClientMode) -> (ClientId, mpsc::UnboundedReceiver<Vec<u8>>) {
@@ -517,6 +525,44 @@ mod tests {
         handle_packet(state.clone(), *station, protocol::build_call_cause(CALL_RELEASE, &id, 0)).await;
         assert!(!state.inner.read().await.calls.contains_key(&id));
         assert!(state.parrot.recs.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_floor_stays_open_for_the_tail_after_the_last_frame() {
+        // The station plays out its buffer after the last frame; releasing the floor at once cut
+        // the end of the playback (field test 2026-11-21).
+        let state = state_with(ParrotConfig { tail_ms: 500, ..on(0) });
+        let (station, mut rx) = connect(&state, ClientMode::Basestation).await;
+        let id = Uuid::new_v4();
+        handle_packet(state.clone(), station, setup(&id, 2_320_001, PARROT, false)).await;
+        drain(&mut rx);
+        handle_packet(state.clone(), station, build_floor(CALL_SIMPLEX_GRANTED, &id, 0)).await;
+        handle_packet(state.clone(), station, voice(&id, 1)).await;
+        handle_packet(state.clone(), station, build_floor(CALL_SIMPLEX_IDLE, &id, 1)).await;
+        sleep(350).await;
+        let first = drain(&mut rx);
+        assert_eq!(first, vec![build_floor(CALL_SIMPLEX_GRANTED, &id, 0), voice(&id, 1)], "frame played, floor still held");
+        sleep(500).await;
+        assert_eq!(drain(&mut rx), vec![build_floor(CALL_SIMPLEX_IDLE, &id, 1)], "released after the tail");
+    }
+
+    #[tokio::test]
+    async fn group_playback_keeps_the_call_for_the_tail() {
+        let state = state_with(ParrotConfig { tail_ms: 500, ..on(0) });
+        let mut bs = network(&state, PARROT).await;
+        let id = Uuid::new_v4();
+        let talker_bs = bs[0].0;
+        handle_packet(state.clone(), talker_bs, protocol::build_group_tx(&id, 2_320_001, PARROT, 0)).await;
+        handle_packet(state.clone(), talker_bs, voice(&id, 1)).await;
+        handle_packet(state.clone(), talker_bs, protocol::build_call_cause(CALL_GROUP_IDLE, &id, 0)).await;
+        for (_, rx) in bs.iter_mut() { drain(rx); }
+        sleep(300).await;
+        let got = drain(&mut bs[1].1);
+        assert_eq!(got.len(), 2, "GROUP_TX and the frame, no GROUP_IDLE yet: {got:?}");
+        sleep(500).await;
+        let got = drain(&mut bs[1].1);
+        assert_eq!(got.len(), 1, "GROUP_IDLE after the tail");
+        assert_eq!(&got[0][..2], &protocol::build_call_cause(CALL_GROUP_IDLE, &id, 0)[..2]);
     }
 
     #[tokio::test]
@@ -679,6 +725,8 @@ mod tests {
         assert!(ParrotConfig { issi: 0x100_0000, ..on(0) }.validate().is_err());
         assert!(ParrotConfig { delay_ms: 60_001, ..on(0) }.validate().is_err());
         assert!(ParrotConfig { max_secs: 0, ..on(0) }.validate().is_err());
+        assert!(ParrotConfig { tail_ms: 5_001, ..on(0) }.validate().is_err());
+        assert!(ParrotConfig { tail_ms: 5_000, ..on(0) }.validate().is_ok());
         assert!(ParrotConfig { max_secs: 601, ..on(0) }.validate().is_err());
         assert!(ParrotConfig::default().validate().is_ok(), "off without a number");
         assert!(ParrotConfig::default().is_unset());

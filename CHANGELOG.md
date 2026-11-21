@@ -13,7 +13,9 @@ Version 1.21.8 (Parrot) adds:
   on the group as the parrot ISSI, so every radio in the group hears it. The
   group has the same number as the ISSI unless *Separate GSSI* is set
   (`separate_gssi`, `gssi`; 0 = no group). Overs are recorded for at most
-  `max_secs` (default 60). Saving adds the group to the allowed talkgroups
+  `max_secs` (default 60). The floor stays with the parrot for `tail_ms`
+  (default 500) after the last played frame, so the station plays out its
+  buffer before the end. Saving adds the group to the allowed talkgroups
   and names both numbers "Parrot" in the Directory (an existing name stays).
   Works from every station, nothing new needed on the stations; only calls
   from this server's own connections are answered. Details:

@@ -163,6 +163,9 @@ impl MapConfig {
 /// group). `delay_ms`: how long the parrot waits after the over before it
 /// plays it back (0 to 60000 ms, default 1000). `max_secs`: the longest over
 /// it records (1 to 600 s, default 60); a duplex call is ended after it.
+/// `tail_ms`: how long the floor (or the group call) stays open after the
+/// last frame of a playback, so the station plays out its buffer before the
+/// end (0 to 5000 ms, default 500).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct ParrotConfig {
@@ -172,15 +175,17 @@ pub struct ParrotConfig {
     pub gssi: u32,
     pub delay_ms: u32,
     pub max_secs: u32,
+    pub tail_ms: u32,
 }
 
 impl Default for ParrotConfig {
-    fn default() -> Self { Self { enabled: false, issi: 0, separate_gssi: false, gssi: 0, delay_ms: 1000, max_secs: 60 } }
+    fn default() -> Self { Self { enabled: false, issi: 0, separate_gssi: false, gssi: 0, delay_ms: 1000, max_secs: 60, tail_ms: 500 } }
 }
 
 impl ParrotConfig {
     pub const MAX_DELAY_MS: u32 = 60_000;
     pub const MAX_SECS: u32 = 600;
+    pub const MAX_TAIL_MS: u32 = 5_000;
     pub fn is_unset(&self) -> bool { *self == Self::default() }
     /// The parrot's individual number, `None` while it is off.
     pub fn active_issi(&self) -> Option<u32> {
@@ -198,6 +203,7 @@ impl ParrotConfig {
         if self.issi != 0 && !ssi(self.issi) { return Err("ISSI: 1 to 16777215".into()); }
         if self.separate_gssi && self.gssi != 0 && !ssi(self.gssi) { return Err("GSSI: 1 to 16777215 (0 = no group)".into()); }
         if self.delay_ms > Self::MAX_DELAY_MS { return Err(format!("delay: 0 to {} ms", Self::MAX_DELAY_MS)); }
+        if self.tail_ms > Self::MAX_TAIL_MS { return Err(format!("tail: 0 to {} ms", Self::MAX_TAIL_MS)); }
         if !(1..=Self::MAX_SECS).contains(&self.max_secs) { return Err(format!("maximum length: 1 to {} s", Self::MAX_SECS)); }
         Ok(())
     }

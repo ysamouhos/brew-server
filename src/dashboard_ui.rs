@@ -2921,11 +2921,12 @@ async function clearMapTracks(){
 function parrotCard(){
   const p=D.parrot;if(!p)return '';
   const tg=(id,on,lbl,extra)=>`<label style="display:flex;gap:10px;align-items:center;font-size:13px;font-weight:600"><button class="tog" role="switch" id="${id}" aria-checked="${!!on}" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true');${extra||''}"></button> ${lbl}</label>`;
-  return `<div class="card"><div class="ch"><h2>Parrot</h2>${helpBtn('parrot')}<span class="sp"></span>${tg('par-on',p.enabled,'On')}</div>${helpNote('parrot','A number radios call to test themselves. <i>Individual call</i> to the ISSI: the server answers; in a simplex call each over comes back after the delay, in a duplex call everything comes back after the delay (an echo) and the call ends after the maximum length. <i>Group</i>: an over on the parrot group is played back on the group, as the parrot ISSI, so every radio in the group hears it. The group has the same number as the ISSI unless <i>Separate GSSI</i> is on (GSSI empty or 0 = no group). An over is recorded for at most the maximum length. On saving, the group is added to the allowed talkgroups and both numbers are named Parrot in the Directory (an existing name stays). Stations need nothing new: the group must be routed to Brew on them like any network group. Applies at once, no restart (<code>[parrot]</code>).')}
+  return `<div class="card"><div class="ch"><h2>Parrot</h2>${helpBtn('parrot')}<span class="sp"></span>${tg('par-on',p.enabled,'On')}</div>${helpNote('parrot','A number radios call to test themselves. <i>Individual call</i> to the ISSI: the server answers; in a simplex call each over comes back after the delay, in a duplex call everything comes back after the delay (an echo) and the call ends after the maximum length. <i>Group</i>: an over on the parrot group is played back on the group, as the parrot ISSI, so every radio in the group hears it. The group has the same number as the ISSI unless <i>Separate GSSI</i> is on (GSSI empty or 0 = no group). An over is recorded for at most the maximum length. On saving, the group is added to the allowed talkgroups and both numbers are named Parrot in the Directory (an existing name stays). <i>Tail</i>: how long the floor stays with the parrot after the last played frame, so the station plays out its buffer before the end is cut (default 500 ms). Stations need nothing new: the group must be routed to Brew on them like any network group. Applies at once, no restart (<code>[parrot]</code>).')}
    <div class="svc" style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));align-items:end">
     <div><label class="l" for="par-issi">ISSI</label><input class="f" id="par-issi" type="number" min="1" max="16777215" inputmode="numeric" value="${p.issi||''}" placeholder="e.g. 9990" style="width:100%"></div>
     <div><label class="l" for="par-gssi">GSSI</label><input class="f" id="par-gssi" type="number" min="0" max="16777215" inputmode="numeric" value="${p.separate_gssi?(p.gssi||''):''}" placeholder="${p.separate_gssi?'0 = no group':'same as ISSI'}" ${p.separate_gssi?'':'disabled'} style="width:100%"></div>
     <div><label class="l" for="par-delay">Delay (ms)</label><input class="f" id="par-delay" type="number" min="0" max="60000" step="100" value="${p.delay_ms}" style="width:100%"></div>
+    <div><label class="l" for="par-tail">Tail (ms)</label><input class="f" id="par-tail" type="number" min="0" max="5000" step="100" value="${p.tail_ms??500}" style="width:100%"></div>
     <div><label class="l" for="par-max">Maximum length (s)</label><input class="f" id="par-max" type="number" min="1" max="600" value="${p.max_secs}" style="width:100%"></div>
    </div>
    <div class="svc" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">${tg('par-sep',p.separate_gssi,'Separate GSSI',"parrotSep()")}<span class="sp" style="flex:1"></span><button class="btn pri" onclick="saveParrot()">Save</button></div>${msgDiv('par-msg','padding:0 18px 12px')}</div>`;
@@ -2936,7 +2937,7 @@ function parrotSep(){
 }
 async function saveParrot(){
   const on=x=>$(x).getAttribute('aria-checked')==='true';
-  try{const c=await postJ('/api/parrot/set',{enabled:on('par-on'),issi:Number(v('par-issi'))||0,separate_gssi:on('par-sep'),gssi:Number(v('par-gssi'))||0,delay_ms:Number(v('par-delay')),max_secs:Number(v('par-max'))});D.parrot=c;setMsg('par-msg','ok','Saved');render(true);}catch(e){setMsg('par-msg','err',e.message);}
+  try{const c=await postJ('/api/parrot/set',{enabled:on('par-on'),issi:Number(v('par-issi'))||0,separate_gssi:on('par-sep'),gssi:Number(v('par-gssi'))||0,delay_ms:Number(v('par-delay')),tail_ms:Number(v('par-tail')),max_secs:Number(v('par-max'))});D.parrot=c;setMsg('par-msg','ok','Saved');render(true);}catch(e){setMsg('par-msg','err',e.message);}
 }
 // Server settings: the reference source for Fleet Control updates (hint only, stations keep their own).
 function updatesRepoCard(){
@@ -3066,6 +3067,7 @@ mod tests {
     fn parrot_settings_are_editable() {
         assert!(PAGE_HTML.contains("function parrotCard(") && PAGE_HTML.contains("/api/parrot/set") && PAGE_HTML.contains("Separate GSSI"));
         assert!(PAGE_HTML.contains("set('parrot','/api/parrot')"), "loaded with the Settings page");
+        assert!(PAGE_HTML.contains(r#"id="par-tail""#) && PAGE_HTML.contains("tail_ms:Number(v('par-tail'))"), "the tail is set on the card");
     }
 
     #[test]
