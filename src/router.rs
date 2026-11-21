@@ -238,11 +238,13 @@ async fn handle_group_tx(state: &Arc<AppState>, source: ClientId, id: uuid::Uuid
     }
     let visitor_call = visitor_call.is_some();
     let emergency = is_emergency_call(state, gt.source, gt.priority).await;
-    if state.is_blocked(gt.source) && !emergency {
+    // The parrot's own playback (see `parrot`) is not a radio: no ISSI list applies.
+    let parrot = source == crate::parrot::PARROT_OWNER;
+    if state.is_blocked(gt.source) && !emergency && !parrot {
         info!(%source, uuid=%id, src_issi=gt.source, gssi=gt.destination, reason=state.bar_reason(gt.source).unwrap_or(""), "GROUP_TX from a barred ISSI dropped");
         return;
     }
-    if !state.group_may_talk(gt.destination, gt.source) && !emergency {
+    if !state.group_may_talk(gt.destination, gt.source) && !emergency && !parrot {
         info!(%source, uuid=%id, src_issi=gt.source, gssi=gt.destination, "GROUP_TX from an ISSI that may not talk on the group dropped (group_access)");
         return;
     }
@@ -412,6 +414,7 @@ async fn handle_group_tx(state: &Arc<AppState>, source: ClientId, id: uuid::Uuid
         crate::pools::on_group_tx(state, source, id, gt.source, gt.destination,
             if emergency { gt.priority.max(EMERGENCY_PRIORITY) } else { gt.priority }).await;
     }
+    crate::parrot::on_group_tx(state, source, id, gt.source, gt.destination).await;
 }
 
 /// Relays a position decoded here to the peers -- unless it came out of an SDS
@@ -775,6 +778,14 @@ async fn handle_private_setup(state: &Arc<AppState>, source: ClientId, id: uuid:
         reject_setup(state, source, id).await;
         return;
     }
+    // A call to the parrot ISSI: the server answers it itself (see `parrot`).
+    if let Some(answer) = crate::parrot::answer(state, &mut inner, source, id, source_issi, destination, duplex.unwrap_or(false), priority) {
+        let tx = inner.clients.get(&source).map(|c| c.tx.clone());
+        drop(inner);
+        if let Some(tx) = tx { for p in answer { let _ = tx.send(p); } }
+        state.monitor.call_started(id, "private", source_issi, destination, priority).await;
+        return;
+    }
     // Multi Network: a party of another network (named by the station, or a
     // call that came in over a link) goes where `visitors` decides.
     let mut note = None;
@@ -950,6 +961,9 @@ async fn route_private_control(state: &Arc<AppState>, source: ClientId, id: uuid
         crate::call_restore::note_floor(&mut inner, source, id, s == CALL_SIMPLEX_GRANTED);
     }
     let Some(call) = inner.calls.get(&id) else { return };
+    if call.peers.contains(&crate::parrot::PARROT_OWNER) {
+        if let Some(s) = raw.get(1) { crate::parrot::on_private_control(state, id, source, *s); }
+    }
     let mut recipients = call.peers.clone();
     recipients.insert(call.owner);
     recipients.remove(&source);
@@ -960,6 +974,7 @@ async fn route_private_control(state: &Arc<AppState>, source: ClientId, id: uuid
 
 async fn route_call_frame(state: &Arc<AppState>, source: ClientId, id: uuid::Uuid, raw: Vec<u8>) {
     let Some(txs) = call_frame_recipients(state, source, id, "voice").await else { return };
+    crate::parrot::on_frame(state, id, source, &raw);
     state.monitor.voice_frame(id).await;
     for tx in txs { let _ = tx.send(raw.clone()); }
     crate::pools::on_frame(state, id, &raw).await;
@@ -1072,6 +1087,7 @@ pub(crate) async fn end_call(state: &Arc<AppState>, source: ClientId, id: uuid::
     for tx in txs { let _ = tx.send(raw.clone()); }
     state.monitor.call_ended(id).await;
     info!(%source, uuid=%id, kind=?call.kind, "routed call end");
+    crate::parrot::on_call_end(state, id);
 
     // Talkgroup pools: a pool call's legs end with it, and legs that waited
     // for this group to become free join their call now.
