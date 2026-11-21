@@ -2358,18 +2358,19 @@ R.accounts=()=>{
    <div class="tw acc"><table><thead><tr><th>${byInfo?'Info':'Login'}</th><th>Brew</th><th>Telemetry</th><th>Control</th><th class="hide-s">Position</th><th></th></tr></thead><tbody>
    ${rows.map(x=>{const i=a.accounts.indexOf(x);const first=byInfo&&x.info?`<b>${esc(x.info)}</b>`:`<b class="m">${esc(x.username)}</b>`;
      const ko=kindOver(x.username);
-     return `<tr><td>${first}${ko?` ${tKindChip(x.username)}`:''}${byInfo?(x.info?`<span class="sub m">${esc(x.username)}</span>`:'<span class="sub">no info</span>'):''}</td><td>${yn(x.brew)}</td><td>${yn(x.telemetry)}</td><td>${yn(x.control)}</td><td class="hide-s">${x.lat!=null?`<span class="m" style="font-size:12px">${x.lat.toFixed(4)}, ${x.lon.toFixed(4)}</span>`:'<span class="no">—</span>'}</td>
+     return `<tr><td>${first}${ko?` ${tKindChip(x.username)}`:''}${byInfo?(x.info?`<span class="sub m">${esc(x.username)}</span>`:'<span class="sub">no info</span>'):''}</td><td>${yn(x.brew)}</td><td>${yn(x.telemetry)}</td><td>${yn(x.control)}</td><td class="hide-s">${x.lat!=null?`<span class="m" style="font-size:12px">${x.lat.toFixed(4)}, ${x.lon.toFixed(4)}</span>`:'<span class="no">—</span>'}${x.icon?` <span class="chip i">${x.icon==='tbs'?'Tower':'Terminal'}</span>`:''}</td>
      <td style="text-align:right;white-space:nowrap">${adm?`<button class="btn" onclick="editAcc(${i})">Edit</button> <button class="btn danger hide-s" onclick="delAcc(${i})">Delete</button>`:''}</td></tr>`;}).join('')||'<tr><td colspan="6" class="mut">No logins</td></tr>'}
    </tbody></table></div>${msgDiv('acc-msg','padding:12px 18px')}</div>`;
 };
 function editAcc(i){
-  const x=i>=0?D.acc.accounts[i]:{username:'',brew:true,telemetry:true,control:true,info:'',lat:null,lon:null};
+  const x=i>=0?D.acc.accounts[i]:{username:'',brew:true,telemetry:true,control:true,info:'',lat:null,lon:null,icon:null};
   const sw=(id,on,label,hint)=>`<label style="display:flex;gap:12px;align-items:center"><button type="button" class="tog" role="switch" id="${id}" aria-checked="${on}" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true')"></button><span><b style="font-size:13.5px">${label}</b><br><span class="mut" style="font-size:12px">${hint}</span></span></label>`;
   $('sheet').innerHTML=`<div class="ch"><h3 id="sheet-title">${i>=0?'Edit login '+esc(x.username):'New login'}</h3></div><div class="sb">
    <div><label class="l" for="ac-user">Username</label><input class="f" id="ac-user" value="${esc(x.username)}" ${i>=0?'disabled':''} placeholder="e.g. 1000003" autocomplete="off" spellcheck="false"></div>
    <div><label class="l" for="ac-pw">Password</label><div style="display:flex;gap:8px"><input class="f" id="ac-pw" type="text" autocomplete="new-password" spellcheck="false" placeholder="${i>=0?'unchanged':'password'}" style="flex:1"><button type="button" class="btn" onclick="$('ac-pw').value=genPw()">Generate</button></div></div>
    <div><label class="l" for="ac-info">Info (optional)</label><input class="f" id="ac-info" maxlength="60" value="${esc(x.info||'')}" placeholder="e.g. Relay Main Square · Sysop OE4XYZ"></div>
    <div><label class="l" for="ac-pos">Position (optional): latitude, longitude</label><div style="display:flex;gap:8px"><input class="f" id="ac-pos" value="${x.lat!=null?x.lat+', '+x.lon:''}" placeholder="48.2082, 16.3738" autocomplete="off" spellcheck="false" style="flex:1"><button type="button" class="btn" onclick="hereFix()" title="Use the position of this device">${ic('pin')}Here</button></div><div class="mut" style="font-size:12px;margin-top:4px">Shown on the map. Paste it from a map app, or take this device's position.</div></div>
+   <div><label class="l" for="ac-icon">Map symbol</label><select class="f" id="ac-icon">${[['tmo','Station (TMO)'],['tbs','Tower (TBS)'],['terminal','Terminal']].map(([v,l])=>`<option value="${v}"${(x.icon||'tmo')===v?' selected':''}>${l}</option>`).join('')}</select><div class="mut" style="font-size:12px;margin-top:4px">How the login is drawn on the map at its position: a TMO station, a tower (TBS), or a terminal (app, console). A login connected as Terminal is drawn as a terminal unless another symbol is set.</div></div>
    ${sw('ac-b',x.brew,'Brew','Calls and SDS. Username = number, 1 to 7 digits')}
    ${sw('ac-t',x.telemetry,'Telemetry','FlowStation status reports')}
    ${sw('ac-c',x.control,'Control','Commands to the station: DGNA, kick, restart')}
@@ -2414,7 +2415,7 @@ async function saveAcc(i){
   const m=$('sheet-msg');
   const pos=$('ac-pos').value.trim();let lat=null,lon=null;
   if(pos){const n=pos.split(/[\s,;]+/).filter(Boolean).map(Number);if(n.length!==2||n.some(v=>!isFinite(v))){m.className='msg err';m.textContent='Position: two numbers, latitude and longitude, e.g. 48.2082, 16.3738.';return;}[lat,lon]=n;}
-  const body={username:$('ac-user').value.trim(),password:$('ac-pw').value,brew:on('ac-b'),telemetry:on('ac-t'),control:on('ac-c'),info:$('ac-info').value.trim(),lat,lon};m.className='msg mut';m.textContent='Saving…';
+  const body={username:$('ac-user').value.trim(),password:$('ac-pw').value,brew:on('ac-b'),telemetry:on('ac-t'),control:on('ac-c'),info:$('ac-info').value.trim(),lat,lon,icon:$('ac-icon').value};m.className='msg mut';m.textContent='Saving…';
   // The type (Auto / Terminal / Bridge) is a dashboard setting of the number ([issi_kinds]), saved after the login.
   const kind=kindPicked(),kindChanged=!!kind&&kind!==(kindOver(body.username)||'auto');
   if(kindChanged&&!/^\d{1,12}$/.test(body.username)){m.className='msg err';m.textContent='Type: only for a numeric login (up to 12 digits). Leave it on Auto.';return;}
@@ -2665,7 +2666,7 @@ function loadPageData(p,first){
   if(p==='sipcfg'){set('sipc','/api/sip/config');if(first&&D.who.admin)set('sipFull','/api/config/sip/full');}
   if(p==='sms')set('smsc','/api/sms-center');
   if(p==='ha'){set('ha','/api/ha');if(first&&D.who.admin)set('haCfg','/api/config/ha');}
-  if(p==='settings'&&first&&D.who.admin){set('dusers','/api/dashboard-users');set('blk','/api/config/blacklist');set('allow','/api/config/allowlist');set('btsLocs','/api/bts-locations?config_only=1');}
+  if(p==='settings'&&first&&D.who.admin){set('dusers','/api/dashboard-users');set('blk','/api/config/blacklist');set('allow','/api/config/allowlist');set('btsLocs','/api/bts-locations?config_only=1');set('mapSet','/api/map');}
   if(t.length)Promise.all(t).then(()=>{if(UI.page===p)render(first);});
 }
 const adminOnly=what=>`<div class="card"><div class="empty">${what} is for admins. <button class="btn" onclick="openLogin(false)">Log in</button></div></div>`;
@@ -2892,11 +2893,30 @@ R.settings=()=>{
     <div class="tw"><table><thead><tr><th>Login</th><th>Name</th><th>Position</th><th></th></tr></thead><tbody>
     ${l.map(x=>`<tr><td class="m"><b>${esc(x.username)}</b></td><td>${esc(x.name)}</td><td class="m" style="font-size:12px">${(+x.lat).toFixed(4)}, ${(+x.lon).toFixed(4)}</td><td style="text-align:right"><button class="btn danger" onclick="btsLocDel('${esc(x.username)}')">Delete</button></td></tr>`).join('')||'<tr><td colspan="4" class="mut">No static station positions</td></tr>'}
     </tbody></table></div>${msgDiv('btsl-msg','padding:12px 18px')}</div>
+   ${mapSettingsCard()}
    ${updatesRepoCard()}
    ${fleetCfgSettingsCard()}
    ${fleetMonSettingsCard()}
    ${usersCard()}`;
 };
+// Server settings: the map's radio layer ([map], live, no restart).
+function mapSettingsCard(){
+  const m=D.mapSet;if(!m||!m.settings)return '';const c=m.settings;
+  return `<div class="card"><div class="ch"><h2>Map</h2>${helpBtn('mapset')}<span class="sp"></span><a data-go="map" href="#map">Map ›</a></div>${helpNote('mapset','<i>Positions per radio</i>: how many of a radio\'s last positions are kept (0 to 500); clicking a radio on the map shows them as a track. They survive a restart. <i>Dock after</i>: a radio whose last position is older than this is shown next to the station it is registered on again (0 = only when it registers on another station). A radio without any position is always shown next to its station. <i>Guests see tracks</i>: off, visitors who are not signed in see only the current positions. Applies at once, no restart (<code>[map]</code>).')}
+   <div class="svc" style="display:grid;gap:10px;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;align-items:end">
+    <div><label class="l" for="map-pts">Positions per radio</label><input class="f" id="map-pts" type="number" min="0" max="500" value="${c.track_points}" style="width:100%"></div>
+    <div><label class="l" for="map-dock">Dock after (minutes)</label><input class="f" id="map-dock" type="number" min="0" max="10080" value="${c.dock_after_min}" style="width:100%"></div>
+    <button class="btn pri" onclick="saveMapSettings()">Save</button></div>
+   <div class="svc"><label style="display:flex;gap:10px;align-items:center;font-size:13px;font-weight:600"><button class="tog" role="switch" id="map-guest" aria-checked="${c.guests_see_track!==false}" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true')"></button> Guests see tracks</label><span class="mut" style="font-size:12px">Visitors who are not signed in</span></div>
+   <div class="svc"><button class="btn danger" onclick="clearMapTracks()">Clear all tracks</button></div>${msgDiv('map-msg','padding:0 18px 12px')}</div>`;
+}
+async function saveMapSettings(){
+  try{const c=await postJ('/api/map/settings',{track_points:Number(v('map-pts')),dock_after_min:Number(v('map-dock')),guests_see_track:$('map-guest').getAttribute('aria-checked')==='true'});D.mapSet={...D.mapSet,settings:c};setMsg('map-msg','ok','Saved');render(true);}catch(e){setMsg('map-msg','err',e.message);}
+}
+async function clearMapTracks(){
+  if(!confirm('Forget the stored positions of every radio?'))return;
+  try{await api('/api/map/clear',{method:'POST'});setMsg('map-msg','ok','All tracks cleared.');}catch(e){setMsg('map-msg','err',e.message);}
+}
 // Server settings: the reference source for Fleet Control updates (hint only, stations keep their own).
 function updatesRepoCard(){
   const f=D.fleet;if(!f||!f.update_settings)return '';
@@ -3006,6 +3026,18 @@ mod tests {
         assert!(body.contains("['failed','skipped'].includes(i.state.state)"), "stays after a failed or skipped station");
         assert!(PAGE_HTML.contains("const FLEET_JOB_HIDE_MS=30000;"));
         assert!(PAGE_HTML.contains("const jobCard=job&&!fleetJobHidden(job,live)?"), "the card uses it");
+    }
+
+    /// Each login picks its map symbol (station, tower, terminal) and sends it with the save;
+    /// the map's track length and dock time are set on the Settings page.
+    #[test]
+    fn accounts_pick_a_map_symbol_and_map_settings_are_editable() {
+        let edit = &PAGE_HTML[PAGE_HTML.find("function editAcc(").expect("editAcc")..];
+        let edit = &edit[..edit.find("\n}\n").expect("end")];
+        assert!(edit.contains("id=\"ac-icon\"") && edit.contains("['tbs','Tower (TBS)']") && edit.contains("['terminal','Terminal']"));
+        assert!(PAGE_HTML.contains("lat,lon,icon:$('ac-icon').value}"), "saved with the login");
+        assert!(PAGE_HTML.contains("function mapSettingsCard(") && PAGE_HTML.contains("/api/map/settings"));
+        assert!(PAGE_HTML.contains("id=\"map-guest\"") && PAGE_HTML.contains("guests_see_track:$('map-guest')"), "guests see tracks: a switch");
     }
 
     #[test]

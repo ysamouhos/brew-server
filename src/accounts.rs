@@ -24,6 +24,8 @@ pub struct AccountView {
     /// Position of the station, when entered.
     pub lat: Option<f64>,
     pub lon: Option<f64>,
+    /// Map marker (`"tbs"` = tower), when set.
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -60,6 +62,10 @@ pub struct AccountRequest {
     pub lat: Option<f64>,
     #[serde(default)]
     pub lon: Option<f64>,
+    /// Map marker: `"tbs"` (tower), `"terminal"` or `"tmo"` / empty (station). Left out
+    /// keeps what is set.
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 const MAX_INFO: usize = 60;
@@ -73,7 +79,7 @@ fn view(state: &AppState) -> AccountsView {
     let mut all: BTreeMap<&String, AccountView> = BTreeMap::new();
     for (map, which) in [(&b, 0), (&t, 1), (&c, 2)] {
         for name in map.keys() {
-            let a = all.entry(name).or_insert_with(|| AccountView { username: name.clone(), brew: false, telemetry: false, control: false, info: None, lat: None, lon: None });
+            let a = all.entry(name).or_insert_with(|| AccountView { username: name.clone(), brew: false, telemetry: false, control: false, info: None, lat: None, lon: None, icon: None });
             match which { 0 => a.brew = true, 1 => a.telemetry = true, _ => a.control = true }
         }
     }
@@ -82,6 +88,7 @@ fn view(state: &AppState) -> AccountsView {
             if let Some(l) = locs.get(&a.username) {
                 a.info = Some(l.name.clone()).filter(|n| !n.is_empty());
                 if crate::fedroute::valid_position(l.lat, l.lon) { (a.lat, a.lon) = (Some(l.lat), Some(l.lon)); }
+                a.icon = l.icon.clone();
             }
         }
     }
@@ -115,6 +122,9 @@ fn check(req: &AccountRequest, lists: [&std::collections::HashMap<String, String
         (Some(_), Some(_)) => return Err("position: latitude -90 to 90, longitude -180 to 180".into()),
         _ => return Err("position: enter both latitude and longitude, or neither".into()),
     }
+    if req.icon.as_deref().is_some_and(|i| !matches!(i, "" | "tmo" | "tbs" | "terminal")) {
+        return Err("map icon: tmo, tbs or terminal".into());
+    }
     if req.password.chars().any(char::is_control) || req.password.len() > 128 {
         return Err("password: up to 128 characters, no control characters".into());
     }
@@ -138,15 +148,21 @@ fn set(u: &Users, name: &str, want: bool, password: &str) {
 }
 
 /// The login's `[bts_locations]` entry: info as its name, the position or
-/// (0, 0) for none (never drawn on the map). Nothing at all removes it.
-fn set_location(state: &AppState, name: &str, info: &str, pos: Option<(f64, f64)>) {
+/// (0, 0) for none (never drawn on the map), the map icon (`None` keeps the
+/// one set, `""`/`"tmo"` clears it). Nothing at all removes it.
+fn set_location(state: &AppState, name: &str, info: &str, pos: Option<(f64, f64)>, icon: Option<&str>) {
     let Ok(mut locs) = state.locations.write() else { return };
-    if info.is_empty() && pos.is_none() {
+    let icon = match icon {
+        Some(i @ ("tbs" | "terminal")) => Some(i.to_owned()),
+        Some(_) => None,
+        None => locs.get(name).and_then(|l| l.icon.clone()),
+    };
+    if info.is_empty() && pos.is_none() && icon.is_none() {
         locs.remove(name);
         return;
     }
     let (lat, lon) = pos.unwrap_or((0.0, 0.0));
-    locs.insert(name.to_owned(), crate::config::BtsLocationConfig { name: info.to_owned(), lat, lon });
+    locs.insert(name.to_owned(), crate::config::BtsLocationConfig { name: info.to_owned(), lat, lon, icon });
 }
 
 /// `GET /api/names`: login -> info text, for showing next to logins on the
@@ -183,7 +199,7 @@ pub async fn upsert(State(state): State<Arc<AppState>>, Json(mut req): Json<Acco
     set(&l.brew, &req.username, req.brew, &req.password);
     set(&l.telemetry, &req.username, req.telemetry, &req.password);
     set(&l.control, &req.username, req.control, &req.password);
-    set_location(&state, &req.username, req.info.trim(), req.lat.zip(req.lon));
+    set_location(&state, &req.username, req.info.trim(), req.lat.zip(req.lon), req.icon.as_deref());
     tracing::warn!(user = %req.username, brew = req.brew, telemetry = req.telemetry, control = req.control, "login changed from the dashboard");
     match save(&state).await {
         Ok(()) => Json(view(&state)).into_response(),
@@ -226,7 +242,7 @@ pub async fn remove(State(state): State<Arc<AppState>>, Path(name): Path<String>
     for u in [&l.brew, &l.telemetry, &l.control] {
         set(u, &name, false, "");
     }
-    set_location(&state, &name, "", None);
+    set_location(&state, &name, "", None, Some(""));
     tracing::warn!(user = %name, "login removed from the dashboard");
     match save(&state).await {
         Ok(()) => Json(view(&state)).into_response(),
@@ -240,7 +256,7 @@ mod tests {
     use std::collections::HashMap;
 
     fn req(name: &str, pw: &str, b: bool, t: bool, c: bool) -> AccountRequest {
-        AccountRequest { username: name.into(), password: pw.into(), brew: b, telemetry: t, control: c, info: String::new(), lat: None, lon: None }
+        AccountRequest { username: name.into(), password: pw.into(), brew: b, telemetry: t, control: c, info: String::new(), lat: None, lon: None, icon: None }
     }
 
     #[test]
@@ -283,7 +299,7 @@ mod tests {
         upsert(State(state.clone()), Json(req("1000005", "", true, true, false))).await;
         assert!(!state.logins.control.read().unwrap().contains_key("1000005"));
         assert_eq!(state.logins.brew.read().unwrap().get("1000005").map(String::as_str), Some("secret"));
-        assert_eq!(view(&state).accounts, vec![AccountView { username: "1000005".into(), brew: true, telemetry: true, control: false, info: None, lat: None, lon: None }]);
+        assert_eq!(view(&state).accounts, vec![AccountView { username: "1000005".into(), brew: true, telemetry: true, control: false, info: None, lat: None, lon: None, icon: None }]);
         // Info and position go to [bts_locations]; info alone keeps (0, 0).
         let mut r = req("1000005", "", true, true, false);
         r.info = "BS Hauptplatz OE4XYZ".into();
@@ -297,6 +313,33 @@ mod tests {
         let a = &view(&state).accounts[0];
         assert_eq!((a.lat, a.lon), (Some(47.5), Some(16.25)));
         assert_eq!(names(State(state.clone())).await.0.get("1000005").map(String::as_str), Some("BS Hauptplatz"));
+        // Map icon: set, kept when the request leaves it out, cleared with "tmo"; anything else is refused.
+        let mut r = req("1000005", "", true, true, false);
+        (r.info, r.lat, r.lon, r.icon) = ("BS Hauptplatz".into(), Some(47.5), Some(16.25), Some("tbs".into()));
+        upsert(State(state.clone()), Json(r)).await;
+        assert_eq!(view(&state).accounts[0].icon.as_deref(), Some("tbs"));
+        assert_eq!(state.config_snapshot().bts_locations["1000005"].icon.as_deref(), Some("tbs"), "saved with the config");
+        let mut r = req("1000005", "", true, true, false);
+        (r.info, r.lat, r.lon) = ("BS Hauptplatz".into(), Some(47.5), Some(16.25));
+        upsert(State(state.clone()), Json(r)).await;
+        assert_eq!(view(&state).accounts[0].icon.as_deref(), Some("tbs"), "kept");
+        let mut r = req("1000005", "", true, true, false);
+        (r.info, r.lat, r.lon, r.icon) = ("BS Hauptplatz".into(), Some(47.5), Some(16.25), Some("castle".into()));
+        assert_eq!(upsert(State(state.clone()), Json(r)).await.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(view(&state).accounts[0].icon.as_deref(), Some("tbs"), "unchanged");
+        let mut r = req("1000005", "", true, true, false);
+        (r.info, r.lat, r.lon, r.icon) = ("BS Hauptplatz".into(), Some(47.5), Some(16.25), Some("tmo".into()));
+        upsert(State(state.clone()), Json(r)).await;
+        assert_eq!(view(&state).accounts[0].icon, None, "tmo is the default");
+        let mut r = req("1000005", "", true, true, false);
+        (r.info, r.lat, r.lon, r.icon) = ("BS Hauptplatz".into(), Some(47.5), Some(16.25), Some("terminal".into()));
+        upsert(State(state.clone()), Json(r)).await;
+        assert_eq!(view(&state).accounts[0].icon.as_deref(), Some("terminal"));
+        // A tower with no info and no position still keeps its entry.
+        let mut r = req("1000005", "", true, true, false);
+        r.icon = Some("tbs".into());
+        upsert(State(state.clone()), Json(r)).await;
+        assert_eq!(state.config_snapshot().bts_locations["1000005"].icon.as_deref(), Some("tbs"));
         remove(State(state.clone()), Path("1000005".into())).await;
         assert!(view(&state).accounts.is_empty());
         assert!(state.config_snapshot().bts_locations.is_empty(), "location goes with the login");

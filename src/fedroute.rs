@@ -891,15 +891,19 @@ fn ms_sync(inner: &Inner, nbr_id: u64) -> Vec<Vec<u8>> {
 /// Stores a relayed position when it is newer than the one held for the ISSI
 /// and passes it on; ignored when it went through us, is from us, or is no
 /// real fix. `at_ms` ordering makes each server forward each fix at most once.
-fn accept_ms(inner: &mut Inner, source: ClientId, a: MsAdvert) {
-    let Some(&origin) = a.path.last() else { return };
-    if origin == inner.fed.self_id || a.path.contains(&inner.fed.self_id) { return; }
-    if !valid_position(a.lat, a.lon) { return; }
-    if inner.fed.ms_pos.get(&a.issi).is_some_and(|old| old.at_ms >= a.at_ms) { return; }
+/// Returns the accepted fix for the map's track.
+fn accept_ms(inner: &mut Inner, source: ClientId, a: MsAdvert) -> Option<(u32, crate::map_track::TrackFix)> {
+    let &origin = a.path.last()?;
+    if origin == inner.fed.self_id || a.path.contains(&inner.fed.self_id) { return None; }
+    if !valid_position(a.lat, a.lon) { return None; }
+    if inner.fed.ms_pos.get(&a.issi).is_some_and(|old| old.at_ms >= a.at_ms) { return None; }
+    let origin = format_server_id(origin);
+    let fix = crate::map_track::TrackFix { lat: a.lat, lon: a.lon, at_ms: a.at_ms, station: Some(format!("{origin}/{}", a.station)) };
     inner.fed.ms_pos.insert(a.issi, MsEntry {
         lat: a.lat, lon: a.lon, at_ms: a.at_ms, station: a.station.clone(), path: a.path.clone(),
     });
     relay_ms(inner, Some(source), &a);
+    Some((a.issi, fix))
 }
 
 /// Advertises a mobile station position this server decoded itself. Not for
@@ -1002,7 +1006,7 @@ pub async fn handle(state: &Arc<AppState>, source: ClientId, raw: &[u8]) {
                 None
             }
             FedMessage::MsPos(advert) => {
-                accept_ms(&mut inner, source, advert);
+                if let Some((issi, fix)) = accept_ms(&mut inner, source, advert) { crate::map_track::record(state, issi, fix); }
                 None
             }
             FedMessage::Bts(advert) => {

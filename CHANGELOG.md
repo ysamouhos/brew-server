@@ -2,6 +2,25 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.21.7 (Map rework) adds:
+
+- **New map markers (design set v2).** Stations show their type (TMO
+  station, tower TBS, terminal) and status (connected, Fleet Control warning
+  or alarm; grey and dashed when offline).
+- **Map symbol per login** on the Accounts page (`[bts_locations] icon`:
+  `tbs`, `terminal`). A login connected as Terminal is drawn as a terminal
+  by default.
+- **Radios without a recent position are docked next to their station**, in
+  rings at a fixed pixel distance (more than 22: "+N"), and undock when they
+  send a position. They dock again after `[map] dock_after_min` (default 30)
+  or when they register on another station.
+- **Track per radio**: the last `[map] track_points` positions (default 30)
+  are kept across a restart (`<storage>.positions`) and shown on a click.
+  Settings → Map also has *Guests see tracks* (`[map] guests_see_track`,
+  default on): off, visitors who are not signed in get no tracks.
+- **The first map view covers the stations** with a static position, also
+  before any radio sent one.
+
 Version 1.21.5 (Login type: Auto, Terminal or Bridge) adds:
 
 - **Type per login: Auto, Terminal or Bridge.** The login's dialog on the
