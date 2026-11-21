@@ -1042,6 +1042,8 @@ pub enum RouteEndpoint {
     SipTrunk { trunk: String, #[serde(default)] number: String },
     /// A Brew private (individual) subscriber identified by ISSI.
     BrewPrivate { issi: u32 },
+    /// A Brew private call whose ISSI is taken from the dialled digits.
+    BrewPrivateDialled,
     /// A Brew group call identified by GSSI.
     BrewGroup { gssi: u32 },
 }
