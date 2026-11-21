@@ -2,6 +2,25 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.21.8 (Parrot) adds:
+
+- **Parrot to test a radio** (Settings → Parrot, `[parrot]`, off by
+  default, applied live). An individual call to the parrot ISSI is answered
+  by the server: in a simplex call each over is played back to the caller
+  after the delay (set in milliseconds, `delay_ms`, default 1000); in a
+  duplex call everything comes back after the delay (an echo) and the call
+  ends after the maximum length. An over on the parrot group is played back
+  on the group as the parrot ISSI, so every radio in the group hears it. The
+  group has the same number as the ISSI unless *Separate GSSI* is set
+  (`separate_gssi`, `gssi`; 0 = no group). Overs are recorded for at most
+  `max_secs` (default 60). The floor stays with the parrot for `tail_ms`
+  (default 500) after the last played frame, so the station plays out its
+  buffer before the end. Saving adds the group to the allowed talkgroups
+  and names both numbers "Parrot" in the Directory (an existing name stays).
+  Works from every station, nothing new needed on the stations; only calls
+  from this server's own connections are answered. Details:
+  [docs/Parrot.md](docs/Parrot.md).
+
 Version 1.21.7 (Map rework) adds:
 
 - **New map markers (design set v2).** Stations show their type (TMO

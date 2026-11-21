@@ -872,6 +872,17 @@ fn build_circular_call(call_state: u8, id: &Uuid, source: u32, destination: u32,
     out
 }
 
+/// `CALL_CONNECT_REQUEST` from a called party the server plays itself (the
+/// parrot): `source` answers `destination`, simplex or duplex as the caller
+/// set the call up (`duplex` and `method` follow it).
+pub fn build_circular_connect_request_as(id: &Uuid, source: u32, destination: u32, priority: u8, duplex: bool) -> Vec<u8> {
+    let mut out = build_circular_call(CALL_CONNECT_REQUEST, id, source, destination, priority);
+    let at = 2 + 16 + 4 + 4 + 32 + 1 + 2;
+    out[at] = duplex as u8;
+    out[at + 1] = duplex as u8;
+    out
+}
+
 /// Builds a server-originated `CALL_GROUP_TX`, used to seize the group floor
 /// on behalf of a SIP caller bridged into a Brew group call.
 pub fn build_group_tx(id: &Uuid, source: u32, destination: u32, priority: u8) -> Vec<u8> {
