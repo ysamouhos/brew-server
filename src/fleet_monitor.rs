@@ -508,6 +508,13 @@ impl FleetMonitor {
         true
     }
 
+    /// An active alarm for another module's tests.
+    #[cfg(test)]
+    pub fn test_raise(&mut self, station: &str, kind: &str, severity: Severity) {
+        let st = StationInfo { id: station.into(), label: station.into(), online: true, last_seen_ms: 0, updating: false };
+        self.raise(&st, kind, None, severity, kind.into(), 1);
+    }
+
     fn clear(&mut self, station: &str, kind: &str, cell: Option<u8>, text: &str, now_ms: u64) -> bool {
         let mut changed = false;
         for a in self.data.alarms.iter_mut().filter(|a| a.active() && a.station == station && a.kind == kind && a.cell == cell) {

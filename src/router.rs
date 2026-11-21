@@ -449,6 +449,7 @@ async fn handle_sds_header(state: &Arc<AppState>, source: ClientId, id: uuid::Uu
         state.telemetry.write().await.record_sds_position(source_issi, lat, lon, now, note);
         advertise_if_local(state, source, source_issi, lat, lon, now).await;
         crate::aprs::report_position(state, source_issi, lat, lon);
+        crate::map_track::record_local(state, source_issi, lat, lon, now).await;
         info!(uuid=%id, source_issi, lat, lon, "decoded MS position from SDS header");
     }
     let mut inner = state.inner.write().await;
@@ -626,6 +627,7 @@ async fn handle_sds_transfer(state: &Arc<AppState>, source: ClientId, id: uuid::
         state.telemetry.write().await.record_sds_position(source_issi, lat, lon, now, note);
         advertise_if_local(state, source, source_issi, lat, lon, now).await;
         crate::aprs::report_position(state, source_issi, lat, lon);
+        crate::map_track::record_local(state, source_issi, lat, lon, now).await;
         info!(uuid=%id, source_issi, lat, lon, "decoded MS position from SDS");
     }
 }

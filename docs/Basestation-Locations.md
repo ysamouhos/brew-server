@@ -1,8 +1,8 @@
 # Basestation Locations
 
-The `/map` page plots every Basestation as a radio-mast marker (blue when
-connected, grey when offline) next to the mobile terminals (orange handheld
-radio). A Basestation's position comes from, in order of precedence:
+The `/map` page plots every Basestation next to the mobile terminals (see
+[Map markers](#map-markers) and [Radios on the map](#radios-on-the-map)). A
+Basestation's position comes from, in order of precedence:
 
 1. **The Basestation itself**, over telemetry (recommended).
 2. **Another brew-server**, relayed over federation.
@@ -71,9 +71,57 @@ lat = 37.9917
 lon = 23.7640
 ```
 
-Also editable under Settings and on the dashboard's Accounts page (info and
-position per login). A `0` / `0` entry is treated as not configured
-and is not plotted.
+Also editable under Settings and on the dashboard's Accounts page (info,
+position and map symbol per login). A `0` / `0` entry is treated as not
+configured and is not plotted.
+
+`icon` picks the map symbol of the login (Accounts page, *Map symbol*):
+
+| `icon` | Marker |
+| --- | --- |
+| unset or `"tmo"` | TMO station (blue mast) |
+| `"tbs"` | Tower, TBS (slate) |
+| `"terminal"` | Terminal (purple headset): app or console |
+
+```toml
+[bts_locations."1000006"]
+name = "Tower Kahlenberg"
+lat = 48.2766
+lon = 16.3335
+icon = "tbs"
+```
+
+A login connected in Terminal mode is drawn as a terminal unless another
+symbol is set.
+
+## Map markers
+
+Markers follow the map design set v2: the colour and glyph give the type, a
+small badge adds the status.
+
+- **Status, top left** (stations): green check = connected, orange triangle =
+  active Fleet Control warning, red cross = active Fleet Control alarm (only for
+  dashboard users who see Fleet Control). Offline: the whole marker grey with a
+  dashed ring. Terminals get no status badge.
+
+## Radios on the map
+
+- A radio with a recent position is drawn at it. A radio without one (no
+  position, one older than `dock_after_min`, or one sent before it registered
+  on another station) is drawn **docked** next to the station it is registered
+  on: at a fixed pixel distance in rings around the station (8, then 14, then a
+  "+N" bubble), so it stays beside it at every zoom and never covers it.
+- Clicking a radio shows its last positions as a track; clicking the map hides
+  it. The positions survive a restart (`<storage>.positions`, part of the
+  backup).
+- Settings → Map (admins), or in the config:
+
+```toml
+[map]
+track_points = 30     # positions kept per radio, 0..500 (0 = none)
+dock_after_min = 30   # dock again after this many minutes without a position, 0..10080 (0 = never)
+guests_see_track = true  # off: visitors who are not signed in see only the current positions
+```
 
 ## Troubleshooting: positions not relayed
 

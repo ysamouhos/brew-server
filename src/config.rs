@@ -82,6 +82,9 @@ pub struct Config {
     /// `[callsign_db]`: names for radios from a ham radio ID list (radioid.net
     /// `dmrid.dat`). Directory names always come first. See `callsign_db`.
     pub callsign_db: CallsignDbConfig,
+    /// `[map]`: positions kept per radio and when a radio without a fresh
+    /// position docks next to its station again. Edited live (no restart).
+    pub map: MapConfig,
     /// `[multi_network]`: other Brew networks this server connects to itself
     /// and bridges talkgroups with (see `netlink`). Edited live from the
     /// dashboard (no restart).
@@ -119,6 +122,35 @@ pub struct TalkgroupsConfig {
     pub allowed: Vec<u32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hidden: Vec<u32>,
+}
+
+/// `[map]`. `track_points`: the last positions kept per radio (0 to 500,
+/// default 30), shown as a track when the radio is clicked; they survive a
+/// restart (`<storage>.positions`). `dock_after_min`: a radio whose last
+/// position is older than this is drawn next to the station it is registered
+/// on again (0 = only when it registers on another station; default 30).
+/// `guests_see_track`: visitors who are not signed in (Viewer) get the tracks
+/// too (default true); off, they see only the current positions.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct MapConfig {
+    pub track_points: u32,
+    pub dock_after_min: u32,
+    pub guests_see_track: bool,
+}
+
+impl Default for MapConfig {
+    fn default() -> Self { Self { track_points: 30, dock_after_min: 30, guests_see_track: true } }
+}
+
+impl MapConfig {
+    pub const MAX_TRACK_POINTS: u32 = 500;
+    pub const MAX_DOCK_AFTER_MIN: u32 = 7 * 24 * 60;
+    pub fn validate(&self) -> Result<(), String> {
+        if self.track_points > Self::MAX_TRACK_POINTS { return Err(format!("positions per radio: 0 to {}", Self::MAX_TRACK_POINTS)); }
+        if self.dock_after_min > Self::MAX_DOCK_AFTER_MIN { return Err(format!("dock after: 0 to {} minutes", Self::MAX_DOCK_AFTER_MIN)); }
+        Ok(())
+    }
 }
 
 /// `[callsign_db]`. Off by default. `url` is a list of `ID;CALLSIGN;...`
@@ -613,11 +645,16 @@ pub struct BtsLocationConfig {
     pub name: String,
     pub lat: f64,
     pub lon: f64,
+    /// Map marker: `"tbs"` draws the login as a tower (TBS), `"terminal"` as a terminal
+    /// (app, console), unset as a TMO station (a login connected in Terminal
+    /// mode is drawn as a terminal then).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 impl Default for BtsLocationConfig {
     fn default() -> Self {
-        Self { name: String::new(), lat: 0.0, lon: 0.0 }
+        Self { name: String::new(), lat: 0.0, lon: 0.0, icon: None }
     }
 }
 
@@ -1225,6 +1262,7 @@ impl Default for Config {
             group_access: std::collections::BTreeMap::new(),
             talkgroups: TalkgroupsConfig::default(),
             callsign_db: CallsignDbConfig::default(),
+            map: MapConfig::default(),
             multi_network: MultiNetworkConfig::default(),
         }
     }
@@ -1374,6 +1412,7 @@ mod tests {
             name: "Athens BTS".into(),
             lat: 37.9917,
             lon: 23.7640,
+            icon: None,
         });
         cfg.dashboard.users.insert("alice".into(), "secret".into());
         cfg.dashboard.users.insert("bob".into(), "secret2".into());
