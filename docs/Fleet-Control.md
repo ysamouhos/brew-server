@@ -49,8 +49,12 @@ enabled = true` (no extra setting):
   then opens a dialog for the control channel).
 
 ```
-X-Brew-Extensions: fleet-control
+X-Brew-Extensions: fleet-control, dgna-report
 ```
+
+`dgna-report` (DGNA groups reported by the station over the control
+channel) is not part of Fleet Control and does not need its switch; see
+`docs/Routing.md`, "Groups assigned by DGNA".
 
 Same header syntax as the Brew extensions (`docs/Brew-Extensions.md` section
 3.1): comma separated, trimmed, unknown names ignored.

@@ -38,6 +38,47 @@ or "rejected 2329" with the station's reason).
 DGNA reaches radios only. App and console terminals are listed but cannot be
 selected.
 
+## Groups assigned by DGNA
+
+The card **Assigned by DGNA** lists every group given to a radio by DGNA, so
+it can be taken back later: ISSI, group (with the name the radio shows),
+the station that reported it, where it was given (**Server** with the
+dashboard user, or **Station** for the station's own dashboard) and when.
+The list is kept across a restart of the server (`<storage path>.dgna`, JSON;
+in memory only with `[storage] enabled = false`).
+
+- **Remove** sends the DGNA remove to the station the radio is registered
+  on now (as *Remove* in the card above). The entry goes away when the
+  station reports the remove.
+- **Forget** drops the entry here only; nothing goes to the radio. For a
+  radio that no longer has the group (reprogrammed, gone).
+
+Stations report the assignments over their control channel (FlowStation
+`[command]`, v0.5.19 or newer); no telemetry is needed for this list. Older
+stations send nothing, their DGNA shows only in the card above.
+
+The server offers `dgna-report` in `X-Brew-Extensions` of the control
+channel (and of the Brew connection, for the station's Server features
+list) whenever `[control] enabled = true`. A station that sees it sends,
+over the control channel (same JSON as the other control messages):
+
+- `{"DgnaChanged": {"issi": 2001, "gssi": 91, "mnemonic": "Ops", "attachment_mode": 0, "assigned": true}}`
+  for every assign or remove that goes into the station's DGNA registry,
+  from this server or from the station's dashboard (`mnemonic` null and
+  `attachment_mode` 0 for a remove), and
+- `{"DgnaGroups": {"groups": [{"issi": 2001, "gssi": 91, "mnemonic": "Ops", "attachment_mode": 0}]}}`
+  once after each connect: every group the station remembers. The server
+  only adds from it (a station forgets radios over its own restart), it
+  never removes.
+
+A report counts as coming from this server when this server sent the same
+DGNA to that radio in the two minutes before. A remove reported by any
+station takes the entry away. Nothing changes on the air interface.
+
+HTTP API: `GET /api/dgna/assignments` (page DGNA & Radio actions),
+`POST /api/dgna/forget` `{"issi": 2001, "gssi": 91}` (right DGNA & Radio
+actions: send).
+
 ## Radio actions
 
 Pick the station, then: **Kick radio** (takes the ISSI off the station),

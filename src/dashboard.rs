@@ -169,6 +169,8 @@ fn app(state: Arc<AppState>) -> Router {
         // Control): the handlers check the right per command.
         .route("/api/control/{id}", axum::routing::post(control_command))
         .route("/api/dgna", axum::routing::post(crate::routing_api::dgna))
+        .route("/api/dgna/assignments", get(crate::dgna_registry::assignments))
+        .route("/api/dgna/forget", axum::routing::post(crate::dgna_registry::forget))
         .route("/api/fleet", get(crate::fleet::api_list))
         .route("/api/fleet/remove", axum::routing::post(crate::fleet::api_remove))
         .route("/api/fleet/ping", axum::routing::post(crate::fleet::api_ping))
@@ -320,7 +322,8 @@ fn need(path: &str) -> Need {
         "/telemetry-sds" => &["tsds"],
         "/api/radios" => &["overview", "radios", "routing", "issis", "roaming", "radioctl"],
         "/api/control" => &["radioctl", "fleet"],
-        "/api/dgna" => &["radioctl_manage"],
+        "/api/dgna" | "/api/dgna/forget" => &["radioctl_manage"],
+        "/api/dgna/assignments" => &["radioctl"],
         "/api/rssi" | "/api/ms-cells" => &["overview", "stations", "radios", "roaming", "map"],
         "/api/registrations" | "/registrations" => &["radios"],
         "/api/positions" | "/api/bts-locations" | "/api/map" | "/api/map/track" | "/map" => &["map", "stations", "overview"],
@@ -351,7 +354,7 @@ fn allowed(a: &crate::dash_users::Access, needed: Need) -> bool {
 const POLLED: &[&str] = &[
     "/api/status", "/api/connections", "/api/telemetry", "/api/radios", "/api/rssi", "/api/ms-cells", "/api/registrations",
     "/api/positions", "/api/bts-locations", "/api/group-access", "/api/accounts", "/api/sip", "/api/sip/config", "/api/sms-center",
-    "/api/control", "/api/networks", "/api/fleet",
+    "/api/control", "/api/networks", "/api/fleet", "/api/dgna/assignments",
 ];
 
 /// A page the request may not see: the login dialog for a classic page
@@ -621,7 +624,8 @@ let names={{}},track=null,sel=null,lastMap=null;
 const ago=ms=>{{const s=Math.max(0,Math.round((Date.now()-ms)/1000));return s<90?s+' s':s<5400?Math.round(s/60)+' min':Math.round(s/3600)+' h';}};
 const slot=i=>{{const r=i<8?40:68,n=i<8?8:14,k=i<8?i:i-8,a=-Math.PI/2+(2*Math.PI*k/n)+(i<8?Math.PI/8:0);return[Math.round(r*Math.cos(a)),Math.round(r*Math.sin(a))];}};
 const nm=i=>names[i]?' ('+String(names[i]).replace(/[<>&"]/g,'')+')':'';
-function msMarkerIcon(r,px,dx,dy,faded){{return v2icon('ms',{{px,emg:r.emergency,faded,sel:sel===r.issi}},dx,dy);}}
+// A number registered over a Terminal connection (app, console) gets the terminal marker.
+function msMarkerIcon(r,px,dx,dy,faded){{return v2icon(r.terminal?'term':'ms',{{px,emg:r.emergency,faded,sel:sel===r.issi}},dx,dy);}}
 function clearTrack(){{if(track){{map.removeLayer(track);track=null;}}}}
 async function showTrack(issi){{
   clearTrack();sel=issi;drawRadios();
@@ -640,7 +644,7 @@ function drawRadios(){{
     else{{markers[key]=L.marker(ll,{{icon,zIndexOffset:z}}).addTo(map).bindPopup(html).on('click',()=>showTrack(issi));}}}};
   d.radios.forEach(r=>{{
     const f=r.fix,st=r.dock&&btsMarkers[r.dock];
-    const html=`${{r.emergency?'<div class=emg-pop>&#128680; EMERGENCY</div>':''}}<b>ISSI ${{r.issi}}${{nm(r.issi)}}</b>${{st?'<br>On station: '+esc(st._name||r.dock):''}}${{f?`<br>Position ${{f.lat.toFixed(5)}}, ${{f.lon.toFixed(5)}} (${{ago(f.at_ms)}} ago)<br>${{new Date(f.at_ms).toLocaleString()}}<br><span style="color:#555">${{esc(f.source_text||'')}}</span>`:'<br>No position'}}${{r.points>1?`<br><span style="color:#555">${{r.points}} positions, click shows the track</span>`:''}}`;
+    const html=`${{r.emergency?'<div class=emg-pop>&#128680; EMERGENCY</div>':''}}<b>ISSI ${{r.issi}}${{nm(r.issi)}}</b>${{r.terminal?' (Terminal)':''}}${{st?'<br>On station: '+esc(st._name||r.dock):''}}${{f?`<br>Position ${{f.lat.toFixed(5)}}, ${{f.lon.toFixed(5)}} (${{ago(f.at_ms)}} ago)<br>${{new Date(f.at_ms).toLocaleString()}}<br><span style="color:#555">${{esc(f.source_text||'')}}</span>`:'<br>No position'}}${{r.points>1?`<br><span style="color:#555">${{r.points}} positions, click shows the track</span>`:''}}`;
     const z=r.emergency?10000:sel===r.issi?900:0;
     if(r.docked&&st){{(docked[r.dock]=docked[r.dock]||[]).push([r,html,z]);}}
     else if(f){{put('r'+r.issi,[f.lat,f.lon],msMarkerIcon(r,44,0,0,fresh>0&&now-f.at_ms>fresh/2),z,html,r.issi);}}
@@ -2827,6 +2831,8 @@ mod tests {
     fn radio_action_routes_need_their_rights() {
         assert_eq!(need("/api/control"), Need::Pages(&["radioctl", "fleet"]), "station list: not open to everyone any more");
         assert_eq!(need("/api/dgna"), Need::Pages(&["radioctl_manage"]));
+        assert_eq!(need("/api/dgna/forget"), Need::Pages(&["radioctl_manage"]), "forgetting a DGNA entry needs the send right");
+        assert_eq!(need("/api/dgna/assignments"), Need::Pages(&["radioctl"]));
         assert_eq!(need("/api/control/bs1"), Need::Pages(&["radioctl_manage", "fleet_manage"]));
         assert!(match need("/api/radios") { Need::Pages(p) => p.contains(&"radioctl"), _ => false }, "the DGNA list of radios");
         let user = |pages: &[&str]| crate::dash_users::Access { user: Some("bob".into()), admin: false, pages: pages.iter().map(|p| p.to_string()).collect(), auth: true };

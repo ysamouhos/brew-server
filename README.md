@@ -31,8 +31,9 @@ servername = "Tetra Network Monitor"
 
 The dashboard (port 9003) has a sidebar layout that follows the system's light
 or dark mode (or a fixed one, from the account menu). Its **DGNA & Radio actions** page
-sends DGNA to several radios at once (and kick, emergency clear, live SDS,
-ambience listening to one radio), and **Routing** manages talkgroup pools,
+sends DGNA to several radios at once and remembers the groups given by DGNA
+(also on a station's own dashboard) so they can be taken back (and kick,
+emergency clear, live SDS, ambience listening to one radio), and **Routing** manages talkgroup pools,
 which connect talkgroups inside the server without a restart
 ([docs/Routing.md](docs/Routing.md)). **Telemetry** shows each station's
 state, with graphs, latest values and alarms for Fleet Control stations. **Accounts** adds the logins of

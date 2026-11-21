@@ -290,11 +290,13 @@ async fn brew_session_endpoint(
 
 /// `X-Brew-Extensions` for a Basestation: `mni` only while Multi Network is on;
 /// `fleet-control` while the control channel is on (Fleet Control runs over it,
-/// and the station shows its switch even before its channel is set up).
+/// and the station shows its switch even before its channel is set up), and
+/// `dgna-report` with it (the reports come over the control channel; listed
+/// here so the station shows it under Server features).
 fn brew_offer(mni_on: bool, control_on: bool) -> String {
     let mut offer = crate::carriers::EXTENSIONS.to_owned();
     if mni_on { offer = format!("{offer}, {}", crate::visitors::CAPABILITY); }
-    if control_on { offer = format!("{offer}, {}", crate::fleet::CAPABILITY); }
+    if control_on { offer = format!("{offer}, {}, {}", crate::fleet::CAPABILITY, crate::dgna_registry::CAPABILITY); }
     offer
 }
 
@@ -302,8 +304,9 @@ fn brew_offer(mni_on: bool, control_on: bool) -> String {
 #[test]
 fn fleet_control_offered_only_with_the_control_channel() {
     assert!(!brew_offer(false, false).contains("fleet-control"));
-    assert!(brew_offer(false, true).ends_with(", fleet-control"));
+    assert!(brew_offer(false, true).ends_with(", fleet-control, dgna-report"));
     assert!(brew_offer(true, true).contains(", mni, fleet-control"));
+    assert!(!brew_offer(true, false).contains("dgna-report"));
 }
 
 async fn upgrade_from_parts(state: Arc<AppState>, parts: &mut axum::http::request::Parts, mode: ClientMode, seed_version: Option<ConnVersion>, remote_addr: SocketAddr, username: Option<String>) -> Response {

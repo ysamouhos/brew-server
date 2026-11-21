@@ -154,6 +154,22 @@ pub async fn dock_stations(state: &AppState) -> HashMap<u32, String> {
     out
 }
 
+/// The ISSIs registered here as terminals: over a Terminal connection, unless
+/// the login or the number is set to "bridge" in `[issi_kinds]` (a bridge logs
+/// in as Terminal for the radios behind it), or a number set to "terminal".
+pub async fn terminal_issis(state: &AppState) -> std::collections::HashSet<u32> {
+    let kinds = state.issi_kinds.read().map(|k| k.clone()).unwrap_or_default();
+    let kind = |n: &str| kinds.get(n).map(String::as_str);
+    let inner = state.inner.read().await;
+    inner.subscribers.iter().filter(|(_, s)| s.route.path.is_empty()).filter_map(|(&issi, s)| {
+        let own = kind(&issi.to_string());
+        if own == Some("terminal") { return Some(issi); }
+        if own == Some("bridge") || s.mode != ClientMode::Terminal { return None; }
+        let login = inner.clients.get(&s.client_id).and_then(|c| c.username.as_deref());
+        (login.and_then(kind) != Some("bridge")).then_some(issi)
+    }).collect()
+}
+
 /// Notes a position this server decoded for `issi` (Brew SDS, a station's
 /// telemetry), with the station the radio is on now.
 pub async fn record_local(state: &Arc<AppState>, issi: u32, lat: f64, lon: f64, at_ms: u64) {
@@ -188,6 +204,9 @@ pub struct RadioOut {
     /// Positions in the track.
     pub points: usize,
     pub emergency: bool,
+    /// Registered here over a Terminal connection (app, console), drawn with
+    /// the terminal marker instead of the radio.
+    pub terminal: bool,
 }
 
 #[derive(Serialize)]
@@ -205,6 +224,7 @@ pub async fn api_snapshot(axum::extract::State(state): axum::extract::State<Arc<
     let fixes = crate::dashboard::collect_positions(&state).await;
     let docks = dock_stations(&state).await;
     let emergencies: std::collections::HashSet<u32> = crate::emergency::snapshot(&state).await.iter().map(|e| e.issi).collect();
+    let terminals = terminal_issis(&state).await;
     let mut by_issi: BTreeMap<u32, Option<crate::telemetry::PositionFix>> = docks.keys().map(|i| (*i, None)).collect();
     for f in fixes { by_issi.insert(f.issi, Some(f)); }
     let t = state.tracks.lock().unwrap_or_else(|e| e.into_inner());
@@ -215,6 +235,7 @@ pub async fn api_snapshot(axum::extract::State(state): axum::extract::State<Arc<
         RadioOut {
             issi, docked: docked(dock.as_deref(), fix.as_ref(), fix_station.as_deref(), settings.dock_after_min, now),
             dock, points: if hide { 0 } else { t.len(issi) }, emergency: emergencies.contains(&issi), fix,
+            terminal: terminals.contains(&issi),
         }
     }).collect();
     axum::Json(MapSnapshot { settings, now_ms: now, radios })
@@ -389,6 +410,31 @@ mod tests {
         let radio = r.radios.iter().find(|r| r.issi == 2320972).unwrap();
         assert!(!radio.docked && radio.fix.is_some() && radio.points == 1);
         assert_eq!(state.tracks.lock().unwrap().newest(2320972).unwrap().station.as_deref(), Some("1000001"));
+    }
+
+    #[tokio::test]
+    async fn numbers_on_a_terminal_connection_get_the_terminal_marker() {
+        use crate::{protocol::ConnVersion, state::Client};
+        let state = AppState::for_test();
+        let mut inner = state.inner.write().await;
+        let mut login = |mode: ClientMode, user: &str| {
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            let id = uuid::Uuid::new_v4();
+            inner.clients.insert(id, Client { tx, mode, version: ConnVersion::V0, version_announced: false, remote_addr: None, connected_at_ms: 0, username: Some(user.into()) });
+            id
+        };
+        let (bs, app, bridge) = (login(ClientMode::Basestation, "1000001"), login(ClientMode::Terminal, "2320100"), login(ClientMode::Terminal, "9100232"));
+        for (issi, id, mode) in [(2320972, bs, ClientMode::Basestation), (2320100, app, ClientMode::Terminal), (2320500, bridge, ClientMode::Terminal), (2320973, bs, ClientMode::Basestation)] {
+            inner.subscribers.insert(issi, crate::state::Subscriber { client_id: id, groups: Default::default(), mode, route: Default::default() });
+        }
+        drop(inner);
+        state.issi_kinds.write().unwrap().insert("9100232".into(), "bridge".into());
+        state.issi_kinds.write().unwrap().insert("2320973".into(), "terminal".into());
+        let t = terminal_issis(&state).await;
+        assert!(t.contains(&2320100), "app on a Terminal connection");
+        assert!(!t.contains(&2320972), "radio on a station");
+        assert!(!t.contains(&2320500), "radio behind a bridge login");
+        assert!(t.contains(&2320973), "number set to terminal");
     }
 
     #[tokio::test]

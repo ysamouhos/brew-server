@@ -234,6 +234,23 @@ pub enum ControlResponse {
         #[serde(default)]
         health: String,
     },
+    /// `dgna-report`: a DGNA assign (`assigned`) or deassign on the station,
+    /// from this server or from the station's own dashboard.
+    DgnaChanged {
+        issi: u32,
+        gssi: u32,
+        #[serde(default)]
+        mnemonic: Option<String>,
+        #[serde(default)]
+        attachment_mode: u8,
+        assigned: bool,
+    },
+    /// `dgna-report`: the DGNA groups the station knows, right after the
+    /// channel connects.
+    DgnaGroups {
+        #[serde(default)]
+        groups: Vec<crate::dgna_registry::DgnaEntry>,
+    },
     /// Fleet Control (`update-v1`): progress of an OTA run on the station.
     UpdateProgress {
         stage: String,
@@ -357,6 +374,9 @@ pub async fn send_command(state: &Arc<AppState>, bts_id: &str, mut command: Cont
     }
 }
 
+/// `X-Brew-Extensions` of the control channel.
+pub const CONTROL_EXTENSIONS: &str = "fleet-control, dgna-report";
+
 pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
     if !state.config.control.enabled {
         return Ok(());
@@ -367,8 +387,8 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         subprotocol: "bluestation-control-v1",
         users: state.logins.control.clone(),
         tls: state.config.control.tls.clone(),
-        // Fleet Control is offered whenever the control channel runs.
-        extensions: Some(crate::fleet::CAPABILITY),
+        // Fleet Control and the DGNA reports are offered whenever the control channel runs.
+        extensions: Some(CONTROL_EXTENSIONS),
     };
     fsnet::serve(cfg, move |socket, identity, _peer| {
         let state = state.clone();
@@ -457,6 +477,20 @@ async fn handle_response(state: &Arc<AppState>, id: &str, data: &[u8]) {
         }
         return;
     }
+    match &response {
+        ControlResponse::DgnaChanged { issi, gssi, mnemonic, attachment_mode, assigned } => {
+            info!(bts = %id, issi, gssi, assigned, "DGNA reported by the station");
+            let entry = crate::dgna_registry::DgnaEntry { issi: *issi, gssi: *gssi, mnemonic: mnemonic.clone(), attachment_mode: *attachment_mode };
+            if let Ok(mut d) = state.dgna.lock() { d.changed(id, &entry, *assigned, crate::fleet::now_ms()); }
+            return;
+        }
+        ControlResponse::DgnaGroups { groups } => {
+            let added = state.dgna.lock().map(|mut d| d.snapshot(id, groups, crate::fleet::now_ms())).unwrap_or(false);
+            info!(bts = %id, groups = groups.len(), added, "DGNA groups known to the station");
+            return;
+        }
+        _ => {}
+    }
     if let ControlResponse::UpdateProgress { stage, percent, message, version, .. } = &response {
         let names = station_names(state);
         state.fleet.lock().unwrap_or_else(|e| e.into_inner()).progress(id, stage, *percent, message, version, crate::fleet::now_ms(), &|k| names.get(k).cloned());
@@ -477,7 +511,8 @@ async fn handle_response(state: &Arc<AppState>, id: &str, data: &[u8]) {
         | ControlResponse::ConfigInfo { handle, .. } => {
             if let Some(tx) = session.pending_handle.remove(handle) { let _ = tx.send(response); }
         }
-        ControlResponse::StationHello { .. } | ControlResponse::UpdateProgress { .. } | ControlResponse::FleetMetrics { .. } => {}
+        ControlResponse::StationHello { .. } | ControlResponse::UpdateProgress { .. } | ControlResponse::FleetMetrics { .. }
+        | ControlResponse::DgnaChanged { .. } | ControlResponse::DgnaGroups { .. } => {}
     }
 }
 
@@ -715,4 +750,26 @@ mod tests {
         );
     }
 
+
+    #[tokio::test]
+    async fn dgna_reports_fill_the_register() {
+        // Same JSON as FlowStation's net_control::dgna_report tests.
+        let state = test_state();
+        state.dgna.lock().unwrap().sent(2001, 91, true, Some("anna".into()), crate::fleet::now_ms());
+        handle_response(&state, "1000001", br#"{"DgnaChanged":{"issi":2001,"gssi":91,"mnemonic":"Ops","attachment_mode":0,"assigned":true}}"#).await;
+        handle_response(&state, "1000002", br#"{"DgnaGroups":{"groups":[{"issi":2002,"gssi":95,"mnemonic":null,"attachment_mode":1},{"issi":2001,"gssi":91,"mnemonic":null,"attachment_mode":0}]}}"#).await;
+        let list = state.dgna.lock().unwrap().list();
+        assert_eq!(list.len(), 2);
+        assert_eq!((list[0].issi, list[0].station.as_str(), list[0].source, list[0].by.as_deref(), list[0].name.as_deref()),
+            (2001, "1000001", crate::dgna_registry::Source::Server, Some("anna"), Some("Ops")), "the snapshot leaves a known entry alone");
+        assert_eq!((list[1].issi, list[1].gssi, list[1].station.as_str(), list[1].source), (2002, 95, "1000002", crate::dgna_registry::Source::Station));
+        handle_response(&state, "1000002", br#"{"DgnaChanged":{"issi":2001,"gssi":91,"mnemonic":null,"attachment_mode":0,"assigned":false}}"#).await;
+        assert_eq!(state.dgna.lock().unwrap().list().len(), 1, "a remove on any station takes it away");
+    }
+
+    #[test]
+    fn control_channel_offers_dgna_reports() {
+        assert!(CONTROL_EXTENSIONS.split(',').map(str::trim).any(|e| e == crate::dgna_registry::CAPABILITY));
+        assert!(CONTROL_EXTENSIONS.split(',').map(str::trim).any(|e| e == crate::fleet::CAPABILITY));
+    }
 }

@@ -96,7 +96,8 @@ fn control_station_for(issi: u32, last_registration: &std::collections::HashMap<
 /// at once, each through the station it is registered on. The radios' answers
 /// come in over telemetry and show on `/api/radios`.
 pub async fn dgna(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap, Json(req): Json<DgnaRequest>) -> Response {
-    if !crate::dashboard::access(&state, &headers).manages_radios() {
+    let access = crate::dashboard::access(&state, &headers);
+    if !access.manages_radios() {
         return (StatusCode::FORBIDDEN, "This needs the right DGNA & Radio actions: send").into_response();
     }
     if req.gssi == 0 || req.gssi > 0xFF_FFFF {
@@ -120,6 +121,7 @@ pub async fn dgna(State(state): State<Arc<AppState>>, headers: axum::http::Heade
             results.push(DgnaResult { issi, station: None, sent: false, error: Some("no control connection to the radio's station".into()) });
             continue;
         };
+        if let Ok(mut d) = state.dgna.lock() { d.sent(issi, req.gssi, req.assign, access.user.clone(), crate::fleet::now_ms()); }
         let cmd = ControlCommand::Dgna { issi, gssi: req.gssi, mnemonic: name.clone(), attachment_mode: req.attachment_mode, attach: req.assign };
         let r = control::send_command(&state, &station, cmd).await;
         let error = match r {

@@ -396,6 +396,8 @@ pub struct AppState {
     pub tracks: std::sync::Mutex<crate::map_track::Tracks>,
     /// `[parrot]` and its recordings (see `parrot`).
     pub parrot: crate::parrot::Parrot,
+    /// Groups given to radios by DGNA, kept across a restart (`dgna_registry`).
+    pub dgna: std::sync::Mutex<crate::dgna_registry::DgnaRegistry>,
     pub callsign_db: crate::callsign_db::Db,
     /// Groups managed talkgroups refused since the start, with the ISSIs that
     /// tried (in memory only, for the Routing page).
@@ -668,6 +670,7 @@ impl AppState {
         let map_cfg = config.map;
         let tracks = crate::map_track::Tracks::load((config.storage.enabled && !cfg!(test)).then_some(config.storage.path.as_path()), map_cfg.track_points as usize);
         let parrot = crate::parrot::Parrot::new(config.parrot);
+        let dgna = crate::dgna_registry::DgnaRegistry::load((config.storage.enabled && !cfg!(test)).then_some(config.storage.path.as_path()));
         let fleet_monitor = crate::fleet_monitor::FleetMonitor::load((config.storage.enabled && !cfg!(test)).then_some(config.storage.path.as_path()), crate::fleet::now_ms());
         let ha = crate::ha::HaHandle::new(&config.ha, config_hash, crate::ha::config_sections(&config, false));
         (
@@ -701,6 +704,7 @@ impl AppState {
                 map_cfg: std::sync::RwLock::new(map_cfg),
                 tracks: std::sync::Mutex::new(tracks),
                 parrot,
+                dgna: std::sync::Mutex::new(dgna),
                 callsign_db,
                 refused_groups: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 allowlist: std::sync::RwLock::new(allowlist),
