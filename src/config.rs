@@ -85,6 +85,10 @@ pub struct Config {
     /// `[map]`: positions kept per radio and when a radio without a fresh
     /// position docks next to its station again. Edited live (no restart).
     pub map: MapConfig,
+    /// `[parrot]`: a number radios call to hear themselves back (see
+    /// `parrot`). Edited live on the Server settings page (no restart).
+    #[serde(skip_serializing_if = "ParrotConfig::is_unset")]
+    pub parrot: ParrotConfig,
     /// `[multi_network]`: other Brew networks this server connects to itself
     /// and bridges talkgroups with (see `netlink`). Edited live from the
     /// dashboard (no restart).
@@ -149,6 +153,52 @@ impl MapConfig {
     pub fn validate(&self) -> Result<(), String> {
         if self.track_points > Self::MAX_TRACK_POINTS { return Err(format!("positions per radio: 0 to {}", Self::MAX_TRACK_POINTS)); }
         if self.dock_after_min > Self::MAX_DOCK_AFTER_MIN { return Err(format!("dock after: 0 to {} minutes", Self::MAX_DOCK_AFTER_MIN)); }
+        Ok(())
+    }
+}
+
+/// `[parrot]`. Off by default. `issi`: the number a radio calls in an
+/// individual call to hear itself back. The same number is the parrot's
+/// group unless `separate_gssi` is set; then `gssi` is the group (0 = no
+/// group). `delay_ms`: how long the parrot waits after the over before it
+/// plays it back (0 to 60000 ms, default 1000). `max_secs`: the longest over
+/// it records (1 to 600 s, default 60); a duplex call is ended after it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ParrotConfig {
+    pub enabled: bool,
+    pub issi: u32,
+    pub separate_gssi: bool,
+    pub gssi: u32,
+    pub delay_ms: u32,
+    pub max_secs: u32,
+}
+
+impl Default for ParrotConfig {
+    fn default() -> Self { Self { enabled: false, issi: 0, separate_gssi: false, gssi: 0, delay_ms: 1000, max_secs: 60 } }
+}
+
+impl ParrotConfig {
+    pub const MAX_DELAY_MS: u32 = 60_000;
+    pub const MAX_SECS: u32 = 600;
+    pub fn is_unset(&self) -> bool { *self == Self::default() }
+    /// The parrot's individual number, `None` while it is off.
+    pub fn active_issi(&self) -> Option<u32> {
+        (self.enabled && self.issi != 0).then_some(self.issi)
+    }
+    /// The parrot's group, `None` while it is off or has no group.
+    pub fn active_gssi(&self) -> Option<u32> {
+        if !self.enabled { return None; }
+        let g = if self.separate_gssi { self.gssi } else { self.issi };
+        (g != 0).then_some(g)
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        let ssi = |v: u32| (1..=0xFF_FFFF).contains(&v);
+        if self.enabled && !ssi(self.issi) { return Err("ISSI: 1 to 16777215".into()); }
+        if self.issi != 0 && !ssi(self.issi) { return Err("ISSI: 1 to 16777215".into()); }
+        if self.separate_gssi && self.gssi != 0 && !ssi(self.gssi) { return Err("GSSI: 1 to 16777215 (0 = no group)".into()); }
+        if self.delay_ms > Self::MAX_DELAY_MS { return Err(format!("delay: 0 to {} ms", Self::MAX_DELAY_MS)); }
+        if !(1..=Self::MAX_SECS).contains(&self.max_secs) { return Err(format!("maximum length: 1 to {} s", Self::MAX_SECS)); }
         Ok(())
     }
 }
@@ -1263,6 +1313,7 @@ impl Default for Config {
             talkgroups: TalkgroupsConfig::default(),
             callsign_db: CallsignDbConfig::default(),
             map: MapConfig::default(),
+            parrot: ParrotConfig::default(),
             multi_network: MultiNetworkConfig::default(),
         }
     }

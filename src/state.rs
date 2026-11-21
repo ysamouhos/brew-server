@@ -394,6 +394,8 @@ pub struct AppState {
     pub map_cfg: std::sync::RwLock<crate::config::MapConfig>,
     /// The last positions per radio for the map (`map_track`).
     pub tracks: std::sync::Mutex<crate::map_track::Tracks>,
+    /// `[parrot]` and its recordings (see `parrot`).
+    pub parrot: crate::parrot::Parrot,
     pub callsign_db: crate::callsign_db::Db,
     /// Groups managed talkgroups refused since the start, with the ISSIs that
     /// tried (in memory only, for the Routing page).
@@ -587,6 +589,7 @@ impl AppState {
         if let Ok(t) = self.talkgroups.read() { cfg.talkgroups = t.clone(); }
         if let Ok(c) = self.callsign_cfg.read() { cfg.callsign_db = c.clone(); }
         if let Ok(m) = self.map_cfg.read() { cfg.map = *m; }
+        cfg.parrot = self.parrot.config();
         
         cfg.auth.enabled = self.brew_auth_enabled();
         let (enabled, issis) = self.allowlist_snapshot();
@@ -664,6 +667,7 @@ impl AppState {
         // Graphs and alarms next to it.
         let map_cfg = config.map;
         let tracks = crate::map_track::Tracks::load((config.storage.enabled && !cfg!(test)).then_some(config.storage.path.as_path()), map_cfg.track_points as usize);
+        let parrot = crate::parrot::Parrot::new(config.parrot);
         let fleet_monitor = crate::fleet_monitor::FleetMonitor::load((config.storage.enabled && !cfg!(test)).then_some(config.storage.path.as_path()), crate::fleet::now_ms());
         let ha = crate::ha::HaHandle::new(&config.ha, config_hash, crate::ha::config_sections(&config, false));
         (
@@ -696,6 +700,7 @@ impl AppState {
                 callsign_cfg: std::sync::RwLock::new(callsign_cfg),
                 map_cfg: std::sync::RwLock::new(map_cfg),
                 tracks: std::sync::Mutex::new(tracks),
+                parrot,
                 callsign_db,
                 refused_groups: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 allowlist: std::sync::RwLock::new(allowlist),
