@@ -27,6 +27,7 @@ mod ha;
 mod ha_repl;
 mod map_track;
 mod parrot;
+mod dgna_registry;
 mod monitor;
 mod netlink;
 mod visitors;
@@ -107,6 +108,7 @@ async fn services(
     tokio::spawn(emergency::run(state.clone()));
     tokio::spawn(map_track::run(state.clone()));
     tokio::spawn(parrot::run(state.clone()));
+    tokio::spawn(dgna_registry::run(state.clone()));
     // Fleet Control update runs go on in the background (no browser needed).
     tokio::spawn(fleet::run_updates(state.clone()));
     tokio::spawn(fleet_monitor::run_monitor(state.clone()));

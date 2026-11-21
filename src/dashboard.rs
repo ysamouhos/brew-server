@@ -169,6 +169,8 @@ fn app(state: Arc<AppState>) -> Router {
         // Control): the handlers check the right per command.
         .route("/api/control/{id}", axum::routing::post(control_command))
         .route("/api/dgna", axum::routing::post(crate::routing_api::dgna))
+        .route("/api/dgna/assignments", get(crate::dgna_registry::assignments))
+        .route("/api/dgna/forget", axum::routing::post(crate::dgna_registry::forget))
         .route("/api/fleet", get(crate::fleet::api_list))
         .route("/api/fleet/remove", axum::routing::post(crate::fleet::api_remove))
         .route("/api/fleet/ping", axum::routing::post(crate::fleet::api_ping))
@@ -320,7 +322,8 @@ fn need(path: &str) -> Need {
         "/telemetry-sds" => &["tsds"],
         "/api/radios" => &["overview", "radios", "routing", "issis", "roaming", "radioctl"],
         "/api/control" => &["radioctl", "fleet"],
-        "/api/dgna" => &["radioctl_manage"],
+        "/api/dgna" | "/api/dgna/forget" => &["radioctl_manage"],
+        "/api/dgna/assignments" => &["radioctl"],
         "/api/rssi" | "/api/ms-cells" => &["overview", "stations", "radios", "roaming", "map"],
         "/api/registrations" | "/registrations" => &["radios"],
         "/api/positions" | "/api/bts-locations" | "/api/map" | "/api/map/track" | "/map" => &["map", "stations", "overview"],
@@ -351,7 +354,7 @@ fn allowed(a: &crate::dash_users::Access, needed: Need) -> bool {
 const POLLED: &[&str] = &[
     "/api/status", "/api/connections", "/api/telemetry", "/api/radios", "/api/rssi", "/api/ms-cells", "/api/registrations",
     "/api/positions", "/api/bts-locations", "/api/group-access", "/api/accounts", "/api/sip", "/api/sip/config", "/api/sms-center",
-    "/api/control", "/api/networks", "/api/fleet",
+    "/api/control", "/api/networks", "/api/fleet", "/api/dgna/assignments",
 ];
 
 /// A page the request may not see: the login dialog for a classic page
@@ -2827,6 +2830,8 @@ mod tests {
     fn radio_action_routes_need_their_rights() {
         assert_eq!(need("/api/control"), Need::Pages(&["radioctl", "fleet"]), "station list: not open to everyone any more");
         assert_eq!(need("/api/dgna"), Need::Pages(&["radioctl_manage"]));
+        assert_eq!(need("/api/dgna/forget"), Need::Pages(&["radioctl_manage"]), "forgetting a DGNA entry needs the send right");
+        assert_eq!(need("/api/dgna/assignments"), Need::Pages(&["radioctl"]));
         assert_eq!(need("/api/control/bs1"), Need::Pages(&["radioctl_manage", "fleet_manage"]));
         assert!(match need("/api/radios") { Need::Pages(p) => p.contains(&"radioctl"), _ => false }, "the DGNA list of radios");
         let user = |pages: &[&str]| crate::dash_users::Access { user: Some("bob".into()), admin: false, pages: pages.iter().map(|p| p.to_string()).collect(), auth: true };

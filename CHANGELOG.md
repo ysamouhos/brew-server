@@ -2,6 +2,20 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.21.9 (DGNA list) adds:
+
+- **The server remembers the groups given by DGNA**, so they can be taken
+  back later: card **Assigned by DGNA** on the DGNA & Radio actions page
+  with ISSI, group, station, where it was given (Server with the dashboard
+  user, or Station for the station's own dashboard) and when; **Remove**
+  sends the DGNA remove to the station the radio is on now, **Forget** drops
+  the entry here only. Kept across a restart (`<storage path>.dgna`).
+  Stations report each assign and remove over the control channel
+  (extension `dgna-report`, offered with `[control] enabled = true`;
+  FlowStation v0.5.19 or newer), also those made on the station's own
+  dashboard, and send what they know after each connect. Details:
+  [docs/Routing.md](docs/Routing.md).
+
 Version 1.21.8 (Parrot) adds:
 
 - **Parrot to test a radio** (Settings → Parrot, `[parrot]`, off by
@@ -39,7 +53,6 @@ Version 1.21.7 (Map rework) adds:
   default on): off, visitors who are not signed in get no tracks.
 - **The first map view covers the stations** with a static position, also
   before any radio sent one.
-
 Version 1.21.5 (Login type: Auto, Terminal or Bridge) adds:
 
 - **Type per login: Auto, Terminal or Bridge.** The login's dialog on the

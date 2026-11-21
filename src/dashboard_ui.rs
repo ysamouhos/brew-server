@@ -647,6 +647,7 @@ async function refreshSlow(){
       if(v.admin)return getJ('/api/networks').then(n=>D.nets=n).catch(()=>{});})];
   if(UI.page==='radios')tasks.push(opt('/api/registrations',v=>D.regs=v));
   if(UI.page==='accounts')tasks.push(opt('/api/accounts',v=>D.acc=v));
+  if(UI.page==='radioctl')tasks.push(opt('/api/dgna/assignments',v=>D.dgnaA=v));
   if(UI.page==='sipcfg'&&can('sipcfg'))loadPageData('sipcfg',false);
   tasks.push(getJ('/api/names').then(v=>D.names=v).catch(()=>{}));
   tasks.push(getJ('/api/network-names').then(v=>D.netNames=v).catch(()=>{}));
@@ -1181,6 +1182,33 @@ function dgnaCard(mr){
     ${msgDiv('dg-msg')}`:'<div class="empty">Sending DGNA needs the right <i>DGNA &amp; Radio actions: send</i>.</div>'}
   </div>`;
 }
+// Groups given by DGNA (from here or on a station), kept by the server across a restart, so they
+// can be taken back. Stations report them over the control channel (`dgna-report`).
+function dgnaAssignCard(mr){
+  const q=UI.filter.dga||'';
+  const all=D.dgnaA||[];
+  const rows=all.filter(a=>match(q,a.issi,nameOf(a.issi),a.gssi,a.name||'',gName(a.gssi),a.station,a.station_name||'',a.by||''));
+  const src=a=>a.source==='server'?`Server${a.by?' · '+esc(a.by):''}`:'Station';
+  return `<div class="card"><div class="ch"><h2>Assigned by DGNA</h2><span class="cnt">${all.length}</span>${helpBtn('dgna-a')}<span class="sp"></span>${searchBox('dga','ISSI, group or station…')}</div>
+   ${helpNote('dgna-a','Every group given to a radio by DGNA, from this page or on a station\'s own dashboard, so it can be taken back later. Stations report each assign and remove over their control connection (FlowStation <code>[command]</code>, extension <code>dgna-report</code>); the list is kept across a restart of this server. <b>Remove</b> sends the DGNA remove to the station the radio is registered on now (only while it is registered). <b>Forget</b> drops the entry here only, nothing goes to the radio (for a radio that no longer has the group).')}
+   <div class="tw"><table><thead><tr><th>ISSI</th><th>Group</th><th>Station</th><th>From</th><th>Assigned</th>${mr?'<th></th>':''}</tr></thead><tbody>
+   ${rows.map(a=>`<tr><td>${issiCell(a.issi,true)}</td><td><span class="tg">${a.gssi}${a.name?' · '+esc(a.name):(gName(a.gssi)?' · '+esc(gName(a.gssi)):'')}</span></td><td><b class="m">${esc(a.station_name||a.station)}</b>${a.station_name?`<span class="sub">${esc(a.station)}</span>`:''}</td><td>${src(a)}</td><td><span title="${esc(new Date(a.at_ms).toLocaleString())}">${ago(a.at_ms)} ago</span></td>${mr?`<td style="white-space:nowrap"><button class="btn" ${a.registered?'':'disabled title="The radio is not registered here now"'} onclick="dgnaTakeBack(${a.issi},${a.gssi})">Remove</button> <button class="btn danger" onclick="dgnaForget(${a.issi},${a.gssi})">Forget</button></td>`:''}</tr>`).join('')||`<tr><td colspan="${mr?6:5}" class="mut">${all.length?'Nothing matches':'No groups assigned by DGNA'}</td></tr>`}
+   </tbody></table></div>${msgDiv('dga-msg')}
+  </div>`;
+}
+async function dgnaTakeBack(issi,gssi){
+  if(!confirm(`Remove group ${gssi} from radio ${issi} (DGNA)?`))return;
+  setMsg('dga-msg','mut','Sending…');
+  try{const res=await postJ('/api/dgna',{issis:[issi],gssi,assign:false,attachment_mode:0});const r=res[0]||{};
+    setMsg('dga-msg',r.sent?'ok':'err',r.sent?`Sent to ${r.station}. The entry goes away when the station reports the remove.`:`Not sent: ${r.error||'unknown error'}`);
+    await refreshSlow();
+  }catch(e){setMsg('dga-msg','err',e.message);}
+}
+async function dgnaForget(issi,gssi){
+  if(!confirm(`Forget group ${gssi} on radio ${issi} here? Nothing is sent to the radio.`))return;
+  try{await postJ('/api/dgna/forget',{issi,gssi});D.dgnaA=await getJ('/api/dgna/assignments');setMsg('dga-msg','ok','Forgotten.');render(true);}
+  catch(e){setMsg('dga-msg','err',e.message);}
+}
 // DGNA & Radio actions (formerly Control): DGNA to many radios, and the station commands for one
 // radio. Seeing needs the page, sending the right "DGNA & Radio actions: send".
 const mayRadio=()=>D.who.admin||(!!D.who.username&&(D.who.pages||[]).includes('radioctl_manage'));
@@ -1202,7 +1230,7 @@ R.radioctl=()=>{
      :'<div class="mut" style="font-size:12.5px">Sending needs the right <i>DGNA &amp; Radio actions: send</i>.</div>'}
     ${fm&&!inFleet(id)?`<div class="bar"><span class="mut" style="font-size:12.5px">Not in Fleet Control:</span><button class="btn danger" onclick="if(confirm('Restart the service on '+UI.ra+'?'))ctl(UI.ra,'${s}','RestartService')">Restart service</button><button class="btn danger" onclick="if(confirm('Shut the service down on '+UI.ra+'? It does not come back by itself.'))ctl(UI.ra,'${s}','ShutdownService')">Shut down</button></div>`:''}
     ${msgDiv(s+'_res','padding:0')}</div>`;
-  return dgnaCard(mr)+`<div class="card"><div class="ch"><h2>Radio actions</h2><span class="cnt">${ids.length}</span>${helpBtn('ract')}</div>${helpNote('ract','Commands for one radio, sent to the station you pick over its control connection (FlowStation <code>[command]</code>): <b>Kick radio</b> takes it off the station, <b>Clear emergency</b> ends its emergency (0 = every one on the station), <b>Live SDS</b> adds or clears the text the station sends out, <b>Ambience listen</b> makes the radio key its microphone (with indication on the radio; needs station support). Restart and shut down of a station: Fleet Control (here only for stations that do not use Fleet Control).')}${actions}</div>`;
+  return dgnaCard(mr)+dgnaAssignCard(mr)+`<div class="card"><div class="ch"><h2>Radio actions</h2><span class="cnt">${ids.length}</span>${helpBtn('ract')}</div>${helpNote('ract','Commands for one radio, sent to the station you pick over its control connection (FlowStation <code>[command]</code>): <b>Kick radio</b> takes it off the station, <b>Clear emergency</b> ends its emergency (0 = every one on the station), <b>Live SDS</b> adds or clears the text the station sends out, <b>Ambience listen</b> makes the radio key its microphone (with indication on the radio; needs station support). Restart and shut down of a station: Fleet Control (here only for stations that do not use Fleet Control).')}${actions}</div>`;
 };
 const v=id=>($(id)||{}).value||'';
 
@@ -3371,6 +3399,14 @@ mod tests {
         assert!(body.contains("fullBtn('net')") && body.contains("fullBtn('tele')"), "both lists open on the whole screen");
         assert!(PAGE_HTML.contains("@media (min-width:1280px){.sdsgrid.two{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}"), "side by side on wide screens");
         assert!(PAGE_HTML.contains(".tw.sdsl{max-height:62vh;overflow-y:auto}"), "each list scrolls");
+    }
+
+    #[test]
+    fn dgna_assignments_card_on_the_radio_actions_page() {
+        assert!(PAGE_HTML.contains("return dgnaCard(mr)+dgnaAssignCard(mr)+"));
+        assert!(PAGE_HTML.contains("if(UI.page==='radioctl')tasks.push(opt('/api/dgna/assignments',v=>D.dgnaA=v));"));
+        assert!(PAGE_HTML.contains("postJ('/api/dgna',{issis:[issi],gssi,assign:false,attachment_mode:0})"), "Remove sends the DGNA remove");
+        assert!(PAGE_HTML.contains("postJ('/api/dgna/forget',{issi,gssi})"));
     }
 
     #[test]
