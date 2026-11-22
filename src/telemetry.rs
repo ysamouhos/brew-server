@@ -1283,6 +1283,9 @@ async fn handle_event(state: &Arc<AppState>, id: &str, data: &[u8]) {
         crate::router::emergency_raised(state, issi).await;
     }
     if let Some((issi, lat, lon, at_ms)) = ms_advert {
+        // The map's track: a LIP the station decoded itself and only reports
+        // here (it never crosses the Brew channel when it stays local).
+        crate::map_track::record_local(state, issi, lat, lon, at_ms).await;
         crate::fedroute::advertise_ms(state, issi, lat, lon, at_ms, id).await;
     }
     if let Some((name, lat, lon)) = advertise {
@@ -1748,6 +1751,45 @@ mod roaming_tests {
         assert!(serde_json::to_string(&roamed).unwrap().contains("\"roamed_to\":\"1000001\""));
         let plain = RegLogEntry { id: next_reg_id(), at_ms: 1, issi: 7, kind: "register", roamed_to: None, cell: None, carrier: None };
         assert!(!serde_json::to_string(&plain).unwrap().contains("roamed_to"));
+    }
+
+    /// Field 2026-11-22: a radio whose LIP the station decoded and reported only over
+    /// telemetry ("LIP position: ...") got no track; an app over Brew did.
+    #[tokio::test]
+    async fn a_position_reported_over_telemetry_goes_into_the_track() {
+        let mut config = crate::config::Config::default();
+        config.storage.enabled = false;
+        let (state, _rx) = AppState::new(config, std::path::PathBuf::from("test.toml"));
+        let state = Arc::new(state);
+        state.telemetry.write().await.stations.insert("1000002".into(), TelemetryBts::new("1000002".into(), None));
+        let sds = |text: &str| serde_json::to_vec(&serde_json::json!({"SdsLog": {"direction": "uplink", "source_issi": 2_320_972, "dest_issi": 2_320_999,
+            "is_group": false, "protocol_id": 10, "text": text}})).unwrap();
+        handle_event(&state, "1000002", &sds("LIP position: 47.945817, 16.732950")).await;
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        handle_event(&state, "1000002", &sds("LIP position: 47.946100, 16.733100")).await;
+        let t = state.tracks.lock().unwrap().track(2_320_972);
+        assert_eq!(t.len(), 2, "both reports in the track");
+        assert!((t[1].lat - 47.9461).abs() < 1e-9);
+    }
+
+    /// A visitor's (V)ASSI is drawn under its home ISSI on the map, with its track.
+    #[tokio::test]
+    async fn a_visitor_is_drawn_under_its_home_issi() {
+        let mut config = crate::config::Config::default();
+        config.storage.enabled = false;
+        let (state, _rx) = AppState::new(config, std::path::PathBuf::from("test.toml"));
+        let state = Arc::new(state);
+        state.telemetry.write().await.stations.insert("1000002".into(), TelemetryBts::new("1000002".into(), None));
+        let msg = |v: serde_json::Value| serde_json::to_vec(&v).unwrap();
+        handle_event(&state, "1000002", &msg(serde_json::json!({"MsRegistration": {"issi": 15_728_641}}))).await;
+        handle_event(&state, "1000002", &msg(serde_json::json!({"MsVisitor": {"issi": 15_728_641, "mcc": 901, "mnc": 9999, "home_issi": 2_320_972, "network": ""}}))).await;
+        handle_event(&state, "1000002", &msg(serde_json::json!({"SdsLog": {"direction": "uplink", "source_issi": 15_728_641, "dest_issi": 2_320_999,
+            "is_group": false, "protocol_id": 10, "text": "LIP position: 47.946181, 16.733240"}}))).await;
+        let snap = crate::map_track::api_snapshot(axum::extract::State(state.clone()), axum::http::HeaderMap::new()).await.0;
+        assert!(snap.radios.iter().all(|r| r.issi != 15_728_641), "no own marker for the VASSI");
+        let r = snap.radios.iter().find(|r| r.issi == 2_320_972).expect("home ISSI on the map");
+        assert_eq!((r.vassi, r.fix.as_ref().map(|f| f.issi), r.online, r.points), (Some(15_728_641), Some(2_320_972), true, 1));
+        assert_eq!(state.tracks.lock().unwrap().len(15_728_641), 0, "track under the home ISSI");
     }
 
     #[tokio::test]

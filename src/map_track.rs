@@ -30,7 +30,15 @@ pub struct TrackFix {
     /// [`dock_station`]), so a later registration elsewhere docks it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub station: Option<String>,
+    /// Sent by a terminal (see [`terminal_issis`]): an app often registers
+    /// only to send its position and leaves again, so the map keeps drawing
+    /// it as a terminal.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub terminal: bool,
 }
+
+/// The same position again within this time is one report seen twice.
+const SAME_FIX_MS: u64 = 15_000;
 
 pub struct Tracks {
     path: Option<PathBuf>,
@@ -57,12 +65,16 @@ impl Tracks {
         t
     }
 
-    /// Adds a fix. The same time again (a resend) is kept once; an older fix
-    /// goes into its place in the track. Returns whether the track changed.
+    /// Adds a fix. The same time again (a resend) is kept once, and so is the
+    /// same position within `SAME_FIX_MS` (one report seen twice: decoded here
+    /// from the Brew channel and reported by the station over telemetry). An
+    /// older fix goes into its place in the track. Returns whether it changed.
     pub fn record(&mut self, issi: u32, fix: TrackFix, now_ms: u64) -> bool {
         if self.points == 0 || !crate::fedroute::valid_position(fix.lat, fix.lon) { return false; }
         let t = self.data.entry(issi).or_default();
         if t.iter().any(|f| f.at_ms == fix.at_ms) { return false; }
+        let same = |f: &TrackFix| (f.lat - fix.lat).abs() < 1e-6 && (f.lon - fix.lon).abs() < 1e-6 && f.at_ms.abs_diff(fix.at_ms) < SAME_FIX_MS;
+        if t.iter().any(same) { return false; }
         let at = fix.at_ms;
         let i = t.iter().position(|f| f.at_ms > at).unwrap_or(t.len());
         t.insert(i, fix);
@@ -173,8 +185,18 @@ pub async fn terminal_issis(state: &AppState) -> std::collections::HashSet<u32> 
 /// Notes a position this server decoded for `issi` (Brew SDS, a station's
 /// telemetry), with the station the radio is on now.
 pub async fn record_local(state: &Arc<AppState>, issi: u32, lat: f64, lon: f64, at_ms: u64) {
-    let station = dock_stations(state).await.remove(&issi);
-    record(state, issi, TrackFix { lat, lon, at_ms, station });
+    let mut docks = dock_stations(state).await;
+    // A visitor's (V)ASSI: the track goes under its home ISSI.
+    let station = docks.remove(&issi);
+    let issi = visitor_homes(state).await.get(&issi).copied().unwrap_or(issi);
+    let terminal = terminal_issis(state).await.contains(&issi);
+    record(state, issi, TrackFix { lat, lon, at_ms, station, terminal });
+}
+
+/// (V)ASSI -> home ISSI of the visitors the stations reported (`MsVisitor`).
+pub async fn visitor_homes(state: &AppState) -> HashMap<u32, u32> {
+    let t = state.telemetry.read().await;
+    t.stations.values().flat_map(|b| b.visitor_home.iter().map(|(v, h)| (*v, *h))).filter(|(v, h)| v != h).collect()
 }
 
 pub fn record(state: &AppState, issi: u32, fix: TrackFix) {
@@ -207,6 +229,14 @@ pub struct RadioOut {
     /// Registered here over a Terminal connection (app, console), drawn with
     /// the terminal marker instead of the radio.
     pub terminal: bool,
+    /// Registered somewhere now (here, on a station that reports it, or on
+    /// a linked server); otherwise drawn as offline.
+    pub online: bool,
+    /// The visitor (V)ASSI the radio is known by here, when the position
+    /// shown or its registration came under it; the radio is drawn under
+    /// its home ISSI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vassi: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -221,21 +251,48 @@ pub async fn api_snapshot(axum::extract::State(state): axum::extract::State<Arc<
     let hide = track_hidden(&state, &headers);
     let settings = state.map_cfg.read().map(|c| *c).unwrap_or_default();
     let now = crate::telemetry::now_ms();
-    let fixes = crate::dashboard::collect_positions(&state).await;
-    let docks = dock_stations(&state).await;
-    let emergencies: std::collections::HashSet<u32> = crate::emergency::snapshot(&state).await.iter().map(|e| e.issi).collect();
-    let terminals = terminal_issis(&state).await;
+    let homes = visitor_homes(&state).await;
+    let home = |i: u32| homes.get(&i).copied().unwrap_or(i);
+    // A visitor is drawn under its home ISSI: its (V)ASSI's position, dock and state go there.
+    let mut vassi_of: HashMap<u32, u32> = HashMap::new();
+    let mut fixes: Vec<crate::telemetry::PositionFix> = Vec::new();
+    for mut f in crate::dashboard::collect_positions(&state).await {
+        let h = home(f.issi);
+        if fixes.iter().any(|g| g.issi == h && g.at_ms >= f.at_ms) { continue; }
+        fixes.retain(|g| g.issi != h);
+        if h != f.issi { vassi_of.insert(h, f.issi); } else { vassi_of.remove(&h); }
+        f.issi = h;
+        fixes.push(f);
+    }
+    let mut docks: HashMap<u32, String> = HashMap::new();
+    for (i, d) in dock_stations(&state).await {
+        let h = home(i);
+        if h != i { vassi_of.entry(h).or_insert(i); }
+        if h == i || !docks.contains_key(&h) { docks.insert(h, d); }
+    }
+    let emergencies: std::collections::HashSet<u32> = crate::emergency::snapshot(&state).await.iter().map(|e| home(e.issi)).collect();
+    let terminals: std::collections::HashSet<u32> = terminal_issis(&state).await.into_iter().map(home).collect();
+    let (registered, mut online): (std::collections::HashSet<u32>, std::collections::HashSet<u32>) = {
+        let inner = state.inner.read().await;
+        (inner.subscribers.iter().filter(|(_, s)| s.route.path.is_empty()).map(|(i, _)| *i).collect(), inner.subscribers.keys().copied().collect())
+    };
+    for st in state.telemetry.read().await.stations.values() { online.extend(st.registrations.iter().copied()); }
+    let registered: std::collections::HashSet<u32> = registered.into_iter().map(home).collect();
+    let online: std::collections::HashSet<u32> = online.into_iter().map(home).collect();
     let mut by_issi: BTreeMap<u32, Option<crate::telemetry::PositionFix>> = docks.keys().map(|i| (*i, None)).collect();
     for f in fixes { by_issi.insert(f.issi, Some(f)); }
     let t = state.tracks.lock().unwrap_or_else(|e| e.into_inner());
     let radios = by_issi.into_iter().map(|(issi, fix)| {
         let dock = docks.get(&issi).cloned();
         // The track's newest fix is the one the map shows when they agree.
-        let fix_station = t.newest(issi).filter(|n| fix.as_ref().is_some_and(|f| f.at_ms == n.at_ms)).and_then(|n| n.station.clone());
+        let shown = t.newest(issi).filter(|n| fix.as_ref().is_some_and(|f| f.at_ms == n.at_ms));
+        let fix_station = shown.and_then(|n| n.station.clone());
+        // Registered here now: as it is registered. Not registered: as it was when it sent the position shown.
+        let terminal = terminals.contains(&issi) || (!registered.contains(&issi) && shown.is_some_and(|n| n.terminal));
         RadioOut {
             issi, docked: docked(dock.as_deref(), fix.as_ref(), fix_station.as_deref(), settings.dock_after_min, now),
             dock, points: if hide { 0 } else { t.len(issi) }, emergency: emergencies.contains(&issi), fix,
-            terminal: terminals.contains(&issi),
+            terminal, online: online.contains(&issi), vassi: vassi_of.get(&issi).copied(),
         }
     }).collect();
     axum::Json(MapSnapshot { settings, now_ms: now, radios })
@@ -331,7 +388,7 @@ mod tests {
     use super::*;
 
     fn fix(at: u64, station: Option<&str>) -> TrackFix {
-        TrackFix { lat: 48.0 + at as f64 / 1e6, lon: 16.0, at_ms: at, station: station.map(str::to_owned) }
+        TrackFix { lat: 48.0 + at as f64 / 1e6, lon: 16.0, at_ms: at, station: station.map(str::to_owned), terminal: false }
     }
     fn pf(at: u64) -> crate::telemetry::PositionFix {
         crate::telemetry::PositionFix { issi: 1, lat: 48.0, lon: 16.0, at_ms: at, bts: "brew-sds".into(), source_text: String::new(), emergency: false }
@@ -347,7 +404,17 @@ mod tests {
         assert!(!t.record(7, fix(500, None), 50_000), "older than the whole full track");
         assert!(t.record(7, fix(39_500, None), 50_000), "a late fix goes into its place");
         assert_eq!(t.newest(7).unwrap().at_ms, 40_000);
-        assert!(!t.record(7, TrackFix { lat: 0.0, lon: 0.0, at_ms: 60_000, station: None }, 60_000), "0/0 is no fix");
+        assert!(!t.record(7, TrackFix { lat: 0.0, lon: 0.0, at_ms: 60_000, station: None, terminal: false }, 60_000), "0/0 is no fix");
+    }
+
+    #[test]
+    fn one_report_seen_twice_is_kept_once() {
+        let mut t = Tracks::load(None, 30);
+        assert!(t.record(1, fix(10_000, None), 10_000));
+        assert!(!t.record(1, TrackFix { at_ms: 10_400, ..fix(10_000, None) }, 10_400), "same position 0.4 s later (Brew + telemetry)");
+        assert!(t.record(1, TrackFix { at_ms: 40_000, ..fix(10_000, None) }, 40_000), "standing still: a new report later counts");
+        assert!(t.record(1, fix(41_000, None), 41_000), "moved");
+        assert_eq!(t.len(1), 3);
     }
 
     #[test]
@@ -435,6 +502,19 @@ mod tests {
         assert!(!t.contains(&2320972), "radio on a station");
         assert!(!t.contains(&2320500), "radio behind a bridge login");
         assert!(t.contains(&2320973), "number set to terminal");
+
+        // The app sends its position and leaves: still a terminal on the map, until it registers on a station.
+        let now = crate::telemetry::now_ms();
+        state.telemetry.write().await.record_sds_position(2320100, 48.21, 16.37, now, "lip".into());
+        record_local(&state, 2320100, 48.21, 16.37, now).await;
+        state.inner.write().await.subscribers.remove(&2320100);
+        let snap = |s: Arc<AppState>| async move { api_snapshot(axum::extract::State(s), axum::http::HeaderMap::new()).await.0 };
+        let term = |r: MapSnapshot| r.radios.iter().find(|r| r.issi == 2320100).map(|r| r.terminal);
+        assert_eq!(term(snap(state.clone()).await), Some(true), "left after its position");
+        assert!(snap(state.clone()).await.radios.iter().any(|r| r.issi == 2320100 && !r.online), "and is offline");
+        state.inner.write().await.subscribers.insert(2320100, crate::state::Subscriber { client_id: bs, groups: Default::default(), mode: ClientMode::Basestation, route: Default::default() });
+        assert_eq!(term(snap(state.clone()).await), Some(false), "now registered on a station");
+        assert!(snap(state.clone()).await.radios.iter().any(|r| r.issi == 2320100 && r.online));
     }
 
     #[tokio::test]

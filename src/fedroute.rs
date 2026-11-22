@@ -898,7 +898,7 @@ fn accept_ms(inner: &mut Inner, source: ClientId, a: MsAdvert) -> Option<(u32, c
     if !valid_position(a.lat, a.lon) { return None; }
     if inner.fed.ms_pos.get(&a.issi).is_some_and(|old| old.at_ms >= a.at_ms) { return None; }
     let origin = format_server_id(origin);
-    let fix = crate::map_track::TrackFix { lat: a.lat, lon: a.lon, at_ms: a.at_ms, station: Some(format!("{origin}/{}", a.station)) };
+    let fix = crate::map_track::TrackFix { lat: a.lat, lon: a.lon, at_ms: a.at_ms, station: Some(format!("{origin}/{}", a.station)), terminal: false };
     inner.fed.ms_pos.insert(a.issi, MsEntry {
         lat: a.lat, lon: a.lon, at_ms: a.at_ms, station: a.station.clone(), path: a.path.clone(),
     });

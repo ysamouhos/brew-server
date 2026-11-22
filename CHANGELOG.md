@@ -2,6 +2,32 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.22.2 (Map: tracks from station reports, visitors under their ISSI) adds:
+
+- **Tracks also for radios whose position the station decodes itself.** A
+  LIP that the FlowStation decodes and keeps local only reaches the server
+  as a telemetry report ("LIP position: ..."). The map showed it, but the
+  track only took positions from the Brew channel, so such a radio had no
+  track while an app had one. Telemetry positions now go into the track too;
+  one report that arrives both ways is kept once.
+- **A visitor is drawn under its home ISSI.** When a station reports a
+  visitor's (V)ASSI with its home ISSI (`MsVisitor`), the map shows the
+  position, track, station and state under the home ISSI, with "As visitor:
+  VASSI n" in the popup, instead of a second marker for the (V)ASSI.
+
+Version 1.22.1 (Map: terminals and offline radios) adds:
+
+- **A terminal stays a terminal on the map after it leaves.** An app often
+  registers only to send its position and deregisters seconds later; its
+  position was then drawn as a radio. Each stored position now notes
+  whether it came from a terminal, and a number not registered here is drawn
+  as it was when it sent the position shown.
+- **Radios registered nowhere are drawn offline** on the map (grey with a
+  dashed ring, "Offline (not registered)" in the popup), at their last
+  position.
+- **Dashboard loads again.** A missing brace after the map settings card
+  (since 1.21.8) stopped the whole dashboard script.
+
 Version 1.22.0 (Parrot, DGNA list, Map rework) rolls up 1.21.4 to 1.21.9.
 No functional changes since 1.21.9. In short:
 
