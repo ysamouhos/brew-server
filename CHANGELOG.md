@@ -2,6 +2,21 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.22.5 (Logo colours) adds:
+
+- **Dashboard colours from the logo.** The accent colour (buttons, links,
+  the active menu item, highlights) is the logo blue instead of teal:
+  #1f4fe0 with the darker #1236a8 in light mode, #4d86ff with the lighter
+  #8fb0ff in dark mode (a darker blue is hard to read there). Status colours
+  (green ok, red alarm) stay as they were.
+- **The favicon shows before signing in.** `/favicon.svg` needed a login, so
+  on a server with dashboard users the tab icon and the mug in the sign-in
+  window stayed empty until signed in. It now loads without a login.
+- **Add to home screen.** The dashboard has a web app manifest and app icons
+  (the favicon on a dark background, 192, 512 and 180 px for iOS), so a phone
+  can add it as an app named "brew-server" (renamable when adding). The manifest and
+  icons load without a login.
+
 Version 1.22.4 (brew-server logo) adds:
 
 - **The brew-server logo.** The dashboard sidebar starts with the logo (the
