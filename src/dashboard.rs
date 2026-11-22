@@ -131,6 +131,7 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/", get(index))
         .route("/classic", get(classic_index))
         .route("/ui", get(crate::dashboard_ui::page))
+        .route("/favicon.svg", get(crate::dashboard_ui::favicon))
         .route("/api/radios", get(crate::routing_api::radios))
         .route("/api/names", get(crate::accounts::names))
         .route("/api/network-names", get(crate::routing_api::network_names_get))

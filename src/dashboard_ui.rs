@@ -11,8 +11,20 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 static PAGE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     let name = crate::dashboard::html_escape(crate::dashboard::server_name());
-    PAGE_HTML.replace("__VERSION__", VERSION).replace("__SERVERNAME__", &name)
+    PAGE_HTML.replace("__VERSION__", VERSION).replace("__SERVERNAME__", &name).replace("__LOGO__", LOGO_SVG.trim())
 });
+
+/// The brew-server logo (mug and wordmark) at the top of the sidebar. Light colours are the
+/// attributes; the `bl-*` classes take the dark colours in dark mode (see `.blogo`).
+const LOGO_SVG: &str = include_str!("../assets/logo/brew-server-logo-ui.svg");
+
+/// Favicon: the mug alone, its steam follows the browser's light / dark mode.
+pub const FAVICON_SVG: &str = include_str!("../assets/logo/brew-server-mark.svg");
+
+/// `GET /favicon.svg`.
+pub async fn favicon() -> impl axum::response::IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "image/svg+xml"), (axum::http::header::CACHE_CONTROL, "public, max-age=86400")], FAVICON_SVG)
+}
 
 pub async fn page() -> Html<&'static str> {
     Html(PAGE.as_str())
@@ -23,6 +35,7 @@ const PAGE_HTML: &str = r##"<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>__SERVERNAME__</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <style>
 :root{
   --bg:#eceff4;--bg2:#ffffff;--bg3:#f3f5f9;--bg4:#d6dde7;
@@ -71,10 +84,9 @@ a{color:var(--accent2);text-decoration:none}
 /* Sidebar */
 #sb{width:236px;min-width:236px;background:var(--sidebar);border-right:1px solid var(--sidebar-border);display:flex;flex-direction:column;height:100vh;height:100dvh;position:sticky;top:0;z-index:20}
 .brand{padding:18px 16px 14px;border-bottom:1px solid var(--sidebar-border);display:flex;flex-direction:column;gap:12px}
-.brand-row{display:flex;gap:10px;align-items:center}
-.logo{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;color:var(--accent);flex-shrink:0;
-  background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 16%,transparent),color-mix(in srgb,var(--accent2) 16%,transparent));
-  border:1px solid color-mix(in srgb,var(--accent) 30%,transparent)}
+.blogo{display:block;width:100%;max-width:196px;height:auto}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]) .bl-w{stroke:#fff} :root:not([data-theme=light]) .bl-t{fill:#fff} :root:not([data-theme=light]) .bl-s{fill:#4d86ff} :root:not([data-theme=light]) .bl-g{fill:#8b95a7}}
+:root[data-theme=dark] .bl-w{stroke:#fff} :root[data-theme=dark] .bl-t{fill:#fff} :root[data-theme=dark] .bl-s{fill:#4d86ff} :root[data-theme=dark] .bl-g{fill:#8b95a7}
 .bname{font-weight:700;font-size:14px;line-height:1.2;overflow-wrap:anywhere}
 .bsub{font:10.5px var(--mono);color:var(--text3);letter-spacing:.04em}
 .hw{border:1px solid var(--sidebar-border);border-radius:10px;padding:4px;background:color-mix(in srgb,var(--text) 3%,transparent);box-shadow:var(--hair)}
@@ -279,8 +291,7 @@ tr.exp td{background:var(--bg3);border-top:0}
 .login.solid{background:var(--bg)}
 @media (prefers-reduced-transparency:reduce){.login{background:var(--bg)}}
 .lcard{width:min(380px,100%);background:var(--bg2);border:1px solid var(--border);border-radius:18px;box-shadow:0 32px 80px -28px rgba(0,0,0,.6);padding:30px 28px 24px;position:relative}
-.lcard .logo{width:52px;height:52px;border-radius:14px;margin:0 auto 14px;display:grid;place-items:center}
-.lcard .logo svg{width:28px;height:28px}
+.lcard .lmark{display:block;width:56px;height:56px;margin:0 auto 12px}
 .lcard h2{text-align:center;margin:0;font-size:20px;letter-spacing:-.01em}
 .lcard .lsub{text-align:center;color:var(--text3);font-size:13px;margin:4px 0 22px}
 .lcard label{display:block;font-size:12px;font-weight:600;color:var(--text2);margin:0 0 6px}
@@ -382,10 +393,8 @@ body{touch-action:manipulation}
 <body>
 <aside id="sb" aria-label="Navigation">
   <div class="brand">
-    <div class="brand-row">
-      <div class="logo" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><path d="M12 11v10M8 21h8M9.5 21l2.5-10 2.5 10"/><circle cx="12" cy="9" r="1.4"/><path d="M7.8 5.8a6 6 0 0 0 0 6.4M16.2 5.8a6 6 0 0 1 0 6.4M5 3.5a10 10 0 0 0 0 11M19 3.5a10 10 0 0 1 0 11"/></svg></div>
-      <div><div class="bname">__SERVERNAME__</div><div class="bsub">brew-server v__VERSION__</div></div>
-    </div>
+    __LOGO__
+    <div><div class="bname">__SERVERNAME__</div><div class="bsub">brew-server v__VERSION__</div></div>
     <div class="hw">
       <div class="hw-row" data-go="stations"><div class="hw-g" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><path d="M4 12h4l3-8 4 16 3-8h2"/></svg></div><div><div class="hw-k">Brew</div><div class="hw-v" id="hw-brew">…</div></div><span class="dot i" id="hw-brew-dot"></span></div>
       <div class="hw-row" data-go="ha"><div class="hw-g b" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/></svg></div><div><div class="hw-k">HA</div><div class="hw-v" id="hw-ha">…</div></div><span class="dot i" id="hw-ha-dot"></span></div>
@@ -431,7 +440,7 @@ body{touch-action:manipulation}
 <div class="login" id="login" role="dialog" aria-modal="true" aria-labelledby="login-title">
   <form class="lcard" id="lcard" onsubmit="submitLogin(event)" autocomplete="on">
     <button type="button" class="x" id="login-x" onclick="closeLogin()" title="Close"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg><span class="sr">Close</span></button>
-    <div class="logo" aria-hidden="true"><svg class="i" viewBox="0 0 24 24"><path d="M12 11v10M8 21h8M9.5 21l2.5-10 2.5 10"/><circle cx="12" cy="9" r="1.4"/><path d="M7.8 5.8a6 6 0 0 0 0 6.4M16.2 5.8a6 6 0 0 1 0 6.4M5 3.5a10 10 0 0 0 0 11M19 3.5a10 10 0 0 1 0 11"/></svg></div>
+    <img class="lmark" src="/favicon.svg" alt="" width="56" height="56">
     <h2 id="login-title">Sign in</h2>
     <div class="lsub">__SERVERNAME__</div>
     <div class="lnote" id="lnote" role="status" hidden></div>
@@ -3057,6 +3066,37 @@ setInterval(()=>{if(UI.page==='overview'||UI.page==='calls')render();},1000);
 #[cfg(test)]
 mod tests {
     use super::PAGE_HTML;
+
+    #[test]
+    fn sidebar_starts_with_the_logo_and_the_tab_has_the_favicon() {
+        let page = super::PAGE.as_str();
+        assert!(!page.contains("__LOGO__"));
+        let brand = page.find(r#"<div class="brand">"#).expect("brand");
+        let logo = page.find(r#"<svg class="blogo""#).expect("logo inlined");
+        let name = page[brand..].find(r#"<div class="bname">"#).expect("name") + brand;
+        assert!(brand < logo && logo < name, "logo first, then the server name");
+        assert!(page.contains(r#"<link rel="icon" href="/favicon.svg" type="image/svg+xml">"#));
+        assert!(page.contains(r#"<img class="lmark" src="/favicon.svg""#), "sign-in window shows the mug");
+    }
+
+    #[test]
+    fn logo_files_carry_no_metadata_and_the_favicon_follows_dark_mode() {
+        for svg in [super::LOGO_SVG, super::FAVICON_SVG] {
+            assert!(svg.trim_start().starts_with("<svg") && svg.trim_end().ends_with("</svg>"));
+            assert!(!svg.contains("<metadata"));
+        }
+        assert!(super::FAVICON_SVG.contains("prefers-color-scheme:dark"));
+        for c in ["bl-w", "bl-t", "bl-s", "bl-g"] {
+            assert!(super::LOGO_SVG.contains(&format!(r#"class="{c}""#)), "{c} themable");
+        }
+    }
+
+    #[tokio::test]
+    async fn favicon_is_served_as_svg() {
+        use axum::response::IntoResponse;
+        let r = super::favicon().await.into_response();
+        assert_eq!(r.headers()[axum::http::header::CONTENT_TYPE], "image/svg+xml");
+    }
 
     /// The polls must not ask admin-only routes for a visitor who is not signed in: their 401
     /// opens the login window, so an open (read-only) dashboard would show it every 5 s.
