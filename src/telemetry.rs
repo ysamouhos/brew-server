@@ -734,6 +734,15 @@ impl TelemetryState {
         self.stations.values().cloned().collect()
     }
 
+    /// Forgets every radio's last position (Settings -> Map, *Clear map*).
+    pub fn clear_positions(&mut self) {
+        self.sds_positions.clear();
+        for s in self.stations.values_mut() {
+            s.positions.clear();
+            s.sync_positions();
+        }
+    }
+
     /// Flat list of the latest decoded MS positions across all stations, each
     /// tagged with the station that reported it, newest first. Only subscribers
     /// that beacon a *textual* position appear (see the `position` module).

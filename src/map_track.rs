@@ -345,13 +345,18 @@ pub async fn api_settings(
     }
 }
 
-/// `POST /api/map/clear` (admins): forget every track.
+/// `POST /api/map/clear` (admins): forget every track and every radio's last
+/// position.
 pub async fn api_clear(axum::extract::State(state): axum::extract::State<Arc<AppState>>) -> axum::http::StatusCode {
     if let Ok(mut t) = state.tracks.lock() {
         t.clear();
         t.flush(crate::telemetry::now_ms(), true);
     }
-    tracing::warn!("map tracks cleared from the dashboard");
+    // The last positions too, else every radio that ever sent one stays on
+    // the map (registered radios dock at their station until they send again).
+    state.telemetry.write().await.clear_positions();
+    state.inner.write().await.fed.ms_pos.retain(|_, e| e.path.is_empty());
+    tracing::warn!("map cleared from the dashboard: tracks and last positions");
     axum::http::StatusCode::NO_CONTENT
 }
 
@@ -405,6 +410,21 @@ mod tests {
         assert!(t.record(7, fix(39_500, None), 50_000), "a late fix goes into its place");
         assert_eq!(t.newest(7).unwrap().at_ms, 40_000);
         assert!(!t.record(7, TrackFix { lat: 0.0, lon: 0.0, at_ms: 60_000, station: None, terminal: false }, 60_000), "0/0 is no fix");
+    }
+
+    /// Field 2026-11-22: after "Clear all tracks" radios long gone stayed on the map
+    /// at their last position.
+    #[tokio::test]
+    async fn clearing_the_map_forgets_tracks_and_last_positions() {
+        let state = AppState::for_test();
+        let now = crate::telemetry::now_ms();
+        state.telemetry.write().await.record_sds_position(2320972, 48.21, 16.37, now, "lip".into());
+        record_local(&state, 2320972, 48.21, 16.37, now).await;
+        let snap = |s: Arc<AppState>| async move { api_snapshot(axum::extract::State(s), axum::http::HeaderMap::new()).await.0 };
+        assert_eq!(snap(state.clone()).await.radios.len(), 1);
+        api_clear(axum::extract::State(state.clone())).await;
+        assert!(snap(state.clone()).await.radios.is_empty(), "nothing left on the map");
+        assert_eq!(state.tracks.lock().unwrap().len(2320972), 0);
     }
 
     #[test]

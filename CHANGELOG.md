@@ -2,6 +2,14 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.22.3 (Map: Clear map resets everything) adds:
+
+- **"Clear map" resets the whole map.** The button on Settings → Map (was
+  "Clear all tracks") only forgot the tracks: every radio that ever sent a
+  position stayed at its last one. It now also forgets every radio's last
+  position, so the map fills again from what comes in. Stations stay;
+  registered radios sit next to their station until they send a position.
+
 Version 1.22.2 (Map: tracks from station reports, visitors under their ISSI) adds:
 
 - **Tracks also for radios whose position the station decodes itself.** A
