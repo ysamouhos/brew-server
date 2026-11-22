@@ -26,6 +26,45 @@ pub async fn favicon() -> impl axum::response::IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "image/svg+xml"), (axum::http::header::CACHE_CONTROL, "public, max-age=86400")], FAVICON_SVG)
 }
 
+/// Home-screen app name (web app manifest); the person can rename it when adding the app.
+const APP_NAME: &str = "brew-server";
+/// App icons: the favicon on a dark background, full bleed (iOS and Android round them).
+const ICON_192: &[u8] = include_bytes!("../assets/logo/app/icon-192.png");
+const ICON_512: &[u8] = include_bytes!("../assets/logo/app/icon-512.png");
+const APPLE_TOUCH_ICON: &[u8] = include_bytes!("../assets/logo/app/apple-touch-icon.png");
+
+/// `GET /manifest.webmanifest`: lets phones add the dashboard as an app.
+pub async fn manifest() -> impl axum::response::IntoResponse {
+    let body = serde_json::json!({
+        "name": APP_NAME,
+        "short_name": APP_NAME,
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#141416",
+        "theme_color": "#141416",
+        "icons": [
+            {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+            {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+        ]
+    });
+    ([(axum::http::header::CONTENT_TYPE, "application/manifest+json"), (axum::http::header::CACHE_CONTROL, "public, max-age=86400")], body.to_string())
+}
+
+fn png(bytes: &'static [u8]) -> impl axum::response::IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "image/png"), (axum::http::header::CACHE_CONTROL, "public, max-age=86400")], bytes)
+}
+
+/// `GET /icon-192.png`.
+pub async fn icon_192() -> impl axum::response::IntoResponse { png(ICON_192) }
+/// `GET /icon-512.png`.
+pub async fn icon_512() -> impl axum::response::IntoResponse { png(ICON_512) }
+/// `GET /apple-touch-icon.png` (iOS home screen).
+pub async fn apple_touch_icon() -> impl axum::response::IntoResponse { png(APPLE_TOUCH_ICON) }
+
+/// Paths of the app icons and the manifest; they load without a login.
+pub const APP_ASSETS: &[&str] = &["/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"];
+
 pub async fn page() -> Html<&'static str> {
     Html(PAGE.as_str())
 }
@@ -36,11 +75,16 @@ const PAGE_HTML: &str = r##"<!doctype html>
 <meta name="color-scheme" content="light dark">
 <title>__SERVERNAME__</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="brew-server">
 <style>
 :root{
   --bg:#eceff4;--bg2:#ffffff;--bg3:#f3f5f9;--bg4:#d6dde7;
   --border:#dde3ec;--sep:rgba(20,30,50,0.09);
-  --accent:#00876a;--accent2:#1565c0;--warn:#9a5400;--danger:#c0203a;--ok:#16876b;
+  --accent:#1f4fe0;--accent2:#1236a8;--warn:#9a5400;--danger:#c0203a;--ok:#16876b;
   --text:#16202e;--text2:#3d4f66;--text3:#5f7188;
   --sidebar:#ffffff;--sidebar-border:#e3e8ef;
   --shadow:0 1px 3px rgba(20,30,50,.06),0 4px 16px -8px rgba(20,30,50,.10);
@@ -52,22 +96,22 @@ const PAGE_HTML: &str = r##"<!doctype html>
 @media (prefers-color-scheme:dark){:root:not([data-theme=light]){
   --bg:#090d14;--bg2:#111824;--bg3:#19212f;--bg4:#2b3850;
   --border:#232e40;--sep:rgba(255,255,255,0.07);
-  --accent:#00d4a8;--accent2:#4da6ff;--warn:#ffb224;--danger:#ff4d6d;--ok:#2ec6a6;
+  --accent:#4d86ff;--accent2:#8fb0ff;--warn:#ffb224;--danger:#ff4d6d;--ok:#2ec6a6;
   --text:#eef3fb;--text2:#94abc9;--text3:#7f93b5;
   --sidebar:#070a10;--sidebar-border:#161d2c;
   --shadow:0 1px 2px rgba(0,0,0,.45),0 10px 28px -14px rgba(0,0,0,.65);
   --hair:inset 0 1px 0 rgba(255,255,255,.05);
-  --on-accent:#04120e;
+  --on-accent:#06102a;
 }}
 :root[data-theme=dark]{
   --bg:#090d14;--bg2:#111824;--bg3:#19212f;--bg4:#2b3850;
   --border:#232e40;--sep:rgba(255,255,255,0.07);
-  --accent:#00d4a8;--accent2:#4da6ff;--warn:#ffb224;--danger:#ff4d6d;--ok:#2ec6a6;
+  --accent:#4d86ff;--accent2:#8fb0ff;--warn:#ffb224;--danger:#ff4d6d;--ok:#2ec6a6;
   --text:#eef3fb;--text2:#94abc9;--text3:#7f93b5;
   --sidebar:#070a10;--sidebar-border:#161d2c;
   --shadow:0 1px 2px rgba(0,0,0,.45),0 10px 28px -14px rgba(0,0,0,.65);
   --hair:inset 0 1px 0 rgba(255,255,255,.05);
-  --on-accent:#04120e;
+  --on-accent:#06102a;
 }
 :root[data-theme=dark]{color-scheme:dark} :root[data-theme=light]{color-scheme:light}
 @media (prefers-contrast:more){:root{--text2:var(--text);--text3:var(--text2);--border:var(--text3)}}
@@ -3089,6 +3133,28 @@ mod tests {
         for c in ["bl-w", "bl-t", "bl-s", "bl-g"] {
             assert!(super::LOGO_SVG.contains(&format!(r#"class="{c}""#)), "{c} themable");
         }
+    }
+
+    #[tokio::test]
+    async fn app_manifest_and_icons_are_served() {
+        use axum::response::IntoResponse;
+        let page = super::PAGE.as_str();
+        assert!(page.contains(r#"<link rel="manifest" href="/manifest.webmanifest">"#));
+        assert!(page.contains(r#"<link rel="apple-touch-icon" href="/apple-touch-icon.png">"#));
+        let r = super::manifest().await.into_response();
+        assert_eq!(r.headers()["content-type"], "application/manifest+json");
+        let body = axum::body::to_bytes(r.into_body(), 1 << 16).await.unwrap();
+        let m: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(m["name"], super::APP_NAME);
+        assert_eq!(m["display"], "standalone");
+        assert_eq!(m["icons"].as_array().unwrap().len(), 2);
+        for (bytes, size) in [(super::ICON_192, 192u32), (super::ICON_512, 512), (super::APPLE_TOUCH_ICON, 180)] {
+            assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+            assert_eq!(u32::from_be_bytes(bytes[16..20].try_into().unwrap()), size, "width");
+            assert_eq!(u32::from_be_bytes(bytes[20..24].try_into().unwrap()), size, "height");
+        }
+        let r = super::icon_512().await.into_response();
+        assert_eq!(r.headers()["content-type"], "image/png");
     }
 
     #[tokio::test]

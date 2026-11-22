@@ -132,6 +132,10 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/classic", get(classic_index))
         .route("/ui", get(crate::dashboard_ui::page))
         .route("/favicon.svg", get(crate::dashboard_ui::favicon))
+        .route("/manifest.webmanifest", get(crate::dashboard_ui::manifest))
+        .route("/icon-192.png", get(crate::dashboard_ui::icon_192))
+        .route("/icon-512.png", get(crate::dashboard_ui::icon_512))
+        .route("/apple-touch-icon.png", get(crate::dashboard_ui::apple_touch_icon))
         .route("/api/radios", get(crate::routing_api::radios))
         .route("/api/names", get(crate::accounts::names))
         .route("/api/network-names", get(crate::routing_api::network_names_get))
@@ -236,9 +240,9 @@ async fn require_basic(State(state): State<Arc<AppState>>, request: Request, nex
     let a = access(&state, request.headers());
     let path = request.uri().path().to_owned();
     if a.auth && a.user.is_none() && !cfg.ui.open {
-        // The new dashboard's page and `whoami` load without a login: the page
-        // then opens its own login window.
-        if path == "/ui" || path == "/api/whoami" || (path == "/" && !cfg.legacy_ui) {
+        // The new dashboard's page, `whoami`, the favicon and the app icons load
+        // without a login: the page then opens its own login window (showing the logo).
+        if path == "/ui" || path == "/api/whoami" || path == "/favicon.svg" || crate::dashboard_ui::APP_ASSETS.contains(&path.as_str()) || (path == "/" && !cfg.legacy_ui) {
             return next.run(request).await;
         }
         if crate::dashboard_auth::from_ui(request.headers()) {
@@ -303,7 +307,7 @@ enum Need {
 /// `dash_users::PAGES`). Routes not listed are for admins.
 fn need(path: &str) -> Need {
     const ANY: &[&str] = &[
-        "/", "/ui", "/api/whoami", "/api/live", "/api/names", "/api/network-names", "/api/issi-names", "/api/issi-kinds", "/api/gssi-names", "/api/callsigns",
+        "/", "/ui", "/favicon.svg", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png", "/api/whoami", "/api/live", "/api/names", "/api/network-names", "/api/issi-names", "/api/issi-kinds", "/api/gssi-names", "/api/callsigns",
         "/api/callsign-db", "/api/talkgroups", "/api/pools", "/api/emergencies", "/api/ha", "/api/password",
     ];
     if ANY.contains(&path) {
@@ -2660,9 +2664,9 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
         c.write_all(req.as_bytes()).await.unwrap();
-        let mut out = String::new();
-        c.read_to_string(&mut out).await.unwrap();
-        out
+        let mut out = Vec::new();
+        c.read_to_end(&mut out).await.unwrap();
+        String::from_utf8_lossy(&out).into_owned()
     }
 
     /// Server settings -> Users: each user sees only its pages (the data of
@@ -2778,6 +2782,12 @@ mod tests {
 
         // The new page and whoami load without a login; whoami asks for one.
         assert!(http(addr, get("/", "")).await.starts_with("HTTP/1.1 200"));
+        let icon = http(addr, get("/favicon.svg", "")).await;
+        assert!(icon.starts_with("HTTP/1.1 200") && icon.contains("image/svg+xml"), "the favicon needs no login: {icon}");
+        for path in crate::dashboard_ui::APP_ASSETS {
+            let r = http(addr, get(path, "")).await;
+            assert!(r.starts_with("HTTP/1.1 200"), "{path} needs no login: {}", &r[..r.len().min(200)]);
+        }
         let who = http(addr, get("/api/whoami", "")).await;
         assert!(who.contains("\"need_login\":true"), "{who}");
         // Data needs a login: the browser's dialog for classic pages, a plain 401 for the new page.
