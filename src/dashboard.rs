@@ -645,7 +645,7 @@ function drawRadios(){{
     else{{markers[key]=L.marker(ll,{{icon,zIndexOffset:z}}).addTo(map).bindPopup(html).on('click',()=>showTrack(issi));}}}};
   d.radios.forEach(r=>{{
     const f=r.fix,st=r.dock&&btsMarkers[r.dock];
-    const html=`${{r.emergency?'<div class=emg-pop>&#128680; EMERGENCY</div>':''}}<b>ISSI ${{r.issi}}${{nm(r.issi)}}</b>${{r.terminal?' (Terminal)':''}}${{r.online?'':'<br><span style="color:#a55">Offline (not registered)</span>'}}${{st?'<br>On station: '+esc(st._name||r.dock):''}}${{f?`<br>Position ${{f.lat.toFixed(5)}}, ${{f.lon.toFixed(5)}} (${{ago(f.at_ms)}} ago)<br>${{new Date(f.at_ms).toLocaleString()}}<br><span style="color:#555">${{esc(f.source_text||'')}}</span>`:'<br>No position'}}${{r.points>1?`<br><span style="color:#555">${{r.points}} positions, click shows the track</span>`:''}}`;
+    const html=`${{r.emergency?'<div class=emg-pop>&#128680; EMERGENCY</div>':''}}<b>ISSI ${{r.issi}}${{nm(r.issi)}}</b>${{r.terminal?' (Terminal)':''}}${{r.vassi?'<br>As visitor: VASSI '+r.vassi:''}}${{r.online?'':'<br><span style="color:#a55">Offline (not registered)</span>'}}${{st?'<br>On station: '+esc(st._name||r.dock):''}}${{f?`<br>Position ${{f.lat.toFixed(5)}}, ${{f.lon.toFixed(5)}} (${{ago(f.at_ms)}} ago)<br>${{new Date(f.at_ms).toLocaleString()}}<br><span style="color:#555">${{esc(f.source_text||'')}}</span>`:'<br>No position'}}${{r.points>1?`<br><span style="color:#555">${{r.points}} positions, click shows the track</span>`:''}}`;
     const z=r.emergency?10000:sel===r.issi?900:0;
     if(r.docked&&st){{(docked[r.dock]=docked[r.dock]||[]).push([r,html,z]);}}
     else if(f){{put('r'+r.issi,[f.lat,f.lon],msMarkerIcon(r,44,0,0,fresh>0&&now-f.at_ms>fresh/2),z,html,r.issi);}}
