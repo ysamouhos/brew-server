@@ -2,6 +2,16 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.22.4 (brew-server logo) adds:
+
+- **The brew-server logo.** The dashboard sidebar starts with the logo (the
+  mug with the honeycomb, its steam the radio waves, and the "brew server"
+  wordmark), in its light and dark colours with the dashboard theme; the
+  server name and version follow under it. The sign-in window shows the mug,
+  and the browser tab shows it as favicon (`/favicon.svg`). The README starts
+  with the logo too. Logo by Sebastian OE4SXM; the files are in
+  `assets/logo/`.
+
 Version 1.22.3 (Map: Clear map resets everything) adds:
 
 - **"Clear map" resets the whole map.** The button on Settings → Map (was

@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/brew-server-logo-dark.svg">
+    <img src="assets/logo/brew-server-logo-light.svg" alt="brew server" width="420">
+  </picture>
+</p>
+
 # brew-server
 
 Experimental Rust Brew core for linking two or more MidnightBlue Basestation or Flowstation TETRA base stations.
@@ -130,8 +137,14 @@ dashboard's `/healthz` (port 9003) answers on both, with the node's role.
 Two brew-servers can run as an active/standby pair sharing a virtual IP on
 one LAN. See [docs/High-Availability.md](docs/High-Availability.md).
 
+## Logo
+
+The brew-server logo was designed by Sebastian OE4SXM
+([sebastianmadl](https://github.com/sebastianmadl)). The files (light, dark,
+favicon) are in [assets/logo/](assets/logo/).
+
 ## Credits
 
 - Joaquin EA5GVK
-- Sebastian OE4SXM ([sebastianmadl](https://github.com/sebastianmadl)) -- late entry, carrier registry, handover and individual calls between Basestations, the Brew extensions, dashboard redesign, Routing page and talkgroup pools, login and accounts pages, ISSI and GSSI directory, group access and RX only (`group-access`), Multi Network (bridges to other networks, visitors, `issi-check`, `mni`), Fleet Control (managing the Basestations from the server)
+- Sebastian OE4SXM ([sebastianmadl](https://github.com/sebastianmadl)) -- the brew-server logo, late entry, carrier registry, handover and individual calls between Basestations, the Brew extensions, dashboard redesign, Routing page and talkgroup pools, login and accounts pages, ISSI and GSSI directory, group access and RX only (`group-access`), Multi Network (bridges to other networks, visitors, `issi-check`, `mni`), Fleet Control (managing the Basestations from the server)
 - David Harcus MM7FDM
