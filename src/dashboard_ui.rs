@@ -2937,14 +2937,14 @@ function mapSettingsCard(){
     <div><label class="l" for="map-dock">Dock after (minutes)</label><input class="f" id="map-dock" type="number" min="0" max="10080" value="${c.dock_after_min}" style="width:100%"></div>
     <button class="btn pri" onclick="saveMapSettings()">Save</button></div>
    <div class="svc"><label style="display:flex;gap:10px;align-items:center;font-size:13px;font-weight:600"><button class="tog" role="switch" id="map-guest" aria-checked="${c.guests_see_track!==false}" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true')"></button> Guests see tracks</label><span class="mut" style="font-size:12px">Visitors who are not signed in</span></div>
-   <div class="svc"><button class="btn danger" onclick="clearMapTracks()">Clear all tracks</button></div>${msgDiv('map-msg','padding:0 18px 12px')}</div>`;
+   <div class="svc"><button class="btn danger" onclick="clearMapTracks()">Clear map</button><span class="mut" style="font-size:12px">Forgets all tracks and every radio's last position. Registered radios stay next to their station until they send a position again.</span></div>${msgDiv('map-msg','padding:0 18px 12px')}</div>`;
 }
 async function saveMapSettings(){
   try{const c=await postJ('/api/map/settings',{track_points:Number(v('map-pts')),dock_after_min:Number(v('map-dock')),guests_see_track:$('map-guest').getAttribute('aria-checked')==='true'});D.mapSet={...D.mapSet,settings:c};setMsg('map-msg','ok','Saved');render(true);}catch(e){setMsg('map-msg','err',e.message);}
 }
 async function clearMapTracks(){
-  if(!confirm('Forget the stored positions of every radio?'))return;
-  try{await api('/api/map/clear',{method:'POST'});setMsg('map-msg','ok','All tracks cleared.');}catch(e){setMsg('map-msg','err',e.message);}
+  if(!confirm('Clear the map?\n\nForgets all tracks and every radio\'s last position. Stations stay.'))return;
+  try{await api('/api/map/clear',{method:'POST'});setMsg('map-msg','ok','Map cleared.');}catch(e){setMsg('map-msg','err',e.message);}
 }
 // Server settings: the parrot ([parrot], live, no restart).
 function parrotCard(){
