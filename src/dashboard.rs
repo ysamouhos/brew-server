@@ -1421,6 +1421,7 @@ fn describe_endpoint(ep: &crate::config::RouteEndpoint) -> String {
         SipTrunk { trunk, number } if number.is_empty() => format!("trunk:{trunk}"),
         SipTrunk { trunk, number } => format!("trunk:{trunk}/{number}"),
         BrewPrivate { issi } => format!("issi:{issi}"),
+        BrewPrivateDialled => "issi:dialled".to_string(),
         BrewGroup { gssi } => format!("group:{gssi}"),
     }
 }

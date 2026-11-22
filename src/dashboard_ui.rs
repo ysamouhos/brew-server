@@ -2731,15 +2731,16 @@ R.sip=()=>{
 };
 
 // SIP Config: read-only for everyone; an admin adds, edits and deletes extensions, trunks and routes here.
-// Endpoints as written in the forms: ext:USER, trunk:NAME[/NUMBER], issi:N, group:N.
+// Endpoints as written in the forms: ext:USER, trunk:NAME[/NUMBER], issi:N, issi:dialled, group:N.
 function sipEp(s){s=(s||'').trim();if(!s)return null;const i=s.indexOf(':');if(i<0)return undefined;const k=s.slice(0,i),r=s.slice(i+1);
   if(k==='ext'&&r)return {kind:'sip_extension',user:r};
   if(k==='trunk'&&r){const [trunk,number]=r.split('/');return {kind:'sip_trunk',trunk,number:number||''};}
+  if(k==='issi'&&r==='dialled')return {kind:'brew_private_dialled'};
   if(k==='issi'&&+r>0)return {kind:'brew_private',issi:+r};
   if(k==='group'&&+r>0)return {kind:'brew_group',gssi:+r};
   return undefined;}
 function sipEpTxt(ep){if(!ep)return '';if(ep.kind==='sip_extension')return 'ext:'+ep.user;if(ep.kind==='sip_trunk')return ep.number?`trunk:${ep.trunk}/${ep.number}`:'trunk:'+ep.trunk;
-  if(ep.kind==='brew_private')return 'issi:'+ep.issi;if(ep.kind==='brew_group')return 'group:'+ep.gssi;return '';}
+  if(ep.kind==='brew_private')return 'issi:'+ep.issi;if(ep.kind==='brew_private_dialled')return 'issi:dialled';if(ep.kind==='brew_group')return 'group:'+ep.gssi;return '';}
 R.sipcfg=()=>{
   const d=D.sipc;if(!d)return loading;
   const adm=D.who.admin,F=D.sipFull;
@@ -2758,7 +2759,7 @@ R.sipcfg=()=>{
    <div class="tw"><table><thead><tr><th>Name</th><th>Direction</th><th class="hide-s">Remote host</th><th class="hide-s">Username</th><th class="hide-s">Realm</th><th class="hide-s">Registration</th><th>Enabled</th><th class="hide-s">Password</th>${adm&&F?'<th></th>':''}</tr></thead><tbody>
    ${d.trunks.map(t=>`<tr><td><b>${esc(t.name)}</b></td><td>${esc(t.direction)}</td><td class="m hide-s">${esc(t.remote_host||'—')}</td><td class="m hide-s">${esc(t.username||'—')}</td><td class="mut hide-s">${esc(t.realm||'—')}</td><td class="num hide-s">every ${esc(t.register_interval_seconds)} s</td><td>${yn(t.enabled)}</td><td class="hide-s">${pwChip(t.has_password)}</td>${act('trunk',t.name)}</tr>`).join('')||'<tr><td colspan="9" class="mut">No trunks provisioned</td></tr>'}
    </tbody></table></div></div>
-  <div class="card"><div class="ch"><h2>Voice routes</h2><span class="cnt">${d.routes.length}</span>${helpBtn('siprt')}${addBtn('route')}</div>${helpNote('siprt','Routes are checked from top to bottom; the first enabled route whose match pattern (and optional <i>from</i>) fits the dialled number wins. Endpoints: <code>ext:USER</code> (SIP extension), <code>trunk:NAME</code> or <code>trunk:NAME/NUMBER</code>, <code>issi:N</code> (individual call to a radio), <code>group:N</code> (group call). <i>Strip prefix</i> removes a leading literal (e.g. the outside line digit "9") only from the number handed to a <code>trunk:NAME</code> without a number. Editing keeps a route\'s position; a new route goes to the end (reorder it on the Config file page).')}
+  <div class="card"><div class="ch"><h2>Voice routes</h2><span class="cnt">${d.routes.length}</span>${helpBtn('siprt')}${addBtn('route')}</div>${helpNote('siprt','Routes are checked from top to bottom; the first enabled route whose match pattern (and optional <i>from</i>) fits the dialled number wins. Endpoints: <code>ext:USER</code> (SIP extension), <code>trunk:NAME</code> or <code>trunk:NAME/NUMBER</code>, <code>issi:N</code> (individual call to a radio), <code>issi:dialled</code> (ISSI from dialled digits), <code>group:N</code> (group call). <i>Strip prefix</i> removes a leading literal (e.g. the outside line digit "9") only from the number handed to a <code>trunk:NAME</code> without a number. Editing keeps a route\'s position; a new route goes to the end (reorder it on the Config file page).')}
    <div class="tw"><table><thead><tr><th>#</th><th>Name</th><th>Match</th><th class="hide-s">Strip prefix</th><th>From</th><th>To</th><th>Enabled</th>${adm&&F?'<th></th>':''}</tr></thead><tbody>
    ${d.routes.map((r,i)=>`<tr><td class="mut num">${i+1}</td><td><b>${esc(r.name||'—')}</b></td><td><code>${esc(r.match_pattern)}</code></td><td class="m mut hide-s">${esc(r.strip_prefix||'—')}</td><td class="m">${esc(r.from||'any')}</td><td class="m">${esc(r.to||'—')}</td><td>${yn(r.enabled)}</td>${act('route',r.name)}</tr>`).join('')||'<tr><td colspan="8" class="mut">No voice routes</td></tr>'}
    </tbody></table></div></div>`;
@@ -2780,8 +2781,8 @@ function sipEdit(kind,key){
   else{const r=isNew?{name:'',match_pattern:'',strip_prefix:'',from:null,to:null,enabled:true}:(F.routes||[]).find(x=>x.name===key)||{};title=isNew?'New voice route':'Voice route '+esc(key);
     body=`${fld('sr-name','Name',r.name||'',(isNew?'':'disabled ')+'placeholder="e.g. outside line" autocomplete="off"')}
      <div class="row2">${fld('sr-match','Match pattern',r.match_pattern||'','placeholder="e.g. 9*" spellcheck="false"')}${fld('sr-strip','Strip prefix',r.strip_prefix||'','placeholder="e.g. 9" spellcheck="false"')}</div>
-     ${fld('sr-from','From (optional)',sipEpTxt(r.from),'placeholder="any, or ext:1001 / trunk:NAME / issi:N / group:N" spellcheck="false"')}
-     ${fld('sr-to','To',sipEpTxt(r.to),'placeholder="ext:1001 / trunk:NAME[/NUMBER] / issi:N / group:N" spellcheck="false"')}
+     ${fld('sr-from','From (optional)',sipEpTxt(r.from),'placeholder="any, or ext:1001 / trunk:NAME / issi:N / issi:dialled / group:N" spellcheck="false"')}
+     ${fld('sr-to','To',sipEpTxt(r.to),'placeholder="ext:1001 / trunk:NAME[/NUMBER] / issi:N / issi:dialled / group:N" spellcheck="false"')}
      ${swRow('sr-en',r.enabled!==false,'Enabled','')}`;}
   $('sheet').innerHTML=`<div class="ch"><h3 id="sheet-title">${title}</h3></div><div class="sb">${body}
    <div class="mut" style="font-size:12px">Saving writes the config file and restarts the server within a few seconds.</div><div class="msg" id="sheet-msg" style="padding:0"></div></div>
@@ -2797,8 +2798,8 @@ async function sipSave(kind,key){
     url='/api/config/sip/trunks/'+encodeURIComponent(name);body={direction:$('st-dir').value,remote_host:v('st-host'),username:v('st-user'),password:$('st-pw').value,realm:v('st-realm'),register_interval_seconds:parseInt(v('st-int'),10)||300,enabled:on('st-en')};}
   else{const name=key??v('sr-name');if(!name)return bad('The route needs a name.');
     const from=sipEp(v('sr-from')),to=sipEp(v('sr-to'));
-    if(from===undefined)return bad('From: write ext:USER, trunk:NAME, issi:N or group:N, or leave it empty.');
-    if(!to)return bad('To: write ext:USER, trunk:NAME[/NUMBER], issi:N or group:N.');
+    if(from===undefined)return bad('From: write ext:USER, trunk:NAME, issi:N, issi:dialled or group:N, or leave it empty.');
+    if(!to)return bad('To: write ext:USER, trunk:NAME[/NUMBER], issi:N, issi:dialled or group:N.');
     url='/api/config/sip/routes';body={name,match_pattern:v('sr-match')||'*',strip_prefix:v('sr-strip'),from,to,enabled:on('sr-en')};}
   m.className='msg mut';m.textContent='Saving…';
   try{await postJ(url,body);closeSheet();sipSaved();}catch(e){bad(e.message);}

@@ -50,15 +50,19 @@ fn pattern_matches(pattern: &str, dialled: &str) -> bool {
 
 /// Converts a config endpoint to a runtime leg endpoint, filling the dialled
 /// number for a trunk destination when the route did not fix one.
-fn resolve_endpoint(ep: &RouteEndpoint, dialled: &str) -> LegEndpoint {
+fn resolve_endpoint(ep: &RouteEndpoint, dialled: &str) -> Option<LegEndpoint> {
     match ep {
-        RouteEndpoint::SipExtension { user } => LegEndpoint::SipExtension { aor: user.clone() },
-        RouteEndpoint::SipTrunk { trunk, number } => LegEndpoint::SipTrunk {
+        RouteEndpoint::SipExtension { user } => Some(LegEndpoint::SipExtension { aor: user.clone() }),
+        RouteEndpoint::SipTrunk { trunk, number } => Some(LegEndpoint::SipTrunk {
             trunk: trunk.clone(),
             number: if number.is_empty() { dialled.to_string() } else { number.clone() },
-        },
-        RouteEndpoint::BrewPrivate { issi } => LegEndpoint::BrewPrivate { issi: *issi },
-        RouteEndpoint::BrewGroup { gssi } => LegEndpoint::BrewGroup { gssi: *gssi },
+        }),
+        RouteEndpoint::BrewPrivate { issi } => Some(LegEndpoint::BrewPrivate { issi: *issi }),
+        RouteEndpoint::BrewPrivateDialled => {
+            let issi = dialled.parse::<u32>().ok().filter(|i| *i > 0)?;
+            Some(LegEndpoint::BrewPrivate { issi })
+        }
+        RouteEndpoint::BrewGroup { gssi } => Some(LegEndpoint::BrewGroup { gssi: *gssi }),
     }
 }
 
@@ -83,7 +87,8 @@ pub fn resolve<'a>(
         } else {
             dialled.strip_prefix(route.strip_prefix.as_str()).unwrap_or(dialled)
         };
-        return Some((resolve_endpoint(to, stripped), route));
+        let endpoint = resolve_endpoint(to, stripped)?;
+        return Some((endpoint, route));
     }
     None
 }
@@ -184,6 +189,34 @@ mod tests {
             LegEndpoint::BrewPrivate { issi } => assert_eq!(issi, 90),
             _ => panic!("expected brew private leg"),
         }
+    }
+
+    #[test]
+    fn dynamic_private_route_uses_dialled_issi() {
+        let routes = vec![
+            route("dynamic-private", "*", RouteEndpoint::BrewPrivateDialled, None),
+        ];
+        let (leg, _) = resolve(&routes, &CallOrigin::SipTrunk("asterisk".into()), "2358202").unwrap();
+        match leg {
+            LegEndpoint::BrewPrivate { issi } => assert_eq!(issi, 2358202),
+            _ => panic!("expected brew private leg"),
+        }
+    }
+
+    #[test]
+    fn dynamic_private_route_rejects_non_numeric_destination() {
+        let routes = vec![
+            route("dynamic-private", "*", RouteEndpoint::BrewPrivateDialled, None),
+        ];
+        assert!(resolve(&routes, &CallOrigin::SipTrunk("asterisk".into()), "abc").is_none());
+    }
+
+    #[test]
+    fn dynamic_private_route_rejects_zero_destination() {
+        let routes = vec![
+            route("dynamic-private", "*", RouteEndpoint::BrewPrivateDialled, None),
+        ];
+        assert!(resolve(&routes, &CallOrigin::SipTrunk("asterisk".into()), "0").is_none());
     }
 
     #[test]
