@@ -2,6 +2,14 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.22.6 (Networks without a cell) adds:
+
+- **Fleet Control editor: networks without a cell.** A station that announces
+  `networks-unused-v1` (FlowStation keeps such a network inactive, no Brew
+  link, until a cell selects it) can now save a network no cell uses; the
+  editor marks it *unused*. Stations without it still need a cell for every
+  network before Apply, as they would refuse the config.
+
 Version 1.22.5 (Logo colours) adds:
 
 - **Dashboard colours from the logo.** The accent colour (buttons, links,
@@ -16,11 +24,6 @@ Version 1.22.5 (Logo colours) adds:
   (the favicon on a dark background, 192, 512 and 180 px for iOS), so a phone
   can add it as an app named "brew-server" (renamable when adding). The manifest and
   icons load without a login.
-- **Fleet Control editor: networks without a cell.** A station that announces
-  `networks-unused-v1` (FlowStation keeps such a network inactive, no Brew
-  link, until a cell selects it) can now save a network no cell uses; the
-  editor marks it *unused*. Stations without it still need a cell for every
-  network before Apply, as they would refuse the config.
 
 Version 1.22.4 (brew-server logo) adds:
 
