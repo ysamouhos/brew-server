@@ -588,7 +588,9 @@ LA, network; add / remove), Multi Network, cell reselection, neighbours per
 cell (manual or picked from the server's cell directory), telemetry, command
 channel, Home Mode Display, ISSI whitelist, update source and the config
 file (editable; passwords and keys hidden, only changed values are sent).
-Networks with their own Brew server (home included) show their whole link. Changed fields are marked; **Apply to station** (online) or
+Networks with their own Brew server (home included) show their whole link. A network no cell uses
+is marked *unused* and can be saved when the station announces `networks-unused-v1` (it keeps the
+network inactive); for other stations it blocks Apply (*no cell*), as they refuse such a config. Changed fields are marked; **Apply to station** (online) or
 **Save as pending** (offline) shows the list of changes first.
 
 ### 10.4 HTTP API (Fleet Control management)
