@@ -181,7 +181,7 @@ main{flex:1;min-width:0;display:flex;flex-direction:column;height:100vh;height:1
 .btn:hover{border-color:var(--text3)}
 .btn svg{width:15px;height:15px}
 .btn.pri{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
-.btn.danger{color:var(--danger)}
+.btn.danger{color:var(--danger)}.btn.kill{background:var(--danger);border-color:var(--danger);color:#fff;font-weight:600}
 .btn:disabled{opacity:.45;cursor:default}
 .btn.ic{width:32px;padding:0;justify-content:center}
 .content{padding:22px 28px 40px;display:flex;flex-direction:column;gap:18px;width:100%;max-width:1500px}
@@ -1288,7 +1288,7 @@ R.radioctl=()=>{
 const v=id=>($(id)||{}).value||'';
 
 /* ---------- Fleet Control (docs/Fleet-Control.md) ---------- */
-const FLEET_KIND={fleet_on:['On','a'],fleet_off:['Off','d'],version:['Software','b'],removed:['Removed','w'],update:['Update','b'],update_done:['Updated','a'],update_alarm:['Alarm','d'],update_skip:['Skipped','w'],update_end:['Update run','b'],settings:['Settings','i'],log_clear:['Cleared','i'],maintenance:['Maintenance','w'],restart:['Restart','b'],restart_alarm:['Alarm','d'],config:['Config','i'],config_alarm:['Alarm','d'],template:['Template','i']};
+const FLEET_KIND={fleet_on:['On','a'],fleet_off:['Off','d'],version:['Software','b'],removed:['Removed','w'],update:['Update','b'],update_done:['Updated','a'],update_alarm:['Alarm','d'],update_skip:['Skipped','w'],update_end:['Update run','b'],settings:['Settings','i'],log_clear:['Cleared','i'],maintenance:['Maintenance','w'],restart:['Restart','b'],rf:['RF','w'],restart_alarm:['Alarm','d'],config:['Config','i'],config_alarm:['Alarm','d'],template:['Template','i']};
 const FLEET_STAGE={download:'Download',build:'Build',install:'Installing',restart:'Restarting',up_to_date:'Up to date',failed:'Failed'};
 if(!UI.fsel)UI.fsel=new Set();
 const fleetJobOn=f=>!!(f&&f.job&&!f.job.finished_ms);
@@ -1349,10 +1349,10 @@ R.fleet=()=>{
    ${st.length?`<div class="tw"><table><thead><tr>${m?`<th style="width:28px"><input type="checkbox" class="chk" aria-label="Tick every station" ${sel.length&&sel.length===st.length?'checked':''} onclick="fleetSelAll(this.checked)"></th>`:''}<th>Station</th><th>Status</th><th>Software</th><th>Update</th><th>Network</th><th>Features</th>${m?'<th></th>':''}</tr></thead><tbody>${st.map(x=>{const sid=x.id.replace(/[^a-zA-Z0-9_-]/g,'_');const it=fleetItem(f,x.id);const cancelable=live&&it&&['pending','waiting_call'].includes(it.state.state);return `<tr>
      ${m?`<td><input type="checkbox" class="chk" aria-label="Tick ${esc(x.label)}" ${UI.fsel.has(x.id)?'checked':''} onclick="fleetSel('${esc(x.id)}',this.checked)"></td>`:''}
      <td><b>${esc(x.label)}</b>${x.label!==x.id?` <span class="mut m" style="font-size:12px">${esc(x.id)}</span>`:''}</td>
-     <td>${x.online?'<span class="st"><i></i>Online</span>':`<span class="st d" title="Last seen ${esc(tmd(x.last_seen_ms))}"><i></i>Offline · ${ago(x.last_seen_ms)}</span>`}${fleetMaintChip(x)}${fleetCfgChip(x)}${x.restart?`<div><span class="chip b" title="Sent ${esc(tmd(x.restart.at_ms))}${x.restart.by?' by '+esc(x.restart.by):''}; ALARM if not back after 10 min">${x.restart.host?'Rebooting':'Restarting'} · ${ago(x.restart.at_ms)}</span></div>`:''}</td>
+     <td>${x.online?(x.rf_standby?'<span class="st w" title="RF kill switch / Suspend: transmitter off, control channel up"><i></i>Standby · RF off</span>':'<span class="st"><i></i>Online</span>'):`<span class="st d" title="Last seen ${esc(tmd(x.last_seen_ms))}"><i></i>Offline · ${ago(x.last_seen_ms)}</span>`}${fleetMaintChip(x)}${fleetCfgChip(x)}${x.restart?`<div><span class="chip b" title="Sent ${esc(tmd(x.restart.at_ms))}${x.restart.by?' by '+esc(x.restart.by):''}; ALARM if not back after 10 min">${x.restart.host?'Rebooting':'Restarting'} · ${ago(x.restart.at_ms)}</span></div>`:''}</td>
      <td>${fleetSw(f,x)}</td><td><div style="max-width:230px">${fleetUpd(f,x)}</div></td><td class="m">${x.mcc}/${x.mnc}</td>
      <td>${(x.capabilities||[]).map(c=>`<span class="chip">${esc(c)}</span>`).join(' ')||'<span class="mut">—</span>'}</td>
-     ${m?`<td style="text-align:right"><div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;align-items:center;min-width:170px;max-width:330px;margin-left:auto">${cancelable?`<button class="btn" onclick="fleetCancel('${esc(x.id)}')" title="Take this station out of the run">Cancel</button>`:''}${fleetHas(x,'maintenance-v1')?(fleetMaintOn(x)?`<button class="btn danger" ${x.online?'':'disabled'} onclick="fleetMaintEnd('${esc(x.id)}','${esc(x.label)}')" title="Remove the red banner on the station">End maintenance</button>`:`<button class="btn" ${x.online?'':'disabled'} onclick="fleetMaintDlg('${esc(x.id)}')" title="Red banner on every page of the station's dashboard: work in progress">Maintenance</button>`):''}${fleetHas(x,'config-v1')?`<button class="btn" onclick="fleetEdit('${esc(x.id)}')" title="Read and change the station's config">${x.config&&x.config.drift?'Resolve…':'Edit'}</button>`:''}${!live&&(fleetHas(x,'restart-v1')||(D.ctl||[]).includes(x.id))?`<button class="btn" ${x.online?'':'disabled'} onclick="fleetRestartDlg('${esc(x.id)}')" title="Restart or shut down the service, or reboot the system">${ic('power')}Power options</button>`:''}${x.online?'':`<button class="btn danger" onclick="fleetRemove('${esc(x.id)}','${esc(x.label)}')">${ic('trash')}Remove</button>`}</div><div>${msgDiv('fl_'+sid,'padding:0;font-size:12px')}</div></td>`:''}</tr>`;}).join('')}</tbody></table></div>`
+     ${m?`<td style="text-align:right"><div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;align-items:center;min-width:170px;max-width:330px;margin-left:auto">${cancelable?`<button class="btn" onclick="fleetCancel('${esc(x.id)}')" title="Take this station out of the run">Cancel</button>`:''}${fleetHas(x,'maintenance-v1')?(fleetMaintOn(x)?`<button class="btn danger" ${x.online?'':'disabled'} onclick="fleetMaintEnd('${esc(x.id)}','${esc(x.label)}')" title="Remove the red banner on the station">End maintenance</button>`:`<button class="btn" ${x.online?'':'disabled'} onclick="fleetMaintDlg('${esc(x.id)}')" title="Red banner on every page of the station's dashboard: work in progress">Maintenance</button>`):''}${fleetHas(x,'config-v1')?`<button class="btn" onclick="fleetEdit('${esc(x.id)}')" title="Read and change the station's config">${x.config&&x.config.drift?'Resolve…':'Edit'}</button>`:''}${!live&&(fleetHas(x,'restart-v1')||(D.ctl||[]).includes(x.id))?`<button class="btn" ${x.online?'':'disabled'} onclick="fleetRestartDlg('${esc(x.id)}')" title="Restart or shut down the service, or reboot the system">${ic('power')}Power options</button>`:''}${!live&&fleetHas(x,'rf-standby-v1')?(x.rf_standby?`<button class="btn pri" ${x.online?'':'disabled'} onclick="fleetRfOn('${esc(x.id)}','${esc(x.label)}')" title="Start the radio stack again (service restart)">${ic('power')}RF on</button>`:`<button class="btn kill" ${x.online?'':'disabled'} onclick="fleetRfDlg('${esc(x.id)}')" title="RF kill switch: suspend the radio stack, the transmitter goes off">${ic('power')}RF off</button>`):''}${x.online?'':`<button class="btn danger" onclick="fleetRemove('${esc(x.id)}','${esc(x.label)}')">${ic('trash')}Remove</button>`}</div><div>${msgDiv('fl_'+sid,'padding:0;font-size:12px')}</div></td>`:''}</tr>`;}).join('')}</tbody></table></div>`
    :`<div class="empty">No station uses Fleet Control yet. A FlowStation turns it on with the switch <b>Fleet Control</b> on its Infrastructure page${f.offered?'':' (this server offers it only while <code>[control]</code> is on)'}.</div>`}</div>
   ${fleetTplCard(f)}${fleetNbCard(f)}
   <div class="card"><div class="ch"><h2>Change log</h2><span class="cnt">${log.length}</span><span class="sp"></span><input class="f" placeholder="Search" aria-label="Search the change log" value="${esc(UI.filter.fleet||'')}" oninput="UI.filter.fleet=this.value;render(true);const e=document.querySelector('[aria-label=&quot;Search the change log&quot;]');if(e){e.focus();e.setSelectionRange(e.value.length,e.value.length);}" style="width:180px"><span class="mut" style="font-size:12px">kept 90 days</span>${f.is_admin?`<button class="btn danger" ${log.length?'':'disabled'} onclick="fleetClearLog()" title="Empty the change log (admins only)">${ic('trash')}Clear</button>`:''}</div>
@@ -1895,6 +1895,29 @@ async function fleetRestartGo(id){
     else await postJ('/api/fleet/restart',{id,host:kind==='host',during_call:$('fr-call').getAttribute('aria-checked')==='true'});
     closeSheet();setMsg('fl_top','ok',{service:'Service restart sent',host:'Reboot sent',shutdown:'Shut down sent'}[kind]);fleetReload();
   }catch(e){setMsg('fr-msg','err',e.message);}
+}
+// RF kill switch (rf-standby-v1): the station's own Suspend. The radio stack stops and the
+// transmitter goes off; dashboard and control channel stay up, so the station shows as Standby
+// here and on the map, and "RF on" starts it again (service restart).
+function fleetRfDlg(id){
+  const x=(D.fleet.stations||[]).find(s=>s.id===id);if(!x)return;
+  $('sheet').innerHTML=`<div class="ch"><h3 id="sheet-title">RF kill switch · ${esc(x.label)}</h3></div><div class="sb">
+   <div style="font-size:13px">Switches the transmitter off with the station's <b>Suspend</b>: the radio stack stops, radios lose the cell. The station stays reachable (dashboard and Fleet Control) and is shown as <b>Standby</b> here and on the map until someone presses <b>RF on</b>.</div>
+   <label style="display:flex;gap:10px;align-items:center;font-size:13px"><button class="tog" role="switch" id="frf-call" aria-checked="false" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true')"></button> Also during a call <span class="mut" style="font-size:12px">(otherwise refused while a call is in progress)</span></label>
+   <div class="mut" style="font-size:12.5px">The transmitter goes off 2 s after the station accepts.</div>
+   ${msgDiv('frf-msg','padding:0')}</div>
+   <div class="acts"><button class="btn" onclick="closeSheet()">Cancel</button><button class="btn kill" onclick="fleetRfGo('${esc(id)}',true)">${ic('power')}Switch RF off</button></div>`;
+  $('scrim').classList.add('on');
+}
+async function fleetRfOn(id,label){
+  if(!confirm('Switch RF on again on '+label+'? The radio stack starts again (service restart, a few seconds to a minute).'))return;
+  await fleetRfGo(id,false);
+}
+async function fleetRfGo(id,standby){
+  try{
+    await postJ('/api/fleet/rf',{id,standby,during_call:standby&&$('frf-call').getAttribute('aria-checked')==='true'});
+    if(standby)closeSheet();setMsg('fl_top','ok',standby?'RF off sent':'RF on sent');fleetReload();
+  }catch(e){if(standby)setMsg('frf-msg','err',e.message);else alert(e.message);}
 }
 async function fleetRemove(id,label){
   if(!confirm('Remove '+label+' from the Fleet Manager? It comes back with its next login while its Fleet Control switch is on.'))return;

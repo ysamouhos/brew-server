@@ -2,6 +2,16 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.22.9 (RF kill switch) adds:
+
+- **Fleet Control: RF kill switch.** A red **RF off** button next to *Power
+  options* switches a station's transmitter off with its own Suspend: the
+  radio stack stops, the dashboard and Fleet Control stay reachable. The
+  station is shown as **Standby · RF off** on the Fleet Control page and with
+  the Stand-by marker on the map (no longer as offline); **RF on** starts it
+  again. Also a Suspend on the station's own dashboard shows as Standby. Needs
+  FlowStation v0.6.7 with `rf-standby-v1`; older stations get no button.
+
 Version 1.22.6 (Networks without a cell) adds:
 
 - **Fleet Control editor: networks without a cell.** A station that announces

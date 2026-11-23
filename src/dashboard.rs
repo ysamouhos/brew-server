@@ -186,6 +186,7 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/fleet/log/clear", axum::routing::post(crate::fleet::api_clear_log))
         .route("/api/fleet/maintenance", axum::routing::post(crate::fleet::api_maintenance))
         .route("/api/fleet/restart", axum::routing::post(crate::fleet::api_restart))
+        .route("/api/fleet/rf", axum::routing::post(crate::fleet::api_rf))
         .route("/api/fleet/graph", get(crate::fleet_monitor::api_graph))
         .route("/api/fleet/alarms/ack", axum::routing::post(crate::fleet_monitor::api_ack))
         .route("/api/fleet/monitor/settings", axum::routing::post(crate::fleet_monitor::api_settings))
@@ -339,7 +340,7 @@ fn need(path: &str) -> Need {
         "/sms-center" | "/api/sms-center" => &["sms"],
         "/ha" => &["ha"],
         "/api/fleet" | "/api/fleet/templates" | "/api/fleet/neighbours" | "/api/fleet/neighbours/check" | "/api/fleet/graph" => &["fleet"],
-        "/api/fleet/remove" | "/api/fleet/ping" | "/api/fleet/check" | "/api/fleet/update" | "/api/fleet/update/cancel" | "/api/fleet/maintenance" | "/api/fleet/restart"
+        "/api/fleet/remove" | "/api/fleet/ping" | "/api/fleet/check" | "/api/fleet/update" | "/api/fleet/update/cancel" | "/api/fleet/maintenance" | "/api/fleet/restart" | "/api/fleet/rf"
         | "/api/fleet/config" | "/api/fleet/config/apply" | "/api/fleet/config/discard" | "/api/fleet/config/import"
         | "/api/fleet/config/rollback" | "/api/fleet/config/raw_preview" | "/api/fleet/edit" | "/api/fleet/templates/save"
         | "/api/fleet/templates/delete" | "/api/fleet/bulk/preview" | "/api/fleet/bulk/start" | "/api/fleet/bulk/cancel" | "/api/fleet/alarms/ack" => &["fleet_manage"],
@@ -606,14 +607,15 @@ let markers={{}};let btsMarkers={{}};let fitted=false;
 // (station, tower, terminal), status from Fleet Control alarms.
 const stType=b=>b.icon==='tbs'?'tbs':b.icon==='terminal'?'term':'tmo';
 const stLabel={{tmo:'Basestation',tbs:'Tower (TBS)',term:'Terminal'}};
-const btsIcon=b=>v2icon(stType(b),{{px:44,off:!b.connected,status:b.connected?(b.alarm||(stType(b)==='term'?null:'active')):null}});
+// RF kill switch / Suspend (Fleet Control `rf-standby-v1`): reachable but off the air = Stand-by.
+const btsIcon=b=>v2icon(stType(b),{{px:44,off:!b.connected&&!b.standby,status:b.standby?'standby':b.connected?(b.alarm||(stType(b)==='term'?null:'active')):null}});
 async function loadBts(){{
   try{{
     const bts=await(await fetch('/api/bts-locations')).json();
     const seen=new Set();
     bts.forEach(b=>{{
       seen.add(b.id);
-      const html=`<b>${{esc(b.name||b.username)}}</b> (${{stLabel[stType(b)]}})${{b.alarm?'<br><span style="color:'+(b.alarm==='error'?'#c62828':'#d66a00')+'">Fleet Control '+(b.alarm==='error'?'alarm':'warning')+'</span>':''}}<br>${{b.lat.toFixed(5)}}, ${{b.lon.toFixed(5)}}<br>IP: ${{esc(b.ip||(b.origin?'via server '+b.origin.slice(0,8):'not connected'))}}<br>Source: ${{esc(b.source)}}<br>${{b.connected?'<span style="color:#2a7">connected</span>':'<span style="color:#a55">offline</span>'}}`;
+      const html=`<b>${{esc(b.name||b.username)}}</b> (${{stLabel[stType(b)]}})${{b.alarm?'<br><span style="color:'+(b.alarm==='error'?'#c62828':'#d66a00')+'">Fleet Control '+(b.alarm==='error'?'alarm':'warning')+'</span>':''}}<br>${{b.lat.toFixed(5)}}, ${{b.lon.toFixed(5)}}<br>IP: ${{esc(b.ip||(b.origin?'via server '+b.origin.slice(0,8):'not connected'))}}<br>Source: ${{esc(b.source)}}<br>${{b.standby?'<span style="color:#a07c00">standby (RF off)</span>':b.connected?'<span style="color:#2a7">connected</span>':'<span style="color:#a55">offline</span>'}}`;
       if(btsMarkers[b.id]){{btsMarkers[b.id].setLatLng([b.lat,b.lon]).setIcon(btsIcon(b)).setPopupContent(html);}}
       else{{btsMarkers[b.id]=L.marker([b.lat,b.lon],{{icon:btsIcon(b)}}).addTo(map).bindPopup(html);}}
     }});
@@ -1142,6 +1144,9 @@ pub struct BtsLocation {
     /// Worst active Fleet Control alarm (`"error"` or `"warning"`), only for
     /// users who see Fleet Control.
     pub alarm: Option<&'static str>,
+    /// The station is reachable over Fleet Control but its radio stack is
+    /// suspended (RF kill switch or Suspend on the station): Stand-by marker.
+    pub standby: bool,
 }
 
 /// Basestation positions for the map, best source first: what a Basestation
@@ -1167,7 +1172,7 @@ pub async fn bts_locations_snapshot(
         out.push(BtsLocation {
             id: st.id.clone(), username: st.id.clone(),
             name: st.site_name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| st.id.clone()),
-            lat, lon, ip: st.ip.clone(), connected: true, source: "telemetry", origin: None, icon: None, alarm: None,
+            lat, lon, ip: st.ip.clone(), connected: true, source: "telemetry", origin: None, icon: None, alarm: None, standby: false,
         });
     }
 
@@ -1179,7 +1184,7 @@ pub async fn bts_locations_snapshot(
         out.push(BtsLocation {
             id: format!("{origin}/{key}"), username: key.clone(),
             name: if b.name.is_empty() { key.clone() } else { b.name.clone() },
-            lat: b.lat, lon: b.lon, ip: None, connected: true, source: "federation", origin: Some(origin), icon: None, alarm: None,
+            lat: b.lat, lon: b.lon, ip: None, connected: true, source: "federation", origin: Some(origin), icon: None, alarm: None, standby: false,
         });
     }
 
@@ -1193,7 +1198,7 @@ pub async fn bts_locations_snapshot(
             ip: live.and_then(|c| c.remote_addr).map(|a| a.ip().to_string()),
             connected: live.is_some(), source: "config", origin: None,
             // A login connected in Terminal mode (app, console) gets the terminal marker unless one is set.
-            icon: live.filter(|c| c.mode == crate::state::ClientMode::Terminal).map(|_| "terminal".to_owned()), alarm: None,
+            icon: live.filter(|c| c.mode == crate::state::ClientMode::Terminal).map(|_| "terminal".to_owned()), alarm: None, standby: false,
         });
     }
     drop(inner);
@@ -1207,6 +1212,7 @@ pub async fn bts_locations_snapshot(
         let worst = alarms.iter().filter(|a| fs.iter().any(|s| s.id == a.station) || a.station == b.username)
             .map(|a| a.severity == crate::fleet_monitor::Severity::Alarm).max();
         b.alarm = worst.map(|e| if e { "error" } else { "warning" });
+        b.standby = fs.iter().any(|s| s.online && s.rf_standby);
     }
     Json(out)
 }
@@ -2439,6 +2445,7 @@ mod tests {
         config.bts_locations.insert("1000001".into(), loc("Tower", Some("tbs")));
         config.bts_locations.insert("1000002".into(), loc("Plain", None));
         config.bts_locations.insert("1000003".into(), loc("Console 3", Some("terminal")));
+        config.bts_locations.insert("1000004".into(), loc("South", None));
         config.bts_locations.insert("2320100".into(), loc("Console", None));
         config.bts_locations.insert("2320101".into(), loc("Console 2", Some("tbs")));
         let (state, _rx) = crate::state::AppState::new(config, std::path::PathBuf::from("test.toml"));
@@ -2450,14 +2457,21 @@ mod tests {
         }
         {
             let hello = crate::fleet::Hello { protocol: 1, version: "v0.5.20".into(), brew_login: Some("1000001".into()), mcc: 232, mnc: 20, fleet_control: true,
-                capabilities: vec!["fleet-v1".into()] };
+                capabilities: vec!["fleet-v1".into()], rf_standby: false };
             state.fleet.lock().unwrap().hello("bs-north", &hello, 1, &|_| None);
             let mut m = state.fleet_monitor.lock().unwrap();
             m.test_raise("bs-north", "cpu_temp", crate::fleet_monitor::Severity::Warning);
             m.test_raise("bs-north", "sdr_error", crate::fleet_monitor::Severity::Alarm);
             m.test_raise("1000002", "cpu_load", crate::fleet_monitor::Severity::Warning);
         }
-        let Json(out) = bts_locations_snapshot(State(state), axum::extract::Query(HashMap::new()), HeaderMap::new()).await;
+        {
+            // RF kill switch on bs-south (Brew login 1000004): its Brew link is gone, the control
+            // channel is up, so the marker shows Stand-by instead of offline.
+            let hello = crate::fleet::Hello { protocol: 1, version: "v0.6.7".into(), brew_login: Some("1000004".into()), mcc: 232, mnc: 20, fleet_control: true,
+                capabilities: vec!["fleet-v1".into(), crate::fleet::RF_STANDBY_CAPABILITY.into()], rf_standby: true };
+            state.fleet.lock().unwrap().hello("bs-south", &hello, 1, &|_| None);
+        }
+        let Json(out) = bts_locations_snapshot(State(state.clone()), axum::extract::Query(HashMap::new()), HeaderMap::new()).await;
         let by = |id: &str| out.iter().find(|b| b.id == id).unwrap();
         assert_eq!(by("1000001").icon.as_deref(), Some("tbs"));
         assert_eq!(by("1000001").alarm, Some("error"), "the worst alarm wins, via the Brew login of the hello");
@@ -2465,6 +2479,11 @@ mod tests {
         assert_eq!((by("1000003").icon.as_deref(), by("1000003").alarm), (Some("terminal"), None));
         assert_eq!(by("2320100").icon.as_deref(), Some("terminal"), "connected as Terminal");
         assert_eq!(by("2320101").icon.as_deref(), Some("tbs"), "a symbol set on the Accounts page wins");
+        assert!(by("1000004").standby && !by("1000004").connected, "RF off: Stand-by while Fleet Control is connected");
+        assert!(!by("1000001").standby, "RF on");
+        state.fleet.lock().unwrap().set_online("bs-south", false, 2);
+        let Json(out) = bts_locations_snapshot(State(state), axum::extract::Query(HashMap::new()), HeaderMap::new()).await;
+        assert!(!out.iter().find(|b| b.id == "1000004").unwrap().standby, "control channel down: offline, not Stand-by");
     }
 
     #[tokio::test]
@@ -2827,7 +2846,7 @@ mod tests {
         assert_eq!(need("/api/fleet"), Need::Pages(&["fleet"]));
         assert_eq!(need("/api/fleet/remove"), Need::Pages(&["fleet_manage"]));
         assert_eq!(need("/api/fleet/ping"), Need::Pages(&["fleet_manage"]));
-        for p in ["/api/fleet/check", "/api/fleet/update", "/api/fleet/update/cancel", "/api/fleet/maintenance", "/api/fleet/restart"] {
+        for p in ["/api/fleet/check", "/api/fleet/update", "/api/fleet/update/cancel", "/api/fleet/maintenance", "/api/fleet/restart", "/api/fleet/rf"] {
             assert_eq!(need(p), Need::Pages(&["fleet_manage"]), "{p}");
         }
         assert_eq!(need("/api/fleet/settings"), Need::Admin, "Updates repo is a server setting");

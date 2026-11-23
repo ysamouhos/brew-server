@@ -483,10 +483,45 @@ the reboot (n s)"; a station not back within **10 min** gets an ALARM
 (`restart_alarm`). The station needs no sudo rule: FlowStation's service runs
 as root.
 
-### 9.3 Backwards compatibility
+### 9.3 RF kill switch (`rf-standby-v1`)
 
-A station without `maintenance-v1` / `restart-v1` gets no buttons and the API
-refuses with 400; a phase 2 server never sends the new commands.
+```json
+{"SetRfStandby": {"handle": 6, "standby": true, "during_call": false}}
+```
+
+Uses the station's own **Suspend** (FlowStation dashboard, power menu): the
+radio stack stops and the transmitter goes off, while the process, its
+dashboard and the control channel stay up. `standby` false starts the stack
+again (a service restart: the SDR can only be reopened by a fresh process).
+Answer `CommandResult`: `ok` (off 2 s later, or the service starts again; also
+when the station already is in the asked state), `busy` (an update is
+running), `call_active` (switching off while a call is in progress and
+`during_call` is false), `fleet_control_off`.
+
+The station reports the state as `rf_standby` (true / false) in every
+`StationHello` and sends a new hello when it changes, also after a Suspend on
+its own dashboard; its `FleetMetrics` report `rf: "standby"` for every cell
+meanwhile, so no SDR alarm is raised. Because the control channel stays up,
+the station is not "offline": the Fleet Manager shows **Standby · RF off** in
+the status column, and the map draws its marker with the Stand-by status
+(half yellow dot top left, marker not grey) and "standby (RF off)" in the
+popup, also for users without Fleet Control rights. When the control channel
+drops as well, the station is offline as usual.
+
+Dashboard: a red **RF off** button next to *Power options* (Fleet Control
+management, station online, `rf-standby-v1`) opens a dialog with *Also during
+a call* and *Switch RF off*; a station in standby has a **RF on** button
+instead (confirmation, then the service starts). API `POST /api/fleet/rf`
+`{"id", "standby", "during_call"}`. The change log (kind `rf`) records who
+switched it and, from the hellos, "RF off (standby)" / "RF on again".
+
+### 9.4 Backwards compatibility
+
+A station without `maintenance-v1` / `restart-v1` / `rf-standby-v1` gets no
+buttons and the API refuses with 400; a phase 2 server never sends the new
+commands. An older server ignores `rf_standby` in the hello (unknown fields
+are skipped); an older station leaves it out, which the server reads as not
+in standby.
 
 ## 10. Station config (phases 4/5, `config-v1`)
 

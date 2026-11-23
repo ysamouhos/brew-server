@@ -84,6 +84,18 @@ pub enum ControlCommand {
         #[serde(default)]
         during_call: bool,
     },
+    /// Fleet Control (`rf-standby-v1`): RF kill switch. `standby` true suspends
+    /// the station's radio stack (the station's own Suspend: transmitter off,
+    /// dashboard and control channel stay up), false starts it again (service
+    /// restart). Answered with `CommandResult` (`ok`, `busy`, `call_active`,
+    /// `fleet_control_off`).
+    SetRfStandby {
+        #[serde(default)]
+        handle: u32,
+        standby: bool,
+        #[serde(default)]
+        during_call: bool,
+    },
     /// Fleet Control (`config-v1`): read the station's config; answered with
     /// `ConfigInfo` (settings as JSON, file as TOML, both without secrets).
     GetConfig { #[serde(default)] handle: u32 },
@@ -135,7 +147,7 @@ impl ControlCommand {
             | Self::CommandA { handle, .. } | Self::TestCmdB { handle, .. }
             | Self::FleetPing { handle } | Self::CheckUpdate { handle }
             | Self::StartUpdate { handle, .. } | Self::SetMaintenance { handle, .. }
-            | Self::RestartStation { handle, .. } | Self::GetConfig { handle }
+            | Self::RestartStation { handle, .. } | Self::SetRfStandby { handle, .. } | Self::GetConfig { handle }
             | Self::SetConfig { handle, .. } | Self::ConfirmConfig { handle }
             | Self::RollbackConfig { handle } => Some(*handle),
             _ => None,
@@ -178,6 +190,10 @@ pub enum ControlResponse {
         /// `config-v1`: seconds left to confirm the last `SetConfig`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         config_pending: Option<u32>,
+        /// `rf-standby-v1`: the radio stack is suspended (transmitter off). Older
+        /// stations leave it out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rf_standby: Option<bool>,
     },
     /// Fleet Control (`config-v1`): the answer to `GetConfig`.
     ConfigInfo {
@@ -324,7 +340,7 @@ pub async fn send_command(state: &Arc<AppState>, bts_id: &str, mut command: Cont
         | ControlCommand::CommandA { handle, .. } | ControlCommand::TestCmdB { handle, .. }
         | ControlCommand::FleetPing { handle } | ControlCommand::CheckUpdate { handle }
         | ControlCommand::StartUpdate { handle, .. } | ControlCommand::SetMaintenance { handle, .. }
-        | ControlCommand::RestartStation { handle, .. } | ControlCommand::GetConfig { handle }
+        | ControlCommand::RestartStation { handle, .. } | ControlCommand::SetRfStandby { handle, .. } | ControlCommand::GetConfig { handle }
         | ControlCommand::SetConfig { handle, .. } | ControlCommand::ConfirmConfig { handle }
         | ControlCommand::RollbackConfig { handle } => {
             *handle = fresh_handle;
@@ -348,7 +364,7 @@ pub async fn send_command(state: &Arc<AppState>, bts_id: &str, mut command: Cont
             command,
             ControlCommand::SendSds { .. } | ControlCommand::CommandA { .. } | ControlCommand::FleetPing { .. }
                 | ControlCommand::CheckUpdate { .. } | ControlCommand::StartUpdate { .. }
-                | ControlCommand::SetMaintenance { .. } | ControlCommand::RestartStation { .. }
+                | ControlCommand::SetMaintenance { .. } | ControlCommand::RestartStation { .. } | ControlCommand::SetRfStandby { .. }
                 | ControlCommand::GetConfig { .. } | ControlCommand::SetConfig { .. }
                 | ControlCommand::ConfirmConfig { .. } | ControlCommand::RollbackConfig { .. }
         ) => {
@@ -443,10 +459,11 @@ async fn handle_response(state: &Arc<AppState>, id: &str, data: &[u8]) {
         }
     };
 
-    if let ControlResponse::StationHello { protocol, version, brew_login, mcc, mnc, fleet_control, capabilities, config_hash, config_pending } = &response {
+    if let ControlResponse::StationHello { protocol, version, brew_login, mcc, mnc, fleet_control, capabilities, config_hash, config_pending, rf_standby } = &response {
         let hello = crate::fleet::Hello {
             protocol: *protocol, version: version.clone(), brew_login: brew_login.clone(), mcc: *mcc, mnc: *mnc,
             fleet_control: *fleet_control, capabilities: capabilities.clone(),
+            rf_standby: rf_standby.unwrap_or(false),
         };
         let (changed, resend) = {
             let names = station_names(state);
@@ -748,6 +765,15 @@ mod tests {
             ControlCommand::RestartStation { handle: 4, host: true, during_call: false }.to_wire_json(),
             serde_json::json!({"RestartStation": {"handle": 4, "host": true, "during_call": false}})
         );
+        assert_eq!(
+            ControlCommand::SetRfStandby { handle: 5, standby: true, during_call: false }.to_wire_json(),
+            serde_json::json!({"SetRfStandby": {"handle": 5, "standby": true, "during_call": false}})
+        );
+        // `rf_standby` in the hello; older stations leave it out (= not in standby).
+        let h: ControlResponse = serde_json::from_value(serde_json::json!({"StationHello": {"protocol": 1, "version": "v0.6.7", "brew_login": "1", "mcc": 1, "mnc": 1, "fleet_control": true, "capabilities": ["rf-standby-v1"], "rf_standby": true}})).unwrap();
+        assert!(matches!(h, ControlResponse::StationHello { rf_standby: Some(true), .. }));
+        let h: ControlResponse = serde_json::from_value(serde_json::json!({"StationHello": {"protocol": 1, "version": "v0.6.6", "brew_login": "1", "mcc": 1, "mnc": 1, "fleet_control": true, "capabilities": []}})).unwrap();
+        assert!(matches!(h, ControlResponse::StationHello { rf_standby: None, .. }));
     }
 
 
