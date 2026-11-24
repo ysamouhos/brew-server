@@ -1635,7 +1635,7 @@ R.fleetcfg=()=>{
   const mnOn=!!v.multi_network_enabled;
   const nets=fcCard('Networks (Multi Network)',`<span class="sp"></span><span class="mut" style="font-size:12.5px">${mnOn?'On':'Off'}</span>${fcTog('multi_network_enabled','data-redraw="1"')}`,
     fcHelp('A cell broadcasts exactly one network (MCC / MNC, TS 100 392-2 table 18.17); pick it per cell above. Own server: the network\'s own Brew link; via: through another network\'s Brew server; local: inside this station.'+(mnOn?'':' Switching Multi Network off turns the networks back into the classic config.'))+
-    (v.networks_explicit||mnOn?`<div class="tw"><table><thead><tr><th>Name</th><th>MCC</th><th>MNC</th><th>Reached</th><th>Brew server</th><th></th></tr></thead><tbody>${v.networks.map((x,i)=>`<tr${x.removed?' style="opacity:.45;text-decoration:line-through"':''}><td><b>${esc(x.name)}</b>${o.networks.some(y=>y.name===x.name)||x.converted?'':' <span class="chip w">new</span>'}${!x.removed&&fcUnserved().includes(x.name)?' <span class="chip d" title="Every network needs a cell: bind one above or remove the network">no cell</span>':''}</td>${v.networks_explicit?`<td>${fcF(`networks.${i}.mcc`,'int','inputmode="numeric"','74px')}</td><td>${fcF(`networks.${i}.mnc`,'int','inputmode="numeric"','86px')}</td>`:`<td class="m">${x.mcc}</td><td class="m">${x.mnc}</td>`}
+    (v.networks_explicit||mnOn?`<div class="tw"><table><thead><tr><th>Name</th><th>MCC</th><th>MNC</th><th>Reached</th><th>Brew server</th><th></th></tr></thead><tbody>${v.networks.map((x,i)=>`<tr${x.removed?' style="opacity:.45;text-decoration:line-through"':''}><td><b>${esc(x.name)}</b>${o.networks.some(y=>y.name===x.name)||x.converted?'':' <span class="chip w">new</span>'}${!x.removed&&fcUnserved().includes(x.name)?(fcUnusedOk()?' <span class="chip" title="No cell broadcasts this network: the station keeps it in its config but inactive (no Brew link) until a cell selects it">unused</span>':' <span class="chip d" title="Every network needs a cell: bind one above or remove the network. Stations with networks-unused-v1 keep an unused network instead">no cell</span>'):''}</td>${v.networks_explicit?`<td>${fcF(`networks.${i}.mcc`,'int','inputmode="numeric"','74px')}</td><td>${fcF(`networks.${i}.mnc`,'int','inputmode="numeric"','86px')}</td>`:`<td class="m">${x.mcc}</td><td class="m">${x.mnc}</td>`}
       <td>${x.mode==='core'?'<span class="chip a">own server</span>':x.mode==='via'?`<span class="chip b">via ${esc(x.via)}</span>`:'<span class="chip i">local</span>'}</td><td class="m">${x.mode==='core'&&x.brew?esc((x.brew.host||'')+':'+(x.brew.port||443)):'—'}</td>
       <td style="text-align:right">${x.name===fcPrimaryNet()||x.converted?'':x.removed?`<button class="btn" onclick="fcNetRemove(${i},false)">Keep</button>`:`<button class="btn danger" onclick="fcNetRemove(${i},true)">Remove</button>`}</td></tr>${fcNetBrewRow(x,i)}`).join('')}</tbody></table></div>`:'')+
     (mnOn?`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;padding:12px 18px">${fcFld('Name',`<input class="f" id="fc-nn-name" style="width:120px">`)}${fcFld('MCC',`<input class="f" id="fc-nn-mcc" inputmode="numeric" style="width:80px">`)}${fcFld('MNC',`<input class="f" id="fc-nn-mnc" inputmode="numeric" style="width:90px">`)}
@@ -1726,6 +1726,8 @@ function fcCellAdd(){const v=UI.fc.v;const num=id=>{const s=$(id).value.trim();r
 // The primary network first, then the others by name (as the station lists them).
 function fcSortNets(o){if(!o||!o.networks)return;const p=(o.cells.find(c=>c.primary)||o.cells[0]||{}).network;o.networks.sort((a,b)=>(a.name!==p)-(b.name!==p)||a.name.localeCompare(b.name));}
 function fcPrimaryNet(){const o=UI.fc.orig,p=o.cells.find(c=>c.primary)||o.cells[0];return p.network==='default'&&!o.networks_explicit?'home':p.network;}
+// The station keeps a network no cell uses (inactive) instead of refusing the config.
+const fcUnusedOk=()=>((UI.fc&&UI.fc.data&&UI.fc.data.capabilities)||[]).includes('networks-unused-v1');
 function fcUnserved(){const v=UI.fc.v;if(!v.networks_explicit)return [];const rm=v.cells_remove||[];const used=v.cells.filter(c=>!rm.includes(c.id)).map(c=>c.network);
   if((v.cells_new||[]).length)used.push(fcPrimaryNet());return v.networks.filter(n=>!n.removed&&!used.includes(n.name)).map(n=>n.name);}
 function fcNetRemove(i,on){const v=UI.fc.v,n=v.networks[i];
@@ -1794,7 +1796,7 @@ async function fcApplyDlg(){
   const fc=UI.fc,d=fc.data;const lines=fcDiff(fc.orig,fc.v).lines.slice();
   if(fcRawChanged()){try{const r=await postJ('/api/fleet/config/raw_preview',{id:fc.id,text:fc.raw});r.lines.forEach(l=>lines.push('Config file: '+l));}catch(e){setMsg('fc_top','err','Config file: '+e.message);render(true);return;}}
   if(!lines.length){setMsg('fc_top','err','Nothing to change');render(true);return;}
-  const un=fcUnserved();if(un.length){setMsg('fc_top','err',`Every network needs a cell: bind a cell to ${un.join(', ')} or remove it`);render(true);return;}
+  const un=fcUnusedOk()?[]:fcUnserved();if(un.length){setMsg('fc_top','err',`Every network needs a cell: bind a cell to ${un.join(', ')} or remove it`);render(true);return;}
   $('sheet').innerHTML=`<div class="ch"><h3 id="sheet-title">${d.online?'Apply to':'Save for'} ${esc(d.label)}</h3></div><div class="sb">
    <div class="tw" style="border:1px solid var(--border);border-radius:8px;max-height:280px;overflow:auto"><table><tbody>${lines.map(l=>`<tr><td style="font-size:12.5px">${esc(l)}</td></tr>`).join('')}</tbody></table></div>
    ${d.online?`<label style="display:flex;gap:10px;align-items:center;font-size:13px"><button class="tog" role="switch" id="fc-call" aria-checked="false" onclick="this.setAttribute('aria-checked',this.getAttribute('aria-checked')!=='true')"></button> Apply during a call <span class="mut" style="font-size:12px">(else refused while a call runs)</span></label>
@@ -3389,10 +3391,13 @@ mod tests {
     fn config_page_follows_the_station_on_networks() {
         // As FlowStation's Infrastructure page: the classic network becomes "home" when the first
         // network is added (the station creates it, the page does not send it), every network
-        // but the primary one can be removed, and a network without a cell is caught before Apply.
+        // but the primary one can be removed, and a network without a cell is caught before Apply
+        // unless the station keeps unused networks.
         assert!(PAGE_HTML.contains("if(n.converted)continue;"));
         assert!(PAGE_HTML.contains("x.name===fcPrimaryNet()||x.converted?'':"));
-        assert!(PAGE_HTML.contains("const un=fcUnserved();if(un.length)"));
+        assert!(PAGE_HTML.contains("const un=fcUnusedOk()?[]:fcUnserved();if(un.length)"));
+        // A station with networks-unused-v1 keeps a network without a cell: "unused", no block.
+        assert!(PAGE_HTML.contains("includes('networks-unused-v1')"));
         assert!(PAGE_HTML.contains("via==='default'?'home':via"));
         // The config editor sends its text; the server turns it into single-value patches.
         assert!(PAGE_HTML.contains("if(!resolve&&fcRawChanged())req.raw_text=fc.raw;"));
