@@ -2324,6 +2324,85 @@ mod e2e {
         wait_until("left 2324 at TetraPack", async || !tp.inner.read().await.subscribers.get(&2_320_972).is_some_and(|s| s.groups.contains(&2324))).await;
     }
 
+    /// A Terminal-mode login (the TETRA app) that connects with the header.
+    async fn terminal(addr: SocketAddr) -> (Ws, String) {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = format!("ws://{addr}/brew").into_client_request().unwrap();
+        request.headers_mut().insert("X-Brew-Mode", "Terminal".parse().unwrap());
+        let (ws, resp) = tokio_tungstenite::connect_async(request).await.unwrap();
+        let offer = resp.headers().get("X-Brew-Extensions").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+        (ws, offer)
+    }
+
+    #[tokio::test]
+    async fn terminal_app_names_its_home_network_and_groups_of_linked_networks() {
+        let (tp, tp_addr) = serve(base_config()).await;
+        let mut cfg = base_config();
+        cfg.multi_network.mcc = 901;
+        cfg.multi_network.mnc = 9999;
+        cfg.multi_network.networks.push(NetworkConfig {
+            name: "TP".into(), mcc: 901, mnc: 1638, remote_host: tp_addr.to_string(), bridge_issi: 9_000_001, reconnect_interval_seconds: 5, ..Default::default()
+        });
+        let (main, main_addr) = serve(cfg).await;
+        run(main.clone()).await;
+        wait_until("link up", async || main.inner.read().await.netlinks.len() == 1).await;
+
+        // A visitor: the app's home is TetraPack.
+        let (mut app, offer) = terminal(main_addr).await;
+        assert!(offer.split(',').any(|e| e.trim() == "mni"), "{offer}");
+        app.send(svc(protocol::SERVICE_MS_NETWORK, serde_json::json!({"issi": 2_320_997, "mcc": 901, "mnc": 1638}))).await.unwrap();
+        let nets = next_service(&mut app, protocol::SERVICE_NETWORKS, 2000).await.expect("SERVICE_NETWORKS to the terminal");
+        assert_eq!(nets["this"]["mnc"], 9999);
+        assert_eq!(nets["networks"][0]["name"], "TP");
+        app.send(Message::Binary(protocol::build_subscriber_message(protocol::SUB_REGISTER, 2_320_997, &[]).into())).await.unwrap();
+        app.send(Message::Binary(protocol::build_subscriber_message(protocol::SUB_AFFILIATE, 2_320_997, &[909]).into())).await.unwrap();
+        wait_until("app in 909 at TetraPack", async || tp.inner.read().await.subscribers.get(&2_320_997).is_some_and(|s| s.groups.contains(&909))).await;
+        assert!(!main.inner.read().await.subscribers.contains_key(&2_320_997), "a visitor, not one of ours");
+
+        // One of ours that listens to a TetraPack group.
+        let (mut own, _) = terminal(main_addr).await;
+        own.send(svc(protocol::SERVICE_MS_NETWORK, serde_json::json!({"issi": 2_320_998, "mcc": 0, "mnc": 0}))).await.unwrap();
+        next_service(&mut own, protocol::SERVICE_NETWORKS, 2000).await.expect("SERVICE_NETWORKS");
+        own.send(Message::Binary(protocol::build_subscriber_message(protocol::SUB_REGISTER, 2_320_998, &[]).into())).await.unwrap();
+        own.send(svc(protocol::SERVICE_GROUP_NETWORK, serde_json::json!({"issi": 2_320_998, "groups": [{"gssi": 2324, "mcc": 901, "mnc": 1638}]}))).await.unwrap();
+        own.send(Message::Binary(protocol::build_subscriber_message(protocol::SUB_AFFILIATE, 2_320_998, &[2324]).into())).await.unwrap();
+        wait_until("own app registered here", async || main.inner.read().await.subscribers.contains_key(&2_320_998)).await;
+        wait_until("own app in 2324 at TetraPack", async || tp.inner.read().await.subscribers.get(&2_320_998).is_some_and(|s| s.groups.contains(&2324))).await;
+
+        // TetraPack's call on 2324 reaches it, with the group's network first.
+        let mut far = station(tp_addr, &[2_329_001], &[2324]).await;
+        far.send(Message::Binary(protocol::build_group_tx(&Uuid::new_v4(), 2_329_001, 2324, 0).into())).await.unwrap();
+        let note = next_service(&mut own, protocol::SERVICE_CALL_NETWORK, 3000).await.expect("SERVICE_CALL_NETWORK");
+        assert_eq!((note["group"]["gssi"].as_u64(), note["group"]["mnc"].as_u64()), (Some(2324), Some(1638)));
+        let (_, talker, gssi) = next_group_tx(&mut own, 3000).await.expect("TetraPack's call on the app");
+        assert_eq!((talker, gssi), (2_329_001, 2324));
+
+        // Gone with its connection: the visitor leaves TetraPack.
+        drop(app);
+        wait_until("visitor gone at TetraPack", async || !tp.inner.read().await.subscribers.contains_key(&2_320_997)).await;
+    }
+
+    #[tokio::test]
+    async fn terminal_without_mni_gets_no_network_messages() {
+        let (_tp, tp_addr) = serve(base_config()).await;
+        let mut cfg = base_config();
+        cfg.multi_network.mcc = 901;
+        cfg.multi_network.mnc = 9999;
+        cfg.multi_network.networks.push(NetworkConfig {
+            name: "TP".into(), mcc: 901, mnc: 1638, remote_host: tp_addr.to_string(), bridge_issi: 9_000_001, reconnect_interval_seconds: 5, ..Default::default()
+        });
+        let (main, main_addr) = serve(cfg).await;
+        run(main.clone()).await;
+        wait_until("link up", async || main.inner.read().await.netlinks.len() == 1).await;
+        let (mut app, _) = terminal(main_addr).await;
+        app.send(Message::Binary(protocol::build_subscriber_message(protocol::SUB_REGISTER, 2_320_999, &[]).into())).await.unwrap();
+        // A group network message without having taken up the offer is ignored.
+        app.send(svc(protocol::SERVICE_GROUP_NETWORK, serde_json::json!({"issi": 2_320_999, "groups": [{"gssi": 2324, "mcc": 901, "mnc": 1638}]}))).await.unwrap();
+        wait_until("registered here", async || main.inner.read().await.subscribers.contains_key(&2_320_999)).await;
+        crate::visitors::announce(&main, None).await;
+        assert!(next_service(&mut app, protocol::SERVICE_NETWORKS, 500).await.is_none());
+    }
+
     #[tokio::test]
     async fn radio_moving_between_cells_of_two_networks_keeps_only_the_new_cells_groups() {
         // Field 2026-11-15: the MTP (home 9999) went from the 1638 cell back to the 9999
