@@ -104,7 +104,7 @@ to a Basestation that named the capability in its last `SERVICE_BTS_INFO`
 | `0x1C` | `SERVICE_CALL_NOT_RESTORED` | B → server | `call-restore` | B: `call-restore` |
 | `0x1D` | `SERVICE_CELL_DIRECTORY` | server → Basestation | `cell-directory` | `cell-directory` |
 | `0x1E` | `SERVICE_CALL_HANDOFF` | server → A → server | `call-handoff` | A: `call-handoff` |
-| `0x1F` | `SERVICE_GROUP_ACCESS` | server → Basestation; Terminal → server → Terminal (12.3) | `group-access` | `group-access` |
+| `0x1F` | `SERVICE_GROUP_ACCESS` | server → Basestation; Terminal or Basestation app → server → it (12.3) | `group-access` | `group-access` |
 | `0x20` | `SERVICE_NETWORKS` | server → Basestation | `mni` | `mni` |
 | `0x21` | `SERVICE_MS_NETWORK` | Basestation → server | `mni` | `mni` |
 | `0x22` | `SERVICE_GROUP_NETWORK` | Basestation → server | `mni` | `mni` |
@@ -965,8 +965,12 @@ or only listen to. It enforces nothing; the server refuses as in 12.2.
   talkgroups the server adds `"managed":true` and `"listed"` as in 12.2; a
   group not in `listed` is refused too (groups of a visitor's home network
   excepted, 12.1).
-- From a Basestation or a peer the empty message is ignored, and a terminal
-  that never sent it gets none.
+- A Basestation login may take up the offer the same way (the app logged in
+  as a Basestation, which has no cells to announce): it gets the verdicts for
+  the ISSIs registered through it, not the lists. A station that announced
+  `group-access` in its `SERVICE_BTS_INFO` gets the whole table (12.2)
+  instead. From a peer the empty message is ignored, and a connection that
+  never sent it gets none.
 
 ## 12a. ISSI check (`issi-check`)
 

@@ -2,6 +2,27 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.22.14 (RSSI per radio) adds:
+
+- **RSSI per radio.** The Radios page has an RSSI column and the map popup
+  shows it: the uplink level (dBFS at the station's SDR, not dBm) the station
+  the radio is registered on now last measured, with its age. From
+  `SERVICE_RSSI` (FlowStation `[brew] feature_rssi_export`) or the station's
+  telemetry link; a reading of a station the radio left is never shown, even
+  when that station still reports it. Plain Brew (TetraPack) has no RSSI.
+
+Version 1.22.13 (App as a Basestation) adds:
+
+- **Group access for Basestation logins without cells.** The empty
+  `SERVICE_GROUP_ACCESS` request is also taken from a Basestation login (the
+  app in Basestation mode), which then gets the verdicts for its own ISSIs.
+  Stations that announce `group-access` in `SERVICE_BTS_INFO` still get the
+  whole table. Spec: `docs/Brew-Extensions.md` 12.3.
+- **DGNA to a station without telemetry.** When the telemetry does not name a
+  radio's station, a DGNA from the DGNA & Radio actions page goes to the
+  control connection whose login matches the Brew login the radio is
+  registered through. See `docs/Routing.md`.
+
 Version 1.22.12 (Group access for apps) adds:
 
 - **Group access for terminal apps.** Terminal-mode logins are offered

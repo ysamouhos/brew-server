@@ -237,6 +237,9 @@ pub struct RadioOut {
     /// its home ISSI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vassi: Option<u32>,
+    /// Uplink RSSI from the station the radio is registered on now (dBFS).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rssi: Option<crate::telemetry::RssiReading>,
 }
 
 #[derive(Serialize)]
@@ -281,6 +284,8 @@ pub async fn api_snapshot(axum::extract::State(state): axum::extract::State<Arc<
     let online: std::collections::HashSet<u32> = online.into_iter().map(home).collect();
     let mut by_issi: BTreeMap<u32, Option<crate::telemetry::PositionFix>> = docks.keys().map(|i| (*i, None)).collect();
     for f in fixes { by_issi.insert(f.issi, Some(f)); }
+    let rssi: HashMap<u32, crate::telemetry::RssiReading> =
+        crate::dashboard::ms_rssi_readings(&state).await.into_iter().map(|(i, r)| (home(i), r)).collect();
     let t = state.tracks.lock().unwrap_or_else(|e| e.into_inner());
     let radios = by_issi.into_iter().map(|(issi, fix)| {
         let dock = docks.get(&issi).cloned();
@@ -292,7 +297,7 @@ pub async fn api_snapshot(axum::extract::State(state): axum::extract::State<Arc<
         RadioOut {
             issi, docked: docked(dock.as_deref(), fix.as_ref(), fix_station.as_deref(), settings.dock_after_min, now),
             dock, points: if hide { 0 } else { t.len(issi) }, emergency: emergencies.contains(&issi), fix,
-            terminal, online: online.contains(&issi), vassi: vassi_of.get(&issi).copied(),
+            terminal, online: online.contains(&issi), vassi: vassi_of.get(&issi).copied(), rssi: rssi.get(&issi).copied(),
         }
     }).collect();
     axum::Json(MapSnapshot { settings, now_ms: now, radios })

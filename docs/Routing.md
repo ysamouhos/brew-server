@@ -30,13 +30,18 @@ registered on last. That needs:
   radio is on, and
 - its `[control]` link, which carries the command.
 
-With only one control connection the command goes there. A radio that cannot
+A station without telemetry (the TETRA app logged in as a Basestation) is
+found through its Brew login instead: the command goes to the control
+connection with the same login name as the Brew login the radio registered
+through. With only one control connection the command goes there. A radio that cannot
 be reached shows the reason right away; the radio's own answer arrives over
 telemetry and shows in the **Last DGNA** column (for example "assigned 2329"
 or "rejected 2329" with the station's reason).
 
 DGNA reaches radios only. App and console terminals are listed but cannot be
-selected.
+selected; the app logged in as a Basestation with its control channel on can
+(it applies the group at once and reports it back with `dgna-report`). It
+takes no other radio command.
 
 ## Groups assigned by DGNA
 

@@ -85,8 +85,15 @@ pub struct DgnaResult {
 
 /// The control session to reach `issi` through: the station whose telemetry
 /// saw it register last, or the only control session when there is just one.
-fn control_station_for(issi: u32, last_registration: &std::collections::HashMap<u32, String>, sessions: &[String]) -> Option<String> {
+/// The control session for a radio: the station its telemetry last named,
+/// else the Brew login it is registered through when a control session has
+/// the same name (a station without telemetry, e.g. the app in Basestation
+/// mode), else the only connected station.
+fn control_station_for(issi: u32, last_registration: &std::collections::HashMap<u32, String>, brew_login: &std::collections::HashMap<u32, String>, sessions: &[String]) -> Option<String> {
     if let Some(s) = last_registration.get(&issi).filter(|s| sessions.contains(s)) {
+        return Some(s.clone());
+    }
+    if let Some(s) = brew_login.get(&issi).filter(|s| sessions.contains(s)) {
         return Some(s.clone());
     }
     (sessions.len() == 1).then(|| sessions[0].clone())
@@ -115,9 +122,19 @@ pub async fn dgna(State(state): State<Arc<AppState>>, headers: axum::http::Heade
     }
     let sessions: Vec<String> = state.control.read().await.connected_ids();
     let last = state.telemetry.read().await.last_registration.clone();
+    let brew_login: std::collections::HashMap<u32, String> = {
+        let inner = state.inner.read().await;
+        req.issis
+            .iter()
+            .filter_map(|issi| {
+                let sub = inner.subscribers.get(issi)?;
+                Some((*issi, inner.clients.get(&sub.client_id)?.username.clone()?))
+            })
+            .collect()
+    };
     let mut results = Vec::new();
     for &issi in &req.issis {
-        let Some(station) = control_station_for(issi, &last, &sessions) else {
+        let Some(station) = control_station_for(issi, &last, &brew_login, &sessions) else {
             results.push(DgnaResult { issi, station: None, sent: false, error: Some("no control connection to the radio's station".into()) });
             continue;
         };
@@ -194,9 +211,20 @@ mod tests {
     fn dgna_goes_to_the_station_the_radio_registered_on() {
         let last = std::collections::HashMap::from([(7, "100000002".to_string())]);
         let sessions = vec!["100000001".to_string(), "100000002".to_string()];
-        assert_eq!(control_station_for(7, &last, &sessions).as_deref(), Some("100000002"));
-        assert_eq!(control_station_for(8, &last, &sessions), None);
-        assert_eq!(control_station_for(8, &last, &sessions[..1]).as_deref(), Some("100000001"));
+        let none = std::collections::HashMap::new();
+        assert_eq!(control_station_for(7, &last, &none, &sessions).as_deref(), Some("100000002"));
+        assert_eq!(control_station_for(8, &last, &none, &sessions), None);
+        assert_eq!(control_station_for(8, &last, &none, &sessions[..1]).as_deref(), Some("100000001"));
+    }
+
+    #[test]
+    fn dgna_reaches_a_station_without_telemetry_through_its_brew_login() {
+        let sessions = vec!["100000001".to_string(), "2320997".to_string()];
+        let brew_login = std::collections::HashMap::from([(2320997, "2320997".to_string()), (9, "other".to_string())]);
+        let last = std::collections::HashMap::from([(5, "100000001".to_string())]);
+        assert_eq!(control_station_for(2320997, &last, &brew_login, &sessions).as_deref(), Some("2320997"));
+        assert_eq!(control_station_for(5, &last, &brew_login, &sessions).as_deref(), Some("100000001"), "telemetry wins");
+        assert_eq!(control_station_for(9, &last, &brew_login, &sessions), None, "no control session of that name");
     }
 
     #[test]
