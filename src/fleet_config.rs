@@ -28,6 +28,9 @@ use crate::state::AppState;
 
 /// Capability of stations that can read and change their config.
 pub const CONFIG_CAPABILITY: &str = "config-v1";
+/// `SetConfig` answer code of a station with `config-live-v1`: written and applied without a
+/// restart (FlowStation live reload).
+const LIVE_CODE: &str = "applied_live";
 /// Confirmation window the server asks for by default (seconds after the
 /// restart); Server settings can change it (`[fleet] confirm window`, phase 6).
 pub const DEFAULT_CONFIRM_SECS: u32 = 90;
@@ -386,14 +389,14 @@ async fn send_change(
     let now = now_ms();
     let lines = summary_text(&summary);
     match answer {
-        Ok(Some(ControlResponse::CommandResult { ok: true, .. })) => {
+        Ok(Some(ControlResponse::CommandResult { ok: true, code, .. })) => {
             state.fleet.lock().unwrap_or_else(|e| e.into_inner()).with_station(id, |s| {
                 if offline {
                     s.cfg.pending = None;
                 }
                 s.cfg.apply = Some(ApplyRun { by: by.clone(), at_ms: now, old_hash: base_hash, summary, offline, back_ms: None, new_hash: None, confirm_sent_ms: None, rollback_by: None, confirm_secs });
             });
-            log_all(state, id, by.as_deref(), vec![("config", format!("{} sent, station restarts ({lines})", if offline { "pending config change" } else { "config change" }))]);
+            log_all(state, id, by.as_deref(), vec![("config", sent_text(&code, offline, &lines))]);
             state.monitor.emit("fleet_changed", serde_json::json!({"id": id}));
             Ok(())
         }
@@ -450,6 +453,18 @@ pub fn save_pending(state: &Arc<AppState>, id: &str, base_hash: String, changes:
     });
     log_all(state, id, by.as_deref(), vec![("config", format!("bulk config change saved, sent at the next login ({lines})"))]);
     state.monitor.emit("fleet_changed", serde_json::json!({"id": id}));
+}
+
+/// Log line for a change the station took. A station with `config-live-v1` answers
+/// `applied_live` when it applied the change without a restart; the confirmation still follows
+/// on its next hello with "pending".
+fn sent_text(code: &str, offline: bool, lines: &str) -> String {
+    let what = if offline { "pending config change" } else { "config change" };
+    if code == LIVE_CODE {
+        format!("{what} sent, applied live without a restart ({lines})")
+    } else {
+        format!("{what} sent, station restarts ({lines})")
+    }
 }
 
 fn summary_text(summary: &[String]) -> String {
@@ -957,6 +972,13 @@ mod tests {
         let mut c = StationConfig { copy: Some(copy("aa")), apply: Some(ApplyRun { rollback_by: Some("admin".into()), ..run("aa") }), ..Default::default() };
         let (_, logs) = on_hello(&mut c, true, Some("aa".into()), None, 300_000);
         assert_eq!(logs[0].0, "config", "an undo is no alarm");
+    }
+
+    #[test]
+    fn a_change_applied_live_is_logged_without_a_restart() {
+        assert_eq!(sent_text("applied_live", false, "LA 2"), "config change sent, applied live without a restart (LA 2)");
+        assert_eq!(sent_text("ok", false, "LA 2"), "config change sent, station restarts (LA 2)");
+        assert_eq!(sent_text("ok", true, "LA 2"), "pending config change sent, station restarts (LA 2)");
     }
 
     /// Station stand-in: answers the next command with `answer(handle)`.

@@ -2,6 +2,15 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.22.10 (Config changes applied live) adds:
+
+- **Fleet Control: config changes applied live.** A station with
+  `config-live-v1` (FlowStation live configuration) takes a change it can
+  apply without a restart at once and answers `applied_live`; the change log
+  now says "applied live without a restart" instead of "station restarts".
+  The confirmation window and the automatic rollback work as before. Older
+  stations restart as before.
+
 Version 1.22.9 (RF kill switch) adds:
 
 - **Fleet Control: RF kill switch.** A red **RF off** button next to *Power
