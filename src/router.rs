@@ -176,6 +176,9 @@ pub async fn handle_packet(state: Arc<AppState>, source: ClientId, raw: Vec<u8>)
         BrewMessage::Service(svc) if svc.service_type == protocol::SERVICE_BLACKLIST_CMD => {
             crate::blacklist::handle_command(&state, source, &svc.json_data).await;
         }
+        BrewMessage::Service(svc) if svc.service_type == protocol::SERVICE_GROUP_ACCESS => {
+            crate::group_access::handle_terminal_request(&state, source).await;
+        }
         BrewMessage::Service(svc) if svc.service_type == protocol::SERVICE_MS_NETWORK => {
             crate::visitors::handle_ms_network(&state, source, &svc.json_data).await;
         }
@@ -3002,6 +3005,52 @@ mod group_access_tests {
         assert_eq!(r.status(), axum::http::StatusCode::OK);
         assert_eq!(lists(&mut a_rx), vec![serde_json::json!({"groups":[{"gssi":2321,"mode":"allow","issis":[],"rx_only":true,"rx_only_issis":[4014]}]})]);
         assert!(lists(&mut b_rx).is_empty());
+        crate::CONFIG_WRITE_APPLIED_LIVE.store(false, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A Terminal (app) asks with an empty `SERVICE_GROUP_ACCESS` and gets the
+    /// verdict for its own ISSI, now and on every change.
+    /// A Terminal that does not ask gets nothing.
+    #[tokio::test]
+    async fn terminals_that_ask_get_the_lists_for_their_own_issi() {
+        let path = std::env::temp_dir().join(format!("brew-access3-{}.toml", uuid::Uuid::new_v4().simple()));
+        let mut config = crate::config::Config::default();
+        config.storage.enabled = false;
+        config.sms_center.enabled = false;
+        config.group_access.insert("2321".into(), GroupAccessConfig { mode: GroupAccessMode::Allow, issis: vec![4013, 5000], ..Default::default() });
+        config.group_access.insert("9".into(), GroupAccessConfig { mode: GroupAccessMode::Block, issis: vec![5000, 6000], rx_only: true, rx_only_issis: vec![4013] });
+        let state = Arc::new(AppState::new(config, path.clone()).0);
+        let terminal = |state: Arc<AppState>| async move {
+            let (tx, rx) = mpsc::unbounded_channel();
+            let id = uuid::Uuid::new_v4();
+            state.inner.write().await.clients.insert(id, Client { tx, mode: ClientMode::Terminal, version: ConnVersion::V1, version_announced: true, remote_addr: None, connected_at_ms: 0, username: None });
+            (id, rx)
+        };
+        let lists = |rx: &mut mpsc::UnboundedReceiver<Vec<u8>>| -> Vec<serde_json::Value> {
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .filter(|p| p.len() > 2 && p[0] == protocol::CLASS_SERVICE && p[1] == protocol::SERVICE_GROUP_ACCESS)
+                .map(|p| serde_json::from_slice(&p[2..p.len() - 1]).unwrap())
+                .collect()
+        };
+        let (app, mut app_rx) = terminal(state.clone()).await;
+        let (other, mut other_rx) = terminal(state.clone()).await;
+        sub(&state, app, SUB_REGISTER, 4013, &[]).await;
+        sub(&state, other, SUB_REGISTER, 4014, &[]).await;
+        handle_packet(state.clone(), app, protocol::build_service(protocol::SERVICE_GROUP_ACCESS, "{}")).await;
+        assert_eq!(lists(&mut app_rx), vec![serde_json::json!({"groups":[{"gssi":9,"access":"listen"}]})],
+            "only the verdict for its own ISSI (2321 admits it), never the lists");
+
+        let r = crate::group_access::set(
+            axum::extract::State(state.clone()),
+            axum::Json(crate::group_access::AccessRequest { gssi: "2321".into(), mode: GroupAccessMode::Block, issis: "4013 7000".into(), rx_only: false, rx_only_issis: String::new() }),
+        ).await;
+        assert_eq!(r.status(), axum::http::StatusCode::OK);
+        assert_eq!(lists(&mut app_rx), vec![serde_json::json!({"groups":[{"gssi":9,"access":"listen"},{"gssi":2321,"access":"refused"}]})]);
+        assert!(lists(&mut other_rx).is_empty(), "did not ask, gets nothing");
+
+        state.cleanup_client(app).await;
+        assert!(!state.inner.read().await.group_access_terminals.contains(&app));
         crate::CONFIG_WRITE_APPLIED_LIVE.store(false, std::sync::atomic::Ordering::SeqCst);
         let _ = std::fs::remove_file(&path);
     }

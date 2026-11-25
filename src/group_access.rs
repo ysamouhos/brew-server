@@ -13,6 +13,12 @@
 //! Brew has no such message, so a Basestation without it still lets the radio
 //! attach and talk locally.
 //!
+//! A Terminal (an app) that was offered `group-access` asks for the table by
+//! sending an empty `SERVICE_GROUP_ACCESS` after its `SUB_REGISTER`. It then
+//! gets, now and on every change, only the verdict for the ISSIs registered
+//! through that connection: which groups it may not join or only listen to,
+//! never who else is listed.
+//!
 //! Managed talkgroups (`[talkgroups] managed`): only allowed groups may be
 //! used (`AppState::group_listed`: `[talkgroups] allowed`, or a group of a
 //! pool or linked talkgroup). The same checks then refuse every other group, and
@@ -48,28 +54,61 @@ pub const CAPABILITY: &str = "group-access";
 /// `"listed":[GSSI,..]`: no other group may be attached.
 pub fn updates(state: &AppState, inner: &Inner, only: Option<ClientId>) -> Vec<(ClientId, Vec<u8>)> {
     let table = state.group_access.read().map(|g| g.clone()).unwrap_or_default();
-    let mut groups: Vec<(u32, GroupAccessConfig)> = table.into_iter().filter_map(|(k, a)| Some((k.trim().parse().ok()?, a))).collect();
+    let mut groups: Vec<(u32, GroupAccessConfig)> = table.into_iter().filter_map(|(k, a)| Some((k.trim().parse().ok()?, a))).filter(|(_, a)| !a.is_open()).collect();
     groups.sort_by_key(|(g, _)| *g);
-    let groups: Vec<serde_json::Value> = groups
-        .into_iter()
-        .filter(|(_, a)| !a.is_open())
-        .map(|(gssi, a)| serde_json::json!({
-            "gssi": gssi, "mode": a.mode, "issis": a.issis, "rx_only": a.rx_only, "rx_only_issis": a.rx_only_issis,
-        }))
-        .collect();
-    let body = if state.talkgroups_managed() {
-        serde_json::json!({ "groups": groups, "managed": true, "listed": state.listed_groups() })
-    } else {
-        serde_json::json!({ "groups": groups })
+    let managed = state.talkgroups_managed().then(|| state.listed_groups());
+    let with_managed = |mut body: serde_json::Value| {
+        if let Some(listed) = &managed {
+            body["managed"] = true.into();
+            body["listed"] = serde_json::json!(listed);
+        }
+        crate::protocol::build_service(crate::protocol::SERVICE_GROUP_ACCESS, &body.to_string())
     };
-    let packet = crate::protocol::build_service(crate::protocol::SERVICE_GROUP_ACCESS, &body.to_string());
+    let full = with_managed(serde_json::json!({ "groups": groups.iter().map(|(gssi, a)| serde_json::json!({
+        "gssi": gssi, "mode": a.mode, "issis": a.issis, "rx_only": a.rx_only, "rx_only_issis": a.rx_only_issis,
+    })).collect::<Vec<_>>() }));
+    // A terminal gets only the verdict for its own ISSIs: groups it may not
+    // join ("refused") or only listen to ("listen"); open ones are left out.
+    let verdicts = |own: &[u32]| {
+        let groups: Vec<serde_json::Value> = groups
+            .iter()
+            .filter_map(|(gssi, a)| {
+                let access = if !own.iter().any(|i| a.permits(*i)) { "refused" } else if !own.iter().any(|i| a.may_talk(*i)) { "listen" } else { return None };
+                Some(serde_json::json!({ "gssi": gssi, "access": access }))
+            })
+            .collect();
+        with_managed(serde_json::json!({ "groups": groups }))
+    };
     inner
         .clients
         .keys()
         .filter(|id| only.is_none_or(|o| o == **id))
-        .filter(|id| crate::handover::announced(inner, **id, CAPABILITY))
-        .map(|id| (*id, packet.clone()))
+        .filter_map(|id| {
+            if crate::handover::announced(inner, *id, CAPABILITY) {
+                Some((*id, full.clone()))
+            } else if inner.group_access_terminals.contains(id) {
+                let own: Vec<u32> = inner.subscribers.iter().filter(|(_, s)| s.client_id == *id).map(|(issi, _)| *issi).collect();
+                Some((*id, verdicts(&own)))
+            } else {
+                None
+            }
+        })
         .collect()
+}
+
+/// An empty `SERVICE_GROUP_ACCESS` from a Terminal: it takes up the
+/// `group-access` offer. It gets the table for its own ISSIs now and on
+/// every change. From other connections the message is ignored.
+pub async fn handle_terminal_request(state: &AppState, source: ClientId) {
+    let mut inner = state.inner.write().await;
+    if inner.clients.get(&source).is_none_or(|c| c.mode != ClientMode::Terminal) {
+        tracing::debug!(%source, "SERVICE_GROUP_ACCESS from a non-terminal ignored");
+        return;
+    }
+    inner.group_access_terminals.insert(source);
+    for (to, packet) in updates(state, &inner, Some(source)) {
+        if let Some(client) = inner.clients.get(&to) { let _ = client.tx.send(packet); }
+    }
 }
 
 fn snapshot(state: &AppState) -> BTreeMap<String, GroupAccessConfig> {

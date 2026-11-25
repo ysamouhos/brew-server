@@ -215,6 +215,9 @@ pub struct Inner {
     pub netlinks: HashMap<u8, ClientId>,
     /// Radios of other networks on this server's stations (see `visitors`).
     pub visitors: crate::visitors::Visitors,
+    /// Terminal connections (apps) that asked for `SERVICE_GROUP_ACCESS`
+    /// (see `group_access::handle_terminal_request`).
+    pub group_access_terminals: HashSet<ClientId>,
 }
 
 impl Inner {
@@ -804,6 +807,7 @@ impl AppState {
         let negotiated = inner.fed.links.remove(&id).is_some();
         inner.fed.bts_links.remove(&id);
         inner.consoles.remove(&id);
+        inner.group_access_terminals.remove(&id);
         inner.fed.ms_links.remove(&id);
         inner.fed.em_links.remove(&id);
         let announced_cells = inner.carriers.info(id).is_some();

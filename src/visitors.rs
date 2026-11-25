@@ -62,6 +62,10 @@ pub struct Visitors {
     /// network) attached, as `SERVICE_GROUP_NETWORK` said. Its affiliation is
     /// kept as that network's group (an alias), see [`group_alias`].
     foreign: HashMap<(ClientId, u32, u32), u8>,
+    /// Terminal-mode logins that took up the `mni` offer (they sent
+    /// `SERVICE_MS_NETWORK`): treated like a station with the capability
+    /// (docs/Brew-Extensions.md 12b.6).
+    terminals: HashSet<ClientId>,
 }
 
 /// Loop guard of "forward unknown targets" (as `fedroute::CALL_DEDUP_WINDOW`).
@@ -74,8 +78,21 @@ pub struct Mni {
 }
 
 fn has_capability(inner: &Inner, id: ClientId) -> bool {
-    inner.clients.get(&id).is_some_and(|c| c.mode == ClientMode::Basestation)
-        && inner.carriers.info(id).is_some_and(|i| i.capabilities.iter().any(|c| c == CAPABILITY))
+    match inner.clients.get(&id).map(|c| c.mode) {
+        Some(ClientMode::Basestation) => inner.carriers.info(id).is_some_and(|i| i.capabilities.iter().any(|c| c == CAPABILITY)),
+        Some(ClientMode::Terminal) => inner.visitors.terminals.contains(&id),
+        _ => false,
+    }
+}
+
+/// A Terminal-mode login takes up the `mni` offer with its first
+/// `SERVICE_MS_NETWORK` (its own ISSI, `mcc`/`mnc` 0 = this server's
+/// network). True when it is new, so the caller sends it `SERVICE_NETWORKS`.
+/// Only while Multi Network is on (the offer depends on it).
+fn adopt_terminal(state: &AppState, inner: &mut Inner, id: ClientId) -> bool {
+    let on = state.networks.read().map(|c| c.enabled && !c.networks.is_empty()).unwrap_or(false);
+    if !on || inner.clients.get(&id).is_none_or(|c| c.mode != ClientMode::Terminal) { return false; }
+    inner.visitors.terminals.insert(id)
 }
 
 /// A station of another network: it speaks the `mni` extension and every
@@ -115,6 +132,10 @@ pub async fn handle_ms_network(state: &AppState, source: ClientId, json: &str) {
     if m.issi == 0 || m.issi > GSSI_MASK { return; }
     let slot = slot_of(state, Mni { mcc: m.mcc, mnc: m.mnc });
     let mut inner = state.inner.write().await;
+    if adopt_terminal(state, &mut inner, source) {
+        info!(%source, issi = m.issi, "multi network: terminal speaks mni");
+        let _ = inner.clients.get(&source).map(|c| c.tx.send(build_networks(state)));
+    }
     if !has_capability(&inner, source) {
         debug!(%source, issi = m.issi, "MS network from a station without the mni capability ignored");
         return;
@@ -465,6 +486,7 @@ fn leave_home_network(state: &AppState, inner: &mut Inner, source: ClientId, slo
 
 /// A station went away: its visitors leave their home networks.
 pub fn station_gone(state: &AppState, inner: &mut Inner, id: ClientId) {
+    inner.visitors.terminals.remove(&id);
     inner.visitors.of.retain(|(station, _), _| *station != id);
     forget_foreign(inner, id, None);
     inner.visitors.calls.retain(|_, (station, _, _)| *station != id);
