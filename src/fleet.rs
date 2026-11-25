@@ -38,6 +38,9 @@ pub struct Hello {
     pub mnc: u16,
     pub fleet_control: bool,
     pub capabilities: Vec<String>,
+    /// `rf-standby-v1`: radio stack suspended, transmitter off (older stations: false).
+    #[serde(default)]
+    pub rf_standby: bool,
 }
 
 /// One station in the Fleet Manager.
@@ -71,6 +74,10 @@ pub struct Station {
     /// Config copy, local changes, pending and running changes (`config-v1`), phases 4/5.
     #[serde(default)]
     pub cfg: crate::fleet_config::StationConfig,
+    /// `rf-standby-v1`: radio stack suspended (RF kill switch or Suspend on the station),
+    /// from its last hello. Shown as "Standby" while the control channel is up.
+    #[serde(default)]
+    pub rf_standby: bool,
 }
 
 /// Maintenance flag of a station (the station's own copy runs out at the same time).
@@ -98,6 +105,8 @@ pub const RESTART_RETURN_MS: u64 = 10 * 60 * 1000;
 pub const MAINTENANCE_CAPABILITY: &str = "maintenance-v1";
 /// Capability: restart / reboot.
 pub const RESTART_CAPABILITY: &str = "restart-v1";
+/// RF kill switch (`SetRfStandby`, `rf_standby` in the hello).
+pub const RF_STANDBY_CAPABILITY: &str = "rf-standby-v1";
 
 /// Result of the last update check of a station.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -361,7 +370,14 @@ impl Fleet {
             maintenance: entry.as_ref().and_then(|s| s.maintenance.clone()),
             restart: None,
             cfg: entry.as_ref().map(|s| s.cfg.clone()).unwrap_or_default(),
+            rf_standby: h.rf_standby,
         };
+        // RF switched off or on (from here or on the station itself). Starting again is a
+        // service restart, so "on" comes with the first hello of the new process.
+        if entry.as_ref().is_some_and(|s| s.rf_standby != h.rf_standby) {
+            let text = if h.rf_standby { format!("Basestation {label}: RF off (standby)") } else { format!("Basestation {label}: RF on again") };
+            self.push(now_ms, id, label.clone(), None, "rf", text);
+        }
         if let Some(r) = entry.as_ref().and_then(|s| s.restart.as_ref()) {
             let secs = now_ms.saturating_sub(r.at_ms) / 1000;
             self.push(now_ms, id, label.clone(), None, "restart", format!("Basestation {label}: back after the {} ({secs} s)", if r.host { "reboot" } else { "service restart" }));
@@ -504,6 +520,16 @@ impl Fleet {
         let label = label(names, id, s.brew_login.as_deref());
         s.restart = Some(RestartInfo { host, by: user.map(str::to_owned), at_ms: now_ms });
         self.push(now_ms, id, label.clone(), user, "restart", format!("Basestation {label}: {}", if host { "system reboot" } else { "service restart" }));
+        self.save();
+    }
+
+    /// The RF kill switch was accepted by `id` (logged with the user; the station's next
+    /// hello confirms the state).
+    pub fn rf_sent(&mut self, id: &str, standby: bool, user: Option<&str>, now_ms: u64, names: &dyn Fn(&str) -> Option<String>) {
+        let Some(s) = self.data.stations.get(id) else { return };
+        let label = label(names, id, s.brew_login.as_deref());
+        let text = if standby { format!("Basestation {label}: RF kill switch, transmitter off") } else { format!("Basestation {label}: RF on (service starts)") };
+        self.push(now_ms, id, label, user, "rf", text);
         self.save();
     }
 
@@ -1138,6 +1164,42 @@ pub async fn api_restart(
     axum::Json(serde_json::json!({"ok": true})).into_response()
 }
 
+#[derive(Deserialize)]
+pub struct RfRequest {
+    pub id: String,
+    /// true: transmitter off (suspend the radio stack); false: on again.
+    pub standby: bool,
+    #[serde(default)]
+    pub during_call: bool,
+}
+
+/// `POST /api/fleet/rf` `{"id", "standby", "during_call"}` (Fleet Control
+/// management): RF kill switch. Uses the station's Suspend: the radio stack stops,
+/// the dashboard and the control channel stay up, so the station shows as Standby
+/// and can be switched on again from here.
+pub async fn api_rf(
+    axum::extract::State(state): axum::extract::State<std::sync::Arc<crate::state::AppState>>,
+    headers: axum::http::HeaderMap,
+    axum::Json(req): axum::Json<RfRequest>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let a = crate::dashboard::access(&state, &headers);
+    if !a.manages_fleet() {
+        return refuse();
+    }
+    if !has_capability(&state, &req.id, RF_STANDBY_CAPABILITY) {
+        return (axum::http::StatusCode::BAD_REQUEST, "This station has no RF kill switch (needs rf-standby-v1)").into_response();
+    }
+    let cmd = crate::control::ControlCommand::SetRfStandby { handle: 0, standby: req.standby, during_call: req.during_call };
+    if let Err(r) = station_answer(crate::control::send_command(&state, &req.id, cmd).await) {
+        return r;
+    }
+    let names = crate::control::station_names(&state);
+    state.fleet.lock().unwrap_or_else(|e| e.into_inner()).rf_sent(&req.id, req.standby, a.user.as_deref(), now_ms(), &|k| names.get(k).cloned());
+    state.monitor.emit("fleet_changed", serde_json::json!({"id": req.id}));
+    axum::Json(serde_json::json!({"ok": true})).into_response()
+}
+
 /// Background driver of update runs: every 2 s advance the run and send the
 /// `StartUpdate` commands it asks for. Runs for the whole server lifetime, so
 /// a run goes on with no browser open.
@@ -1184,7 +1246,7 @@ mod tests {
     use super::*;
 
     fn hello(on: bool, version: &str) -> Hello {
-        Hello { protocol: 1, version: version.into(), brew_login: Some("1000001".into()), mcc: 232, mnc: 20, fleet_control: on, capabilities: if on { vec!["fleet-v1".into()] } else { vec![] } }
+        Hello { protocol: 1, version: version.into(), brew_login: Some("1000001".into()), mcc: 232, mnc: 20, fleet_control: on, capabilities: if on { vec!["fleet-v1".into()] } else { vec![] }, rf_standby: false }
     }
     fn no_names(_: &str) -> Option<String> {
         None
@@ -1333,6 +1395,28 @@ mod tests {
         assert_eq!(job.items[0].state, crate::fleet_update::ItemState::Pending, "no check needed");
         let starts = f.tick_job(3);
         assert_eq!(starts[0].source, Some(live));
+    }
+
+    #[test]
+    fn rf_standby_from_the_hello_is_kept_and_logged() {
+        let mut f = Fleet::load(None, 0);
+        let mut h = hello_with(&["fleet-v1", RF_STANDBY_CAPABILITY], "v1");
+        f.hello("bs1", &h, 1, &no_names);
+        assert!(!f.stations()[0].rf_standby);
+        f.rf_sent("bs1", true, Some("oe4sxm"), 2, &no_names);
+        h.rf_standby = true;
+        f.hello("bs1", &h, 3, &no_names);
+        assert!(f.stations()[0].rf_standby);
+        // The same state again is no change.
+        f.hello("bs1", &h, 4, &no_names);
+        h.rf_standby = false;
+        f.hello("bs1", &h, 5, &no_names);
+        assert!(!f.stations()[0].rf_standby);
+        let rf: Vec<(String, Option<String>)> = f.log().iter().filter(|l| l.kind == "rf").map(|l| (l.text.clone(), l.user.clone())).collect();
+        assert_eq!(rf.len(), 3, "{rf:?}");
+        assert!(rf.iter().any(|(t, u)| t.contains("kill switch") && u.as_deref() == Some("oe4sxm")));
+        assert!(rf.iter().any(|(t, u)| t.contains("RF off (standby)") && u.is_none()));
+        assert!(rf.iter().any(|(t, _)| t.contains("RF on again")));
     }
 
     #[test]

@@ -376,8 +376,9 @@ const V2G={
 const V2ST={
  active:'<circle cx="9" cy="9" r="7" fill="#2e9e4f" stroke="#fff" stroke-width="1.8"/><path d="M5.8 9.2l2.2 2.2 4-4.2" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
  error:'<circle cx="9" cy="9" r="7" fill="#e53935" stroke="#fff" stroke-width="1.8"/><path d="M6.4 6.4l5.2 5.2M11.6 6.4l-5.2 5.2" stroke="#fff" stroke-width="2" stroke-linecap="round"/>',
+ standby:'<circle cx="9" cy="9" r="7" fill="#fff" stroke="#f2c230" stroke-width="1.8"/><path d="M9 2.9a6.1 6.1 0 0 1 0 12.2z" fill="#f2c230"/>',
  warning:'<path d="M9 1.6l7.6 13.2H1.4z" fill="#f28c18" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/><path d="M9 6.4v4" stroke="#fff" stroke-width="2" stroke-linecap="round"/><circle cx="9" cy="12.8" r="1.1" fill="#fff"/>'};
-// o: px, off, emg, faded, sel, status (active/warning/error).
+// o: px, off, emg, faded, sel, status (active/standby/warning/error).
 function v2svg(type,o){o=o||{};const px=o.px||36,bg=o.off?V2C.off:o.emg?V2C.emg:V2C[type];
  const off=o.off?`<circle cx="24" cy="25" r="18.6" fill="none" stroke="${V2C.off}" stroke-width="1.8" stroke-dasharray="3.2 2.6"/>`:'';
  const sel=o.sel?'<circle cx="24" cy="25" r="19.2" fill="none" stroke="#0f1b3d" stroke-width="2.4" stroke-dasharray="4 3"/>':'';
