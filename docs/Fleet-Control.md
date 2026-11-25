@@ -567,6 +567,13 @@ every 5 s), so an edit on the station shows up on the server.
   station validates the whole config like its own dashboard does, saves the
   old file as `<config>.fleet-backup` and notes the change in
   `<config>.fleet-pending.json` before it writes the new one.
+- A station that announces `config-live-v1` (FlowStation live reload) applies
+  a change it can take without a restart at once and answers `SetConfig` with
+  `ok: true` and code `applied_live`; the window then runs from that moment
+  and the station sends its hello with the new hash and `config_pending` on
+  the same connection, so the server confirms as after a restart (nothing
+  else changes on the server; older servers work the same way). A change that
+  needs a restart is answered `ok` as before.
 - `ConfirmConfig` → `CommandResult`: `ok`, `not_pending`, `not_restarted`
   (the process that wrote the change has not restarted yet: the hello it
   re-announces before the restart already says "pending"; the server waits
