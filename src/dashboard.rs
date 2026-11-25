@@ -652,7 +652,7 @@ function drawRadios(){{
     else{{markers[key]=L.marker(ll,{{icon,zIndexOffset:z}}).addTo(map).bindPopup(html).on('click',()=>showTrack(issi));}}}};
   d.radios.forEach(r=>{{
     const f=r.fix,st=r.dock&&btsMarkers[r.dock];
-    const html=`${{r.emergency?'<div class=emg-pop>&#128680; EMERGENCY</div>':''}}<b>ISSI ${{r.issi}}${{nm(r.issi)}}</b>${{r.terminal?' (Terminal)':''}}${{r.vassi?'<br>As visitor: VASSI '+r.vassi:''}}${{r.online?'':'<br><span style="color:#a55">Offline (not registered)</span>'}}${{st?'<br>On station: '+esc(st._name||r.dock):''}}${{f?`<br>Position ${{f.lat.toFixed(5)}}, ${{f.lon.toFixed(5)}} (${{ago(f.at_ms)}} ago)<br>${{new Date(f.at_ms).toLocaleString()}}<br><span style="color:#555">${{esc(f.source_text||'')}}</span>`:'<br>No position'}}${{r.points>1?`<br><span style="color:#555">${{r.points}} positions, click shows the track</span>`:''}}`;
+    const html=`${{r.emergency?'<div class=emg-pop>&#128680; EMERGENCY</div>':''}}<b>ISSI ${{r.issi}}${{nm(r.issi)}}</b>${{r.terminal?' (Terminal)':''}}${{r.vassi?'<br>As visitor: VASSI '+r.vassi:''}}${{r.online?'':'<br><span style="color:#a55">Offline (not registered)</span>'}}${{st?'<br>On station: '+esc(st._name||r.dock):''}}${{r.rssi?`<br>RSSI ${{r.rssi.dbfs.toFixed(1)}} dBFS <span style="color:#555">(${{ago(r.rssi.at_ms)}} ago, uplink at the station)</span>`:''}}${{f?`<br>Position ${{f.lat.toFixed(5)}}, ${{f.lon.toFixed(5)}} (${{ago(f.at_ms)}} ago)<br>${{new Date(f.at_ms).toLocaleString()}}<br><span style="color:#555">${{esc(f.source_text||'')}}</span>`:'<br>No position'}}${{r.points>1?`<br><span style="color:#555">${{r.points}} positions, click shows the track</span>`:''}}`;
     const z=r.emergency?10000:sel===r.issi?900:0;
     if(r.docked&&st){{(docked[r.dock]=docked[r.dock]||[]).push([r,html,z]);}}
     else if(f){{put('r'+r.issi,[f.lat,f.lon],msMarkerIcon(r,44,0,0,fresh>0&&now-f.at_ms>fresh/2),z,html,r.issi);}}
@@ -1242,6 +1242,34 @@ fn neighbour_names(directory: &[crate::carriers::DirectoryEntry], cell: &crate::
     }).collect())
 }
 
+/// Uplink RSSI of every registered radio from the station it is registered on now: its Brew
+/// connection (`SERVICE_RSSI`, FlowStation `feature_rssi_export`) or that station's telemetry
+/// login (the Brew login itself, or the Fleet Control station whose Brew login it is). The
+/// newest of both; a radio without a reading from its current station is left out.
+pub async fn ms_rssi_readings(state: &AppState) -> std::collections::HashMap<u32, crate::telemetry::RssiReading> {
+    let tele_ids: std::collections::HashMap<String, Vec<String>> = {
+        let fleet = state.fleet.lock().unwrap_or_else(|e| e.into_inner());
+        let mut m: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        for s in fleet.stations() {
+            if let Some(b) = s.brew_login { m.entry(b).or_default().push(s.id); }
+        }
+        m
+    };
+    let subs: Vec<(u32, String, String)> = {
+        let inner = state.inner.read().await;
+        inner.subscribers.iter().map(|(issi, s)| {
+            let name = crate::carriers::station_name(s.client_id, inner.clients.get(&s.client_id).and_then(|c| c.username.as_deref()));
+            (*issi, s.client_id.to_string(), name)
+        }).collect()
+    };
+    let t = state.telemetry.read().await;
+    subs.into_iter().filter_map(|(issi, client, name)| {
+        let mut logins = vec![name.as_str()];
+        if let Some(ids) = tele_ids.get(&name) { logins.extend(ids.iter().map(String::as_str)); }
+        t.ms_rssi_reading(issi, &client, &logins).map(|r| (issi, r))
+    }).collect()
+}
+
 pub async fn connections_snapshot(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let (brew_clients, mobile_stations, cells, duplicate_carriers, handovers_pending, roaming_log) = {
         let inner = state.inner.read().await;
@@ -1342,6 +1370,14 @@ pub async fn connections_snapshot(State(state): State<Arc<AppState>>) -> Json<se
         cells.sort_by(|a, b| (a["station"].as_str(), a["cell"].as_u64()).cmp(&(b["station"].as_str(), b["cell"].as_u64())));
         (brew_clients, mobile_stations, cells, inner.carriers.duplicates(), inner.handovers.pending_count(), inner.roaming_log.newest_first())
     };
+
+    let mut mobile_stations = mobile_stations;
+    {
+        let rssi = ms_rssi_readings(&state).await;
+        for m in &mut mobile_stations {
+            if let Some(r) = m["issi"].as_u64().and_then(|i| rssi.get(&(i as u32))) { m["rssi"] = serde_json::json!(r); }
+        }
+    }
 
     let sip = match state.sip_snapshot().await {
         Some(snap) => serde_json::json!({
@@ -2173,6 +2209,84 @@ mod tests {
     fn connections_page_shows_the_connections_before_the_cells() {
         let at = |h: &str| CONNECTIONS_HTML.find(h).unwrap_or_else(|| panic!("{h} missing"));
         assert!(at("<h2>Brew Connections") < at("<h2>Cells"));
+    }
+
+    /// Radios page and map show each radio's uplink RSSI (`SERVICE_RSSI` on the Brew connection),
+    /// only from the station it is registered on now.
+    #[tokio::test]
+    async fn radios_and_map_show_rssi_of_current_station() {
+        use crate::protocol::{self, ConnVersion, SUB_REGISTER};
+        let state = AppState::for_test();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (bs1, bs2) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        for (id, user) in [(bs1, "1000001"), (bs2, "1000002")] {
+            state.inner.write().await.clients.insert(id, crate::state::Client {
+                tx: tx.clone(), mode: crate::state::ClientMode::Basestation, version: ConnVersion::V0,
+                version_announced: false, remote_addr: None, connected_at_ms: 0, username: Some(user.into()),
+            });
+        }
+        let packet = |p: Vec<u8>, from| crate::router::handle_packet(state.clone(), from, p);
+        for issi in [7, 8, 9] {
+            packet(protocol::build_subscriber_message(SUB_REGISTER, issi, &[]), bs1).await;
+        }
+        packet(protocol::build_service(protocol::SERVICE_RSSI, r#"{"issi":7,"rssi_dbfs":-42.5}"#), bs1).await;
+        packet(protocol::build_service(protocol::SERVICE_RSSI, r#"{"issi":9,"rssi_dbfs":-30.0}"#), bs1).await;
+        // 9 moves to BS2, which has not measured it yet: BS1's reading is not shown any more.
+        packet(protocol::build_subscriber_message(SUB_REGISTER, 9, &[]), bs2).await;
+        let Json(conn) = connections_snapshot(State(state.clone())).await;
+        let rssi = |issi: u64| conn["mobile_stations"].as_array().unwrap().iter().find(|m| m["issi"] == issi).unwrap()["rssi"].clone();
+        assert_eq!(rssi(7)["dbfs"], -42.5);
+        assert_eq!(rssi(7)["via"], "brew");
+        assert!(rssi(7)["at_ms"].as_u64().unwrap() > 0);
+        assert!(rssi(8).is_null(), "never measured");
+        assert!(rssi(9).is_null(), "measured by the station it left");
+        packet(protocol::build_service(protocol::SERVICE_RSSI, r#"{"issi":9,"rssi_dbfs":-55.0}"#), bs2).await;
+        let r = ms_rssi_readings(&state).await;
+        assert_eq!(r.get(&9).map(|x| x.dbfs), Some(-55.0));
+        assert!(crate::dashboard_ui::page().await.0.contains("rssiCell(m.rssi)"), "Radios page has the RSSI column");
+        assert!(MAP_HTML.contains("r.rssi?"), "map popup shows the RSSI");
+    }
+
+    /// Sim: 10 stations, 25 radios, every station measures every radio it serves, then each radio
+    /// moves twice. The Radios page and the map always show the reading of the current station.
+    #[tokio::test]
+    async fn rssi_sim_10_stations_25_radios() {
+        use crate::protocol::{self, ConnVersion, SUB_REGISTER};
+        let state = AppState::for_test();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let bs: Vec<uuid::Uuid> = (0..10).map(|_| uuid::Uuid::new_v4()).collect();
+        for (n, id) in bs.iter().enumerate() {
+            state.inner.write().await.clients.insert(*id, crate::state::Client {
+                tx: tx.clone(), mode: crate::state::ClientMode::Basestation, version: ConnVersion::V0,
+                version_announced: false, remote_addr: None, connected_at_ms: 0, username: Some(format!("{}", 1000001 + n)),
+            });
+        }
+        let packet = |p: Vec<u8>, from| crate::router::handle_packet(state.clone(), from, p);
+        // Reading of radio `issi` at station `n`: unique, so a wrong station shows up.
+        let level = |issi: u32, n: usize| -(issi as f32 % 100.0) - n as f32 * 0.5;
+        for step in 0..3 {
+            for issi in 2320001..2320026u32 {
+                let n = (issi as usize + step * 3) % 10;
+                packet(protocol::build_subscriber_message(SUB_REGISTER, issi, &[]), bs[n]).await;
+                // The station a radio just left keeps reporting it for a while: must not count.
+                let old = (issi as usize + 10 - 3 + step * 3) % 10;
+                if step > 0 { packet(protocol::build_service(protocol::SERVICE_RSSI, &format!(r#"{{"issi":{issi},"rssi_dbfs":-1.0}}"#)), bs[old]).await; }
+                if issi % 5 != 0 {
+                    packet(protocol::build_service(protocol::SERVICE_RSSI, &format!(r#"{{"issi":{issi},"rssi_dbfs":{}}}"#, level(issi, n))), bs[n]).await;
+                }
+                // ...also after the new station measured it.
+                if step > 0 { packet(protocol::build_service(protocol::SERVICE_RSSI, &format!(r#"{{"issi":{issi},"rssi_dbfs":-2.0}}"#)), bs[old]).await; }
+            }
+            let Json(conn) = connections_snapshot(State(state.clone())).await;
+            let ms = conn["mobile_stations"].as_array().unwrap();
+            assert_eq!(ms.len(), 25);
+            for m in ms {
+                let issi = m["issi"].as_u64().unwrap() as u32;
+                let n = (issi as usize + step * 3) % 10;
+                if issi % 5 == 0 { assert!(m["rssi"].is_null(), "step {step}: {issi} not measured here"); }
+                else { assert_eq!(m["rssi"]["dbfs"].as_f64().unwrap() as f32, level(issi, n), "step {step}: {issi}"); }
+            }
+        }
     }
 
     #[tokio::test]

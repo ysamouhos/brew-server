@@ -96,13 +96,15 @@ pub fn updates(state: &AppState, inner: &Inner, only: Option<ClientId>) -> Vec<(
         .collect()
 }
 
-/// An empty `SERVICE_GROUP_ACCESS` from a Terminal: it takes up the
-/// `group-access` offer. It gets the table for its own ISSIs now and on
-/// every change. From other connections the message is ignored.
+/// An empty `SERVICE_GROUP_ACCESS` from a Terminal, or from a Basestation
+/// login without cells (the app in Basestation mode): it takes up the
+/// `group-access` offer. It gets the verdicts for its own ISSIs now and on
+/// every change. A station that announced `group-access` in its
+/// `SERVICE_BTS_INFO` gets the whole table instead; peers are ignored.
 pub async fn handle_terminal_request(state: &AppState, source: ClientId) {
     let mut inner = state.inner.write().await;
-    if inner.clients.get(&source).is_none_or(|c| c.mode != ClientMode::Terminal) {
-        tracing::debug!(%source, "SERVICE_GROUP_ACCESS from a non-terminal ignored");
+    if inner.clients.get(&source).is_none_or(|c| !matches!(c.mode, ClientMode::Terminal | ClientMode::Basestation)) {
+        tracing::debug!(%source, "SERVICE_GROUP_ACCESS from a peer ignored");
         return;
     }
     inner.group_access_terminals.insert(source);

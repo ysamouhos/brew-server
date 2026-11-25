@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "brew-server"
-version = "1.22.12"
+version = "1.22.14"
 dependencies = [
  "anyhow",
  "argon2",

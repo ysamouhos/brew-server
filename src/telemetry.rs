@@ -307,6 +307,16 @@ impl SdsTelemetryRecord {
     }
 }
 
+/// One radio's received signal strength (uplink, dBFS at the station's SDR,
+/// not calibrated to dBm) as shown on the dashboard.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct RssiReading {
+    pub dbfs: f32,
+    pub at_ms: u64,
+    /// "brew" (`SERVICE_RSSI` on the Brew connection) or "telemetry".
+    pub via: &'static str,
+}
+
 /// Live, in-memory picture of one connected Basestation BTS derived from its
 /// telemetry stream. Resets when the connection drops (no persistence, mirrors
 /// the rest of this server's dashboard state).
@@ -398,6 +408,9 @@ pub struct TelemetryBts {
     /// station can be shown with its own received-signal reading.
     #[serde(skip)]
     pub ms_rssi: HashMap<u32, f32>,
+    /// When each `ms_rssi` reading came (ms, `now_ms`).
+    #[serde(skip)]
+    pub ms_rssi_at: HashMap<u32, u64>,
     /// Serialized [issi, rssi_dbfs] pairs of `ms_rssi` for the dashboard.
     pub ms_rssi_out: Vec<(u32, f32)>,
 }
@@ -464,6 +477,7 @@ impl TelemetryBts {
             evm_pct: None,
             rssi_dbfs: None,
             ms_rssi: HashMap::new(),
+            ms_rssi_at: HashMap::new(),
             ms_rssi_out: Vec::new(),
         }
     }
@@ -647,6 +661,10 @@ pub struct TelemetryState {
     /// is keyed only by ISSI, with no BTS-id concept on the wire, so it isn't
     /// nested under a station the way that one is.
     pub brew_ms_rssi: HashMap<u32, f32>,
+    /// The same readings per (ISSI, Brew connection as text), with the time
+    /// they came (ms), so a radio is only shown with the reading of the station
+    /// it is registered on now, even when the station it left still reports it.
+    pub brew_ms_rssi_from: HashMap<(u32, String), (f32, u64)>,
     /// Each radio's groups as its station last reported them
     /// (`MsGroupCatalogSnapshot`), keyed by ISSI.
     pub ms_groups: HashMap<u32, Vec<MsGroupInfo>>,
@@ -801,8 +819,27 @@ impl TelemetryState {
 
     /// Records an RSSI report for `issi` seen directly on the main Brew
     /// protocol channel (see `brew_ms_rssi`'s doc comment).
-    pub fn record_brew_rssi(&mut self, issi: u32, rssi_dbfs: f32) {
+    pub fn record_brew_rssi(&mut self, issi: u32, rssi_dbfs: f32, from: String) {
         self.brew_ms_rssi.insert(issi, rssi_dbfs);
+        let now = now_ms();
+        self.brew_ms_rssi_from.insert((issi, from), (rssi_dbfs, now));
+        // Connections come and go (a new id each time): forget readings older than an hour.
+        if self.brew_ms_rssi_from.len() > 4096 {
+            self.brew_ms_rssi_from.retain(|_, (_, at)| now.saturating_sub(*at) < 3_600_000);
+        }
+    }
+
+    /// The newest RSSI of `issi` reported by the station it is registered on
+    /// now: on its Brew connection `client` (`SERVICE_RSSI`), or by a
+    /// telemetry login in `logins` (`MsRssi`). Readings of a station the radio
+    /// left are never returned.
+    pub fn ms_rssi_reading(&self, issi: u32, client: &str, logins: &[&str]) -> Option<RssiReading> {
+        let brew = self.brew_ms_rssi_from.get(&(issi, client.to_string()))
+            .map(|(dbfs, at)| RssiReading { dbfs: *dbfs, at_ms: *at, via: "brew" });
+        let tele = logins.iter().filter_map(|l| self.stations.get(*l)).filter_map(|b| {
+            Some(RssiReading { dbfs: *b.ms_rssi.get(&issi)?, at_ms: *b.ms_rssi_at.get(&issi)?, via: "telemetry" })
+        });
+        brew.into_iter().chain(tele).max_by_key(|r| r.at_ms)
     }
 
     /// `issi` just registered on `new_bts`: drops it from every other
@@ -1204,6 +1241,7 @@ async fn handle_event(state: &Arc<AppState>, id: &str, data: &[u8]) {
         TelemetryEvent::MsRssi { issi, rssi_dbfs } => {
             bts.rssi_dbfs = Some(rssi_dbfs);
             bts.ms_rssi.insert(issi, rssi_dbfs);
+            bts.ms_rssi_at.insert(issi, now_ms());
             let mut v: Vec<(u32, f32)> = bts.ms_rssi.iter().map(|(k, val)| (*k, *val)).collect();
             v.sort_unstable_by_key(|(k, _)| *k);
             bts.ms_rssi_out = v;
@@ -1614,11 +1652,30 @@ mod registration_log_tests {
     #[test]
     fn record_brew_rssi_keeps_latest_per_issi() {
         let mut t = TelemetryState::default();
-        t.record_brew_rssi(4013, -12.5);
-        t.record_brew_rssi(4013, -8.0);
-        t.record_brew_rssi(5551, -20.0);
+        t.record_brew_rssi(4013, -12.5, "c1".into());
+        t.record_brew_rssi(4013, -8.0, "c1".into());
+        t.record_brew_rssi(5551, -20.0, "c1".into());
         assert_eq!(t.brew_ms_rssi.get(&4013), Some(&-8.0));
         assert_eq!(t.brew_ms_rssi.get(&5551), Some(&-20.0));
+    }
+
+    /// A radio's RSSI on the dashboard comes only from the station it is registered on now (its
+    /// Brew connection or that station's telemetry login), the newest of both.
+    #[test]
+    fn ms_rssi_reading_only_from_current_station() {
+        let mut t = TelemetryState::default();
+        t.record_brew_rssi(2320972, -40.0, "conn-bs1".into());
+        assert_eq!(t.ms_rssi_reading(2320972, "conn-bs2", &["1000002"]), None, "left station's reading not shown");
+        let r = t.ms_rssi_reading(2320972, "conn-bs1", &[]).unwrap();
+        assert_eq!((r.dbfs, r.via), (-40.0, "brew"));
+        let mut bts = TelemetryBts::new("1000002".into(), None);
+        bts.ms_rssi.insert(2320972, -25.0);
+        bts.ms_rssi_at.insert(2320972, now_ms() + 1000);
+        t.stations.insert("1000002".into(), bts);
+        let r = t.ms_rssi_reading(2320972, "conn-bs2", &["1000002"]).unwrap();
+        assert_eq!((r.dbfs, r.via), (-25.0, "telemetry"));
+        assert_eq!(t.ms_rssi_reading(2320972, "conn-bs1", &["1000002"]).unwrap().dbfs, -25.0, "newest wins");
+        assert_eq!(t.ms_rssi_reading(4013, "conn-bs1", &["1000002"]), None);
     }
 
     #[test]
