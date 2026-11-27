@@ -2,6 +2,21 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.22.16 (RSSI in the call log: fix) fixes:
+
+- **Recent calls: the RSSI column stayed empty.** 1.22.15 counted only the
+  levels a station sent while the call ran. FlowStation measures a radio
+  on its random access (the PTT press), a moment before the call reaches
+  the server, and so far sends nothing while the radio talks; on the Brew
+  link it also sends a radio's level at most every 5 s. So almost every
+  call ended without a reading. The level a station reported up to 15 s
+  before the call starts now counts for it.
+- **Recent calls: RSSI is the mean of the call's first 10 s.** Readings
+  that arrive during the first 10 s of a call are averaged with the one
+  from the PTT press (the whole call when it is shorter); later readings
+  are left out, so long and short calls compare. A station that reports
+  levels only on random access gives the level at the PTT press.
+
 Version 1.22.15 (RSSI in the call log) adds:
 
 - **Recent calls: RSSI of the calling radio.** The call log keeps the
