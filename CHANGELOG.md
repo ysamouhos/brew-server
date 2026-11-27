@@ -2,6 +2,20 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.22.15 (RSSI in the call log) adds:
+
+- **Recent calls: RSSI of the calling radio.** The call log keeps the
+  uplink level of the calling radio at its station, as the mean of the
+  readings the station sent while the call ran (`SERVICE_RSSI` on the Brew
+  link, FlowStation `[brew] feature_rssi_export`, or the station's
+  telemetry link). The Calls page shows it in a new RSSI column of
+  "Recent calls", and
+  `GET /api/status` carries it as `rssi_dbfs` in `recent_calls` and, as
+  the mean so far, in `active_calls`. A call from a terminal or bridge, or
+  from a station that reports no level, has none. The value is saved in
+  the `<history>.nets` file next to the history, which stays readable by
+  older versions.
+
 Version 1.22.14 (RSSI per radio) adds:
 
 - **RSSI per radio.** The Radios page has an RSSI column and the map popup

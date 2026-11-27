@@ -824,6 +824,7 @@ function mergePoolLegs(list){
     out.push(Object.assign({},c,{pool:p?p.name:'TG '+low(c.destination),legs:legs.map(x=>x.destination),
       started_at_ms:Math.min(...legs.map(x=>x.started_at_ms)),ended_at_ms:ends.length===legs.length?Math.max(...ends):null,
       voice_frames:Math.max(...legs.map(x=>x.voice_frames)),
+      rssi_dbfs:legs.map(x=>x.rssi_dbfs).find(v=>v!=null)??null,
       from_network:legs.map(x=>x.from_network).find(Boolean)||null,
       to_networks:[...new Set(legs.flatMap(x=>x.to_networks||[]))]}));
   });
@@ -986,8 +987,8 @@ R.calls=()=>{
   return `<div class="card"><div class="ch"><h2>Live calls</h2><span class="cnt">${act.length}</span></div>${act.length?act.map(x=>callRow(x,now)).join(''):'<div class="empty">No active calls</div>'}</div>
   <div class="bar">${seg('callk',[['all','All'],['group','Group'],['private','Individual']])}${searchBox('calls','ISSI or group…')}<span class="sp"></span>${showSel('calls')}<span class="mut" style="font-size:12.5px">${st.total_calls} calls in total</span>${D.who.admin?`<button class="btn danger" onclick="clearHistory('calls')">${ic('trash')}Clear all calls</button>`:''}</div>
   ${msgDiv('calls-msg','padding:0 4px')}
-  <div class="card"><div class="ch"><h2>Recent calls</h2><span class="cnt">${Math.min(rec.length,showN('calls')==='all'?1e9:showN('calls'))}</span><span class="sp"></span><span class="mut" style="font-size:12px">${keptNote(st,'calls')}</span></div><div class="tw"><table><thead><tr><th>Started</th><th>Type</th><th>From</th><th>To</th>${nc?'<th>Network</th>':''}<th>Duration</th><th>Prio</th><th>Voice frames</th></tr></thead><tbody>
-   ${rec.slice(0,showN('calls')==='all'?undefined:showN('calls')).map(c=>`<tr><td class="m">${tmd(c.started_at_ms)}</td><td>${c.kind==='group'?'<span class="chip a">Group</span>':'<span class="chip b">Individual</span>'}</td><td>${issiCell(c.source)}</td><td>${c.pool?`<span class="chip" title="Pool: one call heard on ${c.legs.length} groups">${ic('routing')} ${esc(c.pool)}</span><span class="sub">${c.legs.map(g=>g>16777215?tgTxt(g):String(g)).join(' · ')}</span>`:c.kind==='group'?`<span class="m">${c.destination>16777215?tgTxt(c.destination):c.destination}</span>${gName(c.destination)?`<span class="sub">${esc(gName(c.destination))}</span>`:''}`:issiCell(c.destination)}</td>${nc?`<td>${netChips(c)}</td>`:''}<td class="m">${c.ended_at_ms?dur(c.ended_at_ms-c.started_at_ms):'—'}</td><td class="num">${c.priority}</td><td class="num">${c.voice_frames}</td></tr>`).join('')||'<tr><td colspan="${nc?8:7}" class="mut">No calls yet</td></tr>'}
+  <div class="card"><div class="ch"><h2>Recent calls</h2><span class="cnt">${Math.min(rec.length,showN('calls')==='all'?1e9:showN('calls'))}</span><span class="sp"></span><span class="mut" style="font-size:12px">${keptNote(st,'calls')}</span></div><div class="tw"><table><thead><tr><th>Started</th><th>Type</th><th>From</th><th>To</th>${nc?'<th>Network</th>':''}<th>Duration</th><th title="Uplink level of the calling radio at its station, mean over the call">RSSI</th><th>Prio</th><th>Voice frames</th></tr></thead><tbody>
+   ${rec.slice(0,showN('calls')==='all'?undefined:showN('calls')).map(c=>`<tr><td class="m">${tmd(c.started_at_ms)}</td><td>${c.kind==='group'?'<span class="chip a">Group</span>':'<span class="chip b">Individual</span>'}</td><td>${issiCell(c.source)}</td><td>${c.pool?`<span class="chip" title="Pool: one call heard on ${c.legs.length} groups">${ic('routing')} ${esc(c.pool)}</span><span class="sub">${c.legs.map(g=>g>16777215?tgTxt(g):String(g)).join(' · ')}</span>`:c.kind==='group'?`<span class="m">${c.destination>16777215?tgTxt(c.destination):c.destination}</span>${gName(c.destination)?`<span class="sub">${esc(gName(c.destination))}</span>`:''}`:issiCell(c.destination)}</td>${nc?`<td>${netChips(c)}</td>`:''}<td class="m">${c.ended_at_ms?dur(c.ended_at_ms-c.started_at_ms):'—'}</td><td class="m">${c.rssi_dbfs!=null?c.rssi_dbfs.toFixed(1)+' dBFS':'<span class="mut" title="No level from the station during the call (needs feature_rssi_export or a telemetry link; terminals and bridges have none)">—</span>'}</td><td class="num">${c.priority}</td><td class="num">${c.voice_frames}</td></tr>`).join('')||`<tr><td colspan="${8+(nc?1:0)}" class="mut">No calls yet</td></tr>`}
   </tbody></table></div></div>`;
 };
 // SDS: the network's SDS and, with the Telemetry SDS right, the SDS the stations report over their
@@ -3288,6 +3289,7 @@ mod tests {
         let body = &PAGE_HTML[start..start + PAGE_HTML[start..].find("\n};\n").expect("end")];
         assert!(body.contains("mergePoolLegs(st.recent_calls)"), "recent calls merged");
         assert!(body.contains("c.pool?"), "pool name in the To column");
+        assert!(body.contains(">RSSI</th>") && body.contains("c.rssi_dbfs.toFixed(1)+' dBFS'"), "RSSI column, always shown");
         // Without the admin-only network list the alias network comes from the call.
         let pg = &PAGE_HTML[PAGE_HTML.find("function inPool(p,c){").expect("inPool")..];
         assert!(pg[..pg.find("\n}").unwrap_or(pg.len()).max(400).min(pg.len())].contains("(c.to_networks||[])[0]||c.from_network"), "works logged out");

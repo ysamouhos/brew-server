@@ -1144,6 +1144,7 @@ async fn handle_event(state: &Arc<AppState>, id: &str, data: &[u8]) {
         | TelemetryEvent::CellsSnapshot { .. } | TelemetryEvent::CellRf { .. });
 
     let mut sds_entry: Option<SdsLogEntry> = None;
+    let mut ms_rssi: Option<(u32, f32)> = None;
     // Set when a (changed or due) station position must go out to federation peers.
     let mut advertise: Option<(String, f64, f64)> = None;
     // Set when an emergency alarm just came up for an ISSI.
@@ -1239,6 +1240,7 @@ async fn handle_event(state: &Arc<AppState>, id: &str, data: &[u8]) {
             bts.build = Some(build);
         }
         TelemetryEvent::MsRssi { issi, rssi_dbfs } => {
+            ms_rssi = Some((issi, rssi_dbfs));
             bts.rssi_dbfs = Some(rssi_dbfs);
             bts.ms_rssi.insert(issi, rssi_dbfs);
             bts.ms_rssi_at.insert(issi, now_ms());
@@ -1270,6 +1272,9 @@ async fn handle_event(state: &Arc<AppState>, id: &str, data: &[u8]) {
         _ => Vec::new(),
     };
     drop(t);
+    if let Some((issi, rssi_dbfs)) = ms_rssi {
+        state.monitor.note_rssi(issi, rssi_dbfs).await;
+    }
     // `[allowlist] kick_unknown`: a radio that is not admitted to the network
     // has still registered on the cell (the Basestation's own checks are
     // local); it is already silent here, so this only clears it off the cell.
