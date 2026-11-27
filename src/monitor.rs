@@ -30,6 +30,11 @@ pub struct NetTag {
     pub to: Vec<String>,
     #[serde(rename = "protocol_id", default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u8>,
+    /// For a call: the mean uplink level of the calling radio at its station
+    /// while the call ran, in dBFS (`SERVICE_RSSI` or the station's
+    /// telemetry). Absent when the station sent no reading during the call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rssi_dbfs: Option<f32>,
 }
 
 /// One line of the networks file `<history path>.nets` (JSON lines): the
@@ -63,6 +68,8 @@ impl<T> std::ops::Deref for Tagged<T> {
 const MAX_TAGS: usize = 1000;
 
 #[derive(Default)] struct Inner { active: HashMap<Uuid, CallRecord>, calls: VecDeque<CallRecord>, sds: VecDeque<SdsRecord>, total_calls: u64, total_sds: u64, voice_frames: u64, nets: HashMap<Uuid, NetTag>, keep: crate::config::StorageConfig,
+    /// Uplink levels of the calling radio during an active call: sum and count.
+    rssi: HashMap<Uuid, (f64, u32)>,
     /// Lines in the networks file (rewritten once it holds far more than the tags).
     net_lines: usize }
 
@@ -80,7 +87,14 @@ impl Inner {
     }
 
     fn tagged<T: Clone>(&self, uuid: Uuid, rec: &T) -> Tagged<T> {
-        Tagged { rec: rec.clone(), nets: self.nets.get(&uuid).cloned().unwrap_or_default() }
+        let mut nets = self.nets.get(&uuid).cloned().unwrap_or_default();
+        if let Some(mean) = self.rssi_mean(uuid) { nets.rssi_dbfs = Some(mean); }
+        Tagged { rec: rec.clone(), nets }
+    }
+
+    /// Mean level of the readings of active call `uuid` so far, to 0.1 dB.
+    fn rssi_mean(&self, uuid: Uuid) -> Option<f32> {
+        self.rssi.get(&uuid).filter(|(_, n)| *n > 0).map(|(sum, n)| ((sum / *n as f64) * 10.0).round() as f32 / 10.0)
     }
 
     /// Drops the tags of records no longer shown.
@@ -199,7 +213,34 @@ impl Monitor {
         let mut i = self.inner.write().await; if i.active.insert(uuid, rec.clone()).is_none() { i.total_calls += 1; }
         drop(i); self.emit("call_started", serde_json::json!(rec));
     }
-    pub async fn call_ended(&self, uuid: Uuid) { let mut i = self.inner.write().await; if let Some(mut r)=i.active.remove(&uuid) { r.ended_at_ms=Some(now_ms()); i.calls.push_front(r.clone()); i.trim(false); drop(i); self.persist(&crate::store::StoredRecord::Call(r.clone())); self.emit("call_ended", serde_json::json!(r)); } }
+    pub async fn call_ended(&self, uuid: Uuid) {
+        let mut i = self.inner.write().await;
+        let rssi = i.rssi_mean(uuid);
+        i.rssi.remove(&uuid);
+        if let Some(mut r) = i.active.remove(&uuid) {
+            r.ended_at_ms = Some(now_ms());
+            i.calls.push_front(r.clone());
+            i.trim(false);
+            drop(i);
+            self.persist(&crate::store::StoredRecord::Call(r.clone()));
+            if let Some(mean) = rssi { self.update_tag(uuid, |tag| tag.rssi_dbfs = Some(mean)).await; }
+            self.emit("call_ended", serde_json::json!(r));
+        }
+    }
+
+    /// A station measured the uplink of radio `issi` at `rssi_dbfs`: counted
+    /// for every active call that radio started (a pool call has one per
+    /// group). The mean goes into the call log when the call ends.
+    pub async fn note_rssi(&self, issi: u32, rssi_dbfs: f32) {
+        if !rssi_dbfs.is_finite() { return; }
+        let mut i = self.inner.write().await;
+        let calls: Vec<Uuid> = i.active.values().filter(|c| c.source == issi).map(|c| c.uuid).collect();
+        for uuid in calls {
+            let e = i.rssi.entry(uuid).or_insert((0.0, 0));
+            e.0 += rssi_dbfs as f64;
+            e.1 += 1;
+        }
+    }
     pub async fn voice_frame(&self, uuid: Uuid) { let mut i=self.inner.write().await; i.voice_frames+=1; if let Some(r)=i.active.get_mut(&uuid){r.voice_frames+=1;} }
     pub async fn sds(&self, uuid: Uuid, source: u32, destination: u32) { let r=SdsRecord{uuid,source,destination,at_ms:now_ms(),reports:0}; let mut i=self.inner.write().await; i.total_sds+=1; i.sds.push_front(r.clone()); i.trim(false); drop(i); self.persist(&crate::store::StoredRecord::Sds(r.clone())); self.emit("sds",serde_json::json!(r)); }
     pub async fn sds_report(&self, uuid: Uuid) { let mut i=self.inner.write().await; if let Some(r)=i.sds.iter_mut().find(|r|r.uuid==uuid){r.reports+=1;} drop(i); self.persist(&crate::store::StoredRecord::SdsReport { uuid }); }
@@ -408,7 +449,7 @@ mod persist_tests {
         {
             let m = Monitor::with_store(Arc::new(crate::store::Store::open(&path).unwrap()));
             let snap = m.snapshot(0, 0, 0).await;
-            assert_eq!(snap.recent_calls[0].nets, NetTag { from: Some("Heim".into()), to: vec!["TetraPack".into()], pid: None });
+            assert_eq!(snap.recent_calls[0].nets, NetTag { from: Some("Heim".into()), to: vec!["TetraPack".into()], pid: None, rssi_dbfs: None });
             let tag = |u: Uuid| snap.recent_sds.iter().find(|s| s.uuid == u).unwrap().nets.clone();
             assert_eq!(tag(sds).to, vec!["TetraPack".to_string()]);
             assert_eq!(tag(sds).pid, Some(0x0A), "the protocol identifier survives, the first one stays");
@@ -475,5 +516,46 @@ mod persist_tests {
         assert!(m.snapshot(0, 0, 0).await.recent_calls.is_empty(), "Clear all calls");
         assert_eq!(m.snapshot(0, 0, 0).await.total_calls, 61);
         for p in [path.clone(), std::path::PathBuf::from(format!("{}.totals", path.display()))] { std::fs::remove_file(p).ok(); }
+    }
+
+    /// The caller's uplink level during a call goes into the call log as the
+    /// mean of the readings, survives a restart, and leaves the history file
+    /// readable by older versions.
+    #[tokio::test]
+    async fn call_log_keeps_the_callers_mean_rssi() {
+        use std::sync::Arc;
+        let dir = std::env::temp_dir().join(format!("brew-rssi-log-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.bin");
+        let (with, without, pool_leg) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        {
+            let m = Monitor::with_store(Arc::new(crate::store::Store::open(&path).unwrap()));
+            m.note_rssi(2320972, -10.0).await; // before the call: not counted
+            m.call_started(with, "group", 2320972, 9, 0).await;
+            m.call_started(pool_leg, "group", 2320972, 91, 0).await;
+            m.call_started(without, "group", 2320997, 9, 0).await;
+            m.note_rssi(2320972, -40.0).await;
+            m.note_rssi(2320972, -43.0).await;
+            m.note_rssi(2320972, f32::NAN).await;
+            m.note_rssi(2320001, -5.0).await; // a radio that is not calling
+            let snap = m.snapshot(0, 0, 0).await;
+            let live = |u: Uuid| snap.active_calls.iter().find(|c| c.uuid == u).unwrap().nets.rssi_dbfs;
+            assert_eq!(live(with), Some(-41.5), "the running call shows the mean so far");
+            assert_eq!(live(without), None);
+            m.call_ended(with).await;
+            m.call_ended(pool_leg).await;
+            m.call_ended(without).await;
+            m.note_rssi(2320972, -90.0).await; // after the call: not counted
+        }
+        let m = Monitor::with_store(Arc::new(crate::store::Store::open(&path).unwrap()));
+        let snap = m.snapshot(0, 0, 0).await;
+        let rssi = |u: Uuid| snap.recent_calls.iter().find(|c| c.uuid == u).unwrap().nets.rssi_dbfs;
+        assert_eq!(rssi(with), Some(-41.5));
+        assert_eq!(rssi(pool_leg), Some(-41.5), "every leg of a pool call");
+        assert_eq!(rssi(without), None, "no reading during the call");
+        let json = serde_json::to_value(snap.recent_calls.iter().find(|c| c.uuid == with).unwrap()).unwrap();
+        assert_eq!(json["rssi_dbfs"], -41.5);
+        assert!(serde_json::to_value(snap.recent_calls.iter().find(|c| c.uuid == without).unwrap()).unwrap().get("rssi_dbfs").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

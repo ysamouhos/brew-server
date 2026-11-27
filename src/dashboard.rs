@@ -2249,6 +2249,23 @@ mod tests {
 
     /// Sim: 10 stations, 25 radios, every station measures every radio it serves, then each radio
     /// moves twice. The Radios page and the map always show the reading of the current station.
+    /// A level a station reports on the Brew link during a call ends up in
+    /// that call's log entry.
+    #[tokio::test]
+    async fn rssi_reported_during_a_call_is_in_the_call_log() {
+        use crate::protocol;
+        let state = AppState::for_test();
+        let bs = uuid::Uuid::new_v4();
+        let call = uuid::Uuid::new_v4();
+        state.monitor.call_started(call, "group", 7, 9, 0).await;
+        for dbfs in ["-42.0", "-44.0"] {
+            crate::router::handle_packet(state.clone(), bs, protocol::build_service(protocol::SERVICE_RSSI, &format!(r#"{{"issi":7,"rssi_dbfs":{dbfs}}}"#))).await;
+        }
+        state.monitor.call_ended(call).await;
+        let snap = state.monitor.snapshot(0, 0, 0).await;
+        assert_eq!(snap.recent_calls[0].nets.rssi_dbfs, Some(-43.0));
+    }
+
     #[tokio::test]
     async fn rssi_sim_10_stations_25_radios() {
         use crate::protocol::{self, ConnVersion, SUB_REGISTER};
