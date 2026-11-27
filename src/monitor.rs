@@ -67,9 +67,21 @@ impl<T> std::ops::Deref for Tagged<T> {
 /// lists hold far fewer).
 const MAX_TAGS: usize = 1000;
 
+/// How old a radio's level may be when it starts a call and still count for
+/// that call. FlowStation measures on the random access (the PTT press) and
+/// sends a radio's level on the Brew link at most every 5 s, so the reading
+/// of a call usually comes shortly before the call itself.
+const RSSI_FRESH_MS: u64 = 15_000;
+
+/// The level of a call is the mean of the readings of its first seconds (of
+/// the whole call when it is shorter), so a long call and a short one compare.
+const RSSI_WINDOW_MS: u64 = 10_000;
+
 #[derive(Default)] struct Inner { active: HashMap<Uuid, CallRecord>, calls: VecDeque<CallRecord>, sds: VecDeque<SdsRecord>, total_calls: u64, total_sds: u64, voice_frames: u64, nets: HashMap<Uuid, NetTag>, keep: crate::config::StorageConfig,
     /// Uplink levels of the calling radio during an active call: sum and count.
     rssi: HashMap<Uuid, (f64, u32)>,
+    /// The last level a station reported per radio, and when (ms).
+    last_rssi: HashMap<u32, (f32, u64)>,
     /// Lines in the networks file (rewritten once it holds far more than the tags).
     net_lines: usize }
 
@@ -211,6 +223,11 @@ impl Monitor {
     pub async fn call_started(&self, uuid: Uuid, kind: &str, source: u32, destination: u32, priority: u8) {
         let rec = CallRecord { uuid, kind: kind.into(), source, destination, priority, started_at_ms: now_ms(), ended_at_ms: None, voice_frames: 0 };
         let mut i = self.inner.write().await; if i.active.insert(uuid, rec.clone()).is_none() { i.total_calls += 1; }
+        // The station measures a radio when it asks for the channel (random access), which
+        // is just before the call reaches this server: that reading belongs to the call.
+        if let Some((dbfs, at)) = i.last_rssi.get(&source).copied() {
+            if rec.started_at_ms.saturating_sub(at) <= RSSI_FRESH_MS { i.rssi.entry(uuid).or_insert((dbfs as f64, 1)); }
+        }
         drop(i); self.emit("call_started", serde_json::json!(rec));
     }
     pub async fn call_ended(&self, uuid: Uuid) {
@@ -230,11 +247,17 @@ impl Monitor {
 
     /// A station measured the uplink of radio `issi` at `rssi_dbfs`: counted
     /// for every active call that radio started (a pool call has one per
-    /// group). The mean goes into the call log when the call ends.
-    pub async fn note_rssi(&self, issi: u32, rssi_dbfs: f32) {
+    /// group) during the call's first `RSSI_WINDOW_MS`, and kept for a call it
+    /// starts within `RSSI_FRESH_MS`. The mean goes into the call log when the
+    /// call ends.
+    pub async fn note_rssi(&self, issi: u32, rssi_dbfs: f32) { self.note_rssi_at(issi, rssi_dbfs, now_ms()).await }
+
+    async fn note_rssi_at(&self, issi: u32, rssi_dbfs: f32, at_ms: u64) {
         if !rssi_dbfs.is_finite() { return; }
         let mut i = self.inner.write().await;
-        let calls: Vec<Uuid> = i.active.values().filter(|c| c.source == issi).map(|c| c.uuid).collect();
+        if i.last_rssi.len() >= MAX_TAGS { i.last_rssi.retain(|_, (_, at)| at_ms.saturating_sub(*at) <= RSSI_FRESH_MS); }
+        i.last_rssi.insert(issi, (rssi_dbfs, at_ms));
+        let calls: Vec<Uuid> = i.active.values().filter(|c| c.source == issi && at_ms.saturating_sub(c.started_at_ms) <= RSSI_WINDOW_MS).map(|c| c.uuid).collect();
         for uuid in calls {
             let e = i.rssi.entry(uuid).or_insert((0.0, 0));
             e.0 += rssi_dbfs as f64;
@@ -530,7 +553,7 @@ mod persist_tests {
         let (with, without, pool_leg) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
         {
             let m = Monitor::with_store(Arc::new(crate::store::Store::open(&path).unwrap()));
-            m.note_rssi(2320972, -10.0).await; // before the call: not counted
+            m.note_rssi_at(2320972, -10.0, now_ms() - 60_000).await; // long before the call: not counted
             m.call_started(with, "group", 2320972, 9, 0).await;
             m.call_started(pool_leg, "group", 2320972, 91, 0).await;
             m.call_started(without, "group", 2320997, 9, 0).await;
@@ -557,5 +580,47 @@ mod persist_tests {
         assert_eq!(json["rssi_dbfs"], -41.5);
         assert!(serde_json::to_value(snap.recent_calls.iter().find(|c| c.uuid == without).unwrap()).unwrap().get("rssi_dbfs").is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// FlowStation measures a radio on its random access, before the call
+    /// reaches the server, and sends nothing while it talks: the level
+    /// reported just before the call is the call's level.
+    #[tokio::test]
+    async fn level_reported_just_before_the_call_counts_for_it() {
+        let m = Monitor::new();
+        let (fresh, stale, other, more) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        m.note_rssi_at(7, -38.0, now_ms() - 2_000).await;
+        m.note_rssi_at(8, -50.0, now_ms() - RSSI_FRESH_MS - 5_000).await;
+        m.call_started(fresh, "group", 7, 9, 0).await;
+        m.call_started(stale, "group", 8, 9, 0).await;
+        m.call_started(other, "group", 9, 9, 0).await;
+        for c in [fresh, stale, other] { m.call_ended(c).await; }
+        let snap = m.snapshot(0, 0, 0).await;
+        let rssi = |u: Uuid| snap.recent_calls.iter().find(|c| c.uuid == u).unwrap().nets.rssi_dbfs;
+        assert_eq!(rssi(fresh), Some(-38.0), "the PTT reading");
+        assert_eq!(rssi(stale), None, "an old reading is not the call's");
+        assert_eq!(rssi(other), None);
+        // A reading during the call is averaged with the one from the PTT.
+        m.note_rssi(7, -40.0).await;
+        m.call_started(more, "group", 7, 9, 0).await;
+        m.note_rssi(7, -44.0).await;
+        m.call_ended(more).await;
+        let snap = m.snapshot(0, 0, 0).await;
+        assert_eq!(snap.recent_calls.iter().find(|c| c.uuid == more).unwrap().nets.rssi_dbfs, Some(-42.0));
+    }
+
+    /// The level of a call is the mean over its first 10 s: later readings
+    /// are left out.
+    #[tokio::test]
+    async fn level_is_the_mean_of_the_first_ten_seconds() {
+        let m = Monitor::new();
+        let call = Uuid::new_v4();
+        m.call_started(call, "group", 7, 9, 0).await;
+        let start = now_ms();
+        m.note_rssi_at(7, -30.0, start + 1_000).await;
+        m.note_rssi_at(7, -34.0, start + 9_000).await;
+        m.note_rssi_at(7, -80.0, start + RSSI_WINDOW_MS + 2_000).await;
+        m.call_ended(call).await;
+        assert_eq!(m.snapshot(0, 0, 0).await.recent_calls[0].nets.rssi_dbfs, Some(-32.0));
     }
 }
