@@ -2,6 +2,18 @@
 
 All notable changes to brew-server, newest first.
 
+Version 1.22.17 (map: hide offline radios) adds:
+
+- **Map: offline radios can leave the map.** A radio registered nowhere
+  stayed on the map at its last position, however old, until the server
+  restarted or an admin cleared the map. New setting *Hide offline after
+  (hours)* in Settings → Map (`[map] hide_offline_after_h`, 0 to 720,
+  applied at once): a radio that is registered nowhere and whose last
+  position is older than this is left off the map; a new position or a
+  registration brings it back, a radio with an active emergency is always
+  shown. 0, the default, keeps the old behaviour. Tracks and positions are
+  not deleted.
+
 Version 1.22.16 (RSSI in the call log: fix) fixes:
 
 - **Recent calls: the RSSI column stayed empty.** 1.22.15 counted only the

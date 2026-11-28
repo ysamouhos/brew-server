@@ -6,6 +6,10 @@
 //! which radio is on which station. It docks when it has no position, when its
 //! last position is older than `[map] dock_after_min`, or when it registered on
 //! another station after that position (the position is from the old place).
+//!
+//! A radio registered nowhere is drawn as offline at its last position; with
+//! `[map] hide_offline_after_h` it is left off the map once that position is
+//! older than the limit (see [`hidden_offline`]).
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -215,6 +219,14 @@ pub fn docked(dock: Option<&str>, fix: Option<&crate::telemetry::PositionFix>, f
     fix_station.is_some_and(|s| s != dock)
 }
 
+/// Whether a radio is left off the map: it is registered nowhere, has no
+/// emergency, and its last position is older than `hide_after_h` hours
+/// (0 = never). A radio without a position is only listed while registered.
+pub fn hidden_offline(online: bool, emergency: bool, fix: Option<&crate::telemetry::PositionFix>, hide_after_h: u32, now_ms: u64) -> bool {
+    if online || emergency || hide_after_h == 0 { return false; }
+    fix.is_none_or(|f| now_ms.saturating_sub(f.at_ms) > hide_after_h as u64 * 3_600_000)
+}
+
 #[derive(Serialize)]
 pub struct RadioOut {
     pub issi: u32,
@@ -287,7 +299,9 @@ pub async fn api_snapshot(axum::extract::State(state): axum::extract::State<Arc<
     let rssi: HashMap<u32, crate::telemetry::RssiReading> =
         crate::dashboard::ms_rssi_readings(&state).await.into_iter().map(|(i, r)| (home(i), r)).collect();
     let t = state.tracks.lock().unwrap_or_else(|e| e.into_inner());
-    let radios = by_issi.into_iter().map(|(issi, fix)| {
+    let radios = by_issi.into_iter().filter(|(issi, fix)| {
+        !hidden_offline(online.contains(issi), emergencies.contains(issi), fix.as_ref(), settings.hide_offline_after_h, now)
+    }).map(|(issi, fix)| {
         let dock = docks.get(&issi).cloned();
         // The track's newest fix is the one the map shows when they agree.
         let shown = t.newest(issi).filter(|n| fix.as_ref().is_some_and(|f| f.at_ms == n.at_ms));
@@ -338,7 +352,7 @@ pub async fn api_settings(
         t.set_points(req.track_points as usize);
         t.flush(crate::telemetry::now_ms(), true);
     }
-    tracing::warn!(track_points = req.track_points, dock_after_min = req.dock_after_min, guests_see_track = req.guests_see_track, "map settings changed");
+    tracing::warn!(track_points = req.track_points, dock_after_min = req.dock_after_min, guests_see_track = req.guests_see_track, hide_offline_after_h = req.hide_offline_after_h, "map settings changed");
     let cfg = state.config_snapshot();
     crate::CONFIG_WRITE_APPLIED_LIVE.store(true, std::sync::atomic::Ordering::SeqCst);
     match crate::dashboard::save_config(&state, &cfg).await {
@@ -416,6 +430,48 @@ mod tests {
         assert!(t.record(7, fix(39_500, None), 50_000), "a late fix goes into its place");
         assert_eq!(t.newest(7).unwrap().at_ms, 40_000);
         assert!(!t.record(7, TrackFix { lat: 0.0, lon: 0.0, at_ms: 60_000, station: None, terminal: false }, 60_000), "0/0 is no fix");
+    }
+
+    #[test]
+    fn offline_radios_hide_only_after_the_limit() {
+        let h = 3_600_000u64;
+        let now = 100 * h;
+        assert!(!hidden_offline(false, false, Some(&pf(now - 90 * h)), 0, now), "0 = never hidden");
+        assert!(!hidden_offline(false, false, Some(&pf(now - 2 * h)), 2, now), "exactly at the limit: still shown");
+        assert!(hidden_offline(false, false, Some(&pf(now - 2 * h - 1)), 2, now), "older than the limit");
+        assert!(!hidden_offline(true, false, Some(&pf(now - 90 * h)), 2, now), "registered: always shown");
+        assert!(!hidden_offline(false, true, Some(&pf(now - 90 * h)), 2, now), "emergency: always shown");
+    }
+
+    /// Sebastian 2026-11-28: radios long gone stayed on the map until a restart.
+    #[tokio::test]
+    async fn offline_radios_leave_the_map_after_hide_offline_after_h() {
+        let state = AppState::for_test();
+        let now = crate::telemetry::now_ms();
+        let old = now - 3 * 3_600_000;
+        for issi in [2320972, 2320973] { state.telemetry.write().await.record_sds_position(issi, 48.21, 16.37, old, "lip".into()); }
+        state.telemetry.write().await.record_sds_position(2320974, 48.21, 16.37, now, "lip".into());
+        {
+            use crate::{protocol::ConnVersion, state::Client};
+            let mut inner = state.inner.write().await;
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            let id = uuid::Uuid::new_v4();
+            inner.clients.insert(id, Client { tx, mode: ClientMode::Basestation, version: ConnVersion::V0, version_announced: false, remote_addr: None, connected_at_ms: 0, username: Some("1000001".into()) });
+            inner.subscribers.insert(2320973, crate::state::Subscriber { client_id: id, groups: Default::default(), mode: ClientMode::Basestation, route: Default::default() });
+        }
+        let snap = |s: Arc<AppState>| async move {
+            let mut v: Vec<u32> = api_snapshot(axum::extract::State(s), axum::http::HeaderMap::new()).await.0.radios.iter().map(|r| r.issi).collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(snap(state.clone()).await, vec![2320972, 2320973, 2320974], "default: every last position stays");
+        state.map_cfg.write().unwrap().hide_offline_after_h = 2;
+        assert_eq!(snap(state.clone()).await, vec![2320973, 2320974], "offline and older than 2 h: gone; registered or fresh: stays");
+        state.map_cfg.write().unwrap().hide_offline_after_h = 4;
+        assert_eq!(snap(state.clone()).await, vec![2320972, 2320973, 2320974], "within 4 h: back");
+        state.telemetry.write().await.record_sds_position(2320972, 48.21, 16.37, now, "lip".into());
+        state.map_cfg.write().unwrap().hide_offline_after_h = 2;
+        assert!(snap(state.clone()).await.contains(&2320972), "a new position brings it back");
     }
 
     /// Field 2026-11-22: after "Clear all tracks" radios long gone stayed on the map
