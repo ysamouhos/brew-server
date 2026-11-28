@@ -111,6 +111,11 @@ small badge adds the status.
   on another station) is drawn **docked** next to the station it is registered
   on: at a fixed pixel distance in rings around the station (8, then 14, then a
   "+N" bubble), so it stays beside it at every zoom and never covers it.
+- A radio registered nowhere is drawn offline (grey) at its last position.
+  With `hide_offline_after_h` it is left off the map once that position is
+  older than the limit; a new position or registration brings it back, an
+  emergency is always shown. 0 (the default) keeps it until a restart of the
+  server or *Clear map*.
 - Clicking a radio shows its last positions as a track; clicking the map hides
   it. The positions survive a restart (`<storage>.positions`, part of the
   backup).
@@ -121,6 +126,7 @@ small badge adds the status.
 track_points = 30     # positions kept per radio, 0..500 (0 = none)
 dock_after_min = 30   # dock again after this many minutes without a position, 0..10080 (0 = never)
 guests_see_track = true  # off: visitors who are not signed in see only the current positions
+hide_offline_after_h = 0 # leave offline radios off the map after this many hours, 0..720 (0 = never)
 ```
 
 ## Troubleshooting: positions not relayed

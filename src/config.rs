@@ -135,24 +135,31 @@ pub struct TalkgroupsConfig {
 /// on again (0 = only when it registers on another station; default 30).
 /// `guests_see_track`: visitors who are not signed in (Viewer) get the tracks
 /// too (default true); off, they see only the current positions.
+/// `hide_offline_after_h`: a radio that is not registered anywhere and whose
+/// last position is older than this many hours is left off the map (0 = kept
+/// until a restart or *Clear map*, the default; at most 720 = 30 days). An
+/// emergency is always shown.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct MapConfig {
     pub track_points: u32,
     pub dock_after_min: u32,
     pub guests_see_track: bool,
+    pub hide_offline_after_h: u32,
 }
 
 impl Default for MapConfig {
-    fn default() -> Self { Self { track_points: 30, dock_after_min: 30, guests_see_track: true } }
+    fn default() -> Self { Self { track_points: 30, dock_after_min: 30, guests_see_track: true, hide_offline_after_h: 0 } }
 }
 
 impl MapConfig {
     pub const MAX_TRACK_POINTS: u32 = 500;
     pub const MAX_DOCK_AFTER_MIN: u32 = 7 * 24 * 60;
+    pub const MAX_HIDE_OFFLINE_AFTER_H: u32 = 30 * 24;
     pub fn validate(&self) -> Result<(), String> {
         if self.track_points > Self::MAX_TRACK_POINTS { return Err(format!("positions per radio: 0 to {}", Self::MAX_TRACK_POINTS)); }
         if self.dock_after_min > Self::MAX_DOCK_AFTER_MIN { return Err(format!("dock after: 0 to {} minutes", Self::MAX_DOCK_AFTER_MIN)); }
+        if self.hide_offline_after_h > Self::MAX_HIDE_OFFLINE_AFTER_H { return Err(format!("hide offline radios after: 0 to {} hours", Self::MAX_HIDE_OFFLINE_AFTER_H)); }
         Ok(())
     }
 }
